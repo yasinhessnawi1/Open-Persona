@@ -1,0 +1,183 @@
+[project]
+name = "persona-rag"
+version = "0.1.0"
+description = "Persona-conditioned retrieval architecture for identity-consistent generation."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+authors = [{ name = "Yasin Hessnawi" }]
+license = { text = "TBD" }
+
+# Runtime dependencies.
+#
+# Notes on pin choices:
+#   - transformers>=4.49 is REQUIRED because that is the first release containing PR #35398
+#     (fixes Gemma 2 float16 sliding-window attention-mask overflow). Earlier versions are
+#     unsafe on Gemma 2 in fp16, which is the only compute dtype available on V100 (CC 7.0).
+#   - torch is pinned to 2.4.1 on Linux (servers) and sourced from the pytorch CUDA-12.1
+#     index via [tool.uv.sources] below. Reason: the V100 servers' NVIDIA driver caps out
+#     at CUDA 12.x, but recent torch wheels on PyPI ship CUDA-13 bindings and fail to
+#     initialize ("NVIDIA driver on your system is too old" / nccl symbol errors).
+#   - On Darwin (dev machines) torch has no CUDA variant; PyPI wheels are fine.
+#   - bitsandbytes is pinned to 0.43.x to keep its CUDA 12.1 ABI aligned with torch 2.4.1.
+#   - accelerate, sentencepiece are needed for 4-bit quantized loading.
+#   - protobuf is a transitive-but-flaky dep of sentencepiece-backed tokenizers; pin is loose.
+dependencies = [
+    # Effective pin: >=4.49,<4.50 — see header comment on Gemma 2 fp16 safety.
+    "transformers>=4.49,<4.50",
+    "torch==2.4.1; platform_system != 'Darwin'",
+    "torch>=2.2; platform_system == 'Darwin'",
+    "bitsandbytes>=0.43,<0.44; platform_system != 'Darwin'",
+    # triton (a bitsandbytes transitive dep) imports setuptools at runtime; uv venv
+    # does not ship it by default on Python 3.11. Only needed on Linux where
+    # bitsandbytes is installed.
+    "setuptools>=68; platform_system != 'Darwin'",
+    "accelerate>=0.30",
+    "sentencepiece>=0.2",
+    # protobuf: 7.x breaks opentelemetry-proto generated code (chromadb transitive
+    # dep chain). Pin to <6 to stay compatible with OT 1.41's .proto bindings.
+    # Observed: TypeError: "Descriptors cannot be created directly" with protobuf 7.34.
+    "protobuf>=4,<6",
+    "huggingface-hub>=0.24",
+    "hydra-core>=1.3",
+    "loguru>=0.7",
+    "pydantic>=2.7",
+    "pyyaml>=6",
+    "wandb>=0.17",
+    "numpy>=1.26,<3",
+    # Persona vector store + embeddings. ChromaDB 1.x is the current stable line;
+    # PersistentClient writes to disk automatically. sentence-transformers provides
+    # the default MiniLM embedder used by the persona and downstream stores.
+    "chromadb>=1.0,<2",
+    "sentence-transformers>=3,<6",
+    # OpenTelemetry proto is a chromadb transitive. Without an explicit pin here,
+    # uv's resolver picks 1.11.1 (a 2021 version whose generated _pb2.py files
+    # predate protobuf 5's API change), which crashes at import with:
+    # "TypeError: Descriptors cannot be created directly". Pin to the current 1.4x
+    # line alongside chromadb 1.5.
+    "opentelemetry-proto>=1.30",
+    # Persona-vector validation: UMAP visualization of separability + matplotlib
+    # to save the figure. umap-learn pulls numba+pynndescent transitively (heavy
+    # but only used by the validation script, not the runtime path). sklearn is
+    # pulled in as a chromadb transitive and is used directly for the
+    # logistic-regression probe. safetensors is a transformers transitive — used
+    # by the persona-vector cache writer.
+    "umap-learn>=0.5.6,<0.6",
+    "matplotlib>=3.9,<4",
+    # Knowledge-store retrieval helpers:
+    # - bm25s is a pure-Python + NumPy BM25 implementation, actively maintained
+    #   and ~5x faster than rank_bm25 on standard benchmarks. rank_bm25 has been
+    #   unmaintained since Feb 2022; its own README points users to retriv for
+    #   production use, so we adopt bm25s instead.
+    # - llama-index-core is used SOLELY for `SentenceSplitter` token-aware
+    #   chunking. The full Document/Node/Index/Retriever stack is intentionally
+    #   avoided so the chunk contract stays symmetric with PersonaChunk.
+    "bm25s>=0.2,<0.4",
+    "llama-index-core>=0.14,<0.15",
+    # OpenAI-compatible HTTP client. Used by the API-tier judge backend
+    # (`persona_rag.models.glm_api.GlmApiBackend`) to talk to NVIDIA
+    # Build's free-tier OpenAI-compatible endpoint. Pinned conservatively
+    # against major version bumps that change the chat-completion shape.
+    "openai>=1.30,<2",
+    # Inter-rater reliability for the human-validation pipeline. The
+    # `krippendorff` PyPI package (fast-krippendorff) supports ordinal
+    # data with NaN for missing scores; this is what we need for
+    # 1-5 ordinal rubric scoring across the PoLL panel + human raters.
+    "krippendorff>=0.6,<1",
+    # Hugging Face `datasets` is needed only by the PersonaChat benchmark
+    # loader (`persona_rag.benchmarks.personachat`). Pinned to the 3.x line
+    # because 4.x is pre-release and ships breaking changes to the
+    # `load_dataset` builder discovery path. Pulls in pyarrow (darwin-arm64
+    # wheels are published) but no other heavyweight transitive.
+    "datasets>=3,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/persona_rag"]
+
+# -------------------- tooling --------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["notebooks", "wandb", "results"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",  # pycodestyle + pyflakes
+    "I",            # isort
+    "B",            # bugbear
+    "UP",           # pyupgrade
+    "N",            # pep8-naming
+    "SIM",          # simplify
+    "RUF",          # ruff-native
+]
+ignore = [
+    "E501",  # line length handled by formatter; 100 soft-cap is a guideline
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+# Relaxed around tensors, per INDEX convention.
+disable_error_code = ["misc", "no-any-return"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = [
+    "persona_rag.models.*",
+    "persona_rag.geometry.*",
+    "scripts.*",
+]
+# Torch/transformers are heavy on Any-typed return values; avoid fighting the typer.
+disallow_any_generics = false
+disallow_untyped_calls = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# src-layout: make source packages importable without an editable install
+# round-trip (the editable .pth uv generates is named with a leading
+# underscore and is therefore skipped by site.py's pth scanner on some
+# Python builds, so an explicit pythonpath is the reliable fix).
+pythonpath = ["src"]
+addopts = [
+    "-q",
+    "--strict-markers",
+]
+markers = [
+    "slow: tests that require GPU + model download; skipped by default in CI",
+    "gpu:  tests that require a CUDA device",
+]
+
+# -------------------- uv / torch CUDA-12.1 index --------------------
+#
+# Tell uv to resolve `torch` from the PyTorch CUDA 12.1 index on Linux, and from
+# normal PyPI on Darwin (where there's no CUDA build). Without this, `uv run`
+# silently pulls the latest CUDA-13 torch from PyPI on each invocation, which
+# won't initialize on V100 (driver caps at CUDA 12.x).
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu121", marker = "platform_system != 'Darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true

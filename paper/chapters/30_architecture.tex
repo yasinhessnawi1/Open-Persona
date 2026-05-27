@@ -1,0 +1,112 @@
+\chapter{Architecture: Typed Memory and Persona Vectors}
+\label{ch:architecture}
+
+This chapter describes the two architectural commitments the rest of the report rests on: the typed-memory persona representation that the surviving mechanism (M1) operates over, and the persona-vector extraction pipeline that supports the gate-signal infrastructure originally intended for M2 and M3. The two pieces were designed jointly. They are described jointly here so that the v3.1 mechanism set in Chapter~\ref{ch:mechanisms} reads as a re-composition rather than an after-the-fact substitution.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+      node distance=0.6cm and 0.8cm,
+      every node/.style={font=\small},
+      store/.style={draw, rounded corners=2pt, minimum width=2.4cm, minimum height=0.75cm, fill=blue!4},
+      vec/.style={draw, rounded corners=2pt, minimum width=2.4cm, minimum height=0.75cm, fill=orange!8},
+      proc/.style={draw, rounded corners=2pt, minimum width=2.6cm, minimum height=0.75cm, fill=gray!6},
+      io/.style={draw, rounded corners=2pt, minimum width=2.6cm, minimum height=0.75cm, fill=green!5},
+      arrow/.style={-Latex, thick},
+    ]
+    % Persona YAML at top
+    \node[io] (yaml) {Persona YAML};
+
+    % Typed stores
+    \node[store, below=1.1cm of yaml, xshift=-3.6cm] (id) {identity};
+    \node[store, right=of id] (sf) {self\_facts};
+    \node[store, right=of sf] (wv) {worldview};
+    \node[store, right=of wv] (ep) {episodic};
+
+    % Persona vector pipeline
+    \node[proc, below=1.0cm of yaml, xshift=3.9cm] (ctp) {contrastive prompts};
+    \node[proc, below=of ctp] (hidden) {hidden-state extraction};
+    \node[vec, below=of hidden] (pv) {persona vectors (cached)};
+
+    % Registry hub
+    \node[proc, below=2.7cm of yaml] (reg) {Persona registry};
+
+    % Arrows
+    \draw[arrow] (yaml) -- (reg);
+    \draw[arrow] (reg.west) -| (id);
+    \draw[arrow] (reg.south) -- ++(-1.0,-0.4) -| (sf);
+    \draw[arrow] (reg.south) -- ++(1.0,-0.4) -| (wv);
+    \draw[arrow] (reg.east) -| (ep);
+    \draw[arrow] (yaml.east) -| (ctp);
+    \draw[arrow] (ctp) -- (hidden);
+    \draw[arrow] (hidden) -- (pv);
+
+    % Annotation
+    \node[font=\footnotesize, below=0.1cm of id, text width=2.4cm, align=center] {always retrieved};
+    \node[font=\footnotesize, below=0.1cm of sf, text width=2.4cm, align=center] {top-$k$, immutable};
+    \node[font=\footnotesize, below=0.1cm of wv, text width=2.4cm, align=center] {epistemic tags, bi-temporal};
+    \node[font=\footnotesize, below=0.1cm of ep, text width=2.4cm, align=center] {runtime-writable, decay};
+  \end{tikzpicture}
+  \caption{Persona registration pipeline. The persona YAML is parsed once and decomposed into four typed ChromaDB collections with distinct update policies, alongside a cached persona-vector artefact derived from contrastive prompts.}
+  \label{fig:registration-pipeline}
+\end{figure}
+
+\section{Typed memory: schema and stores}
+
+The persona representation is a structured YAML document, CharacterGLM-inspired\autocite{characterglm2023} and simplified for semester scope, that decomposes the persona into four typed parts: identity, self-facts, worldview, and episodic memory. The split is the architectural commitment. Each part has a distinct update policy, a distinct retrieval semantics, and a distinct expected information density.
+
+\subsection{Identity and self-facts}
+
+Identity carries the persona's name, role, background, and a list of negative constraints. It is authored once and retrieved every turn. Self-facts are biographical claims that the persona is presumed not to violate: ``I have a PhD in distributed systems'', ``I have taught for ten years'', ``I maintain a small open-source teaching library''. Self-facts are tagged with an epistemic field that, by convention, takes only the value \texttt{fact}, and with a confidence that, also by convention, sits at 1.0. The fields are present in the schema so that worldview's epistemic vocabulary extends naturally rather than being grafted on later.
+
+Both identity and self-facts are near-immutable at runtime. The system does not write to them during the conversation, and the typed-store implementation enforces this with a runtime-write flag that defaults to false and raises a \texttt{RuntimeWriteForbiddenError} on attempted writes. The verification pass on Spec~03 confirms the flag enforcement (Chapter~\ref{ch:mechanism-results}).
+
+\subsection{Worldview}
+
+Worldview is the revisable layer. Each entry is a claim, a domain tag, an epistemic status drawn from \{\texttt{fact}, \texttt{belief}, \texttt{hypothesis}, \texttt{contested}\}, a bi-temporal validity field (\texttt{always}, \texttt{YYYY-YYYY}, or \texttt{YYYY-}), and a confidence in $[0, 1]$. The epistemic vocabulary is the architectural contribution. A claim tagged \texttt{belief} prompts the model to render the answer with appropriate hedging (``I believe X, though experts disagree''); a claim tagged \texttt{contested} signals to downstream consumers that user push-back should not be treated as evidence that the persona has been wrong all along. The vocabulary draws on the philosophy-of-science distinction between fact, justified belief, and contested hypothesis, and is exposed verbatim in the rendered prompt template Chapter~\ref{ch:mechanisms} describes.
+
+Bi-temporal validity supports historian-style personas whose worldview claims have time-bounded applicability. The historian persona used in this project has six worldview claims spanning \texttt{always}, \texttt{1400-1600}, \texttt{1517-1648}, \texttt{1609-1700}, and \texttt{1700-1800}. The bi-temporal filter on the worldview store correctly returns the \{\texttt{1700-1800}, \texttt{always}\} set under an \texttt{as\_of="1750"} query and only the \texttt{always} set under \texttt{as\_of="1950"}. The mechanism is verified directly in Chapter~\ref{ch:mechanism-results}.
+
+\subsection{Episodic}
+
+Episodic is the runtime-writable layer. It is empty at persona-registration time and is written by the mechanism implementations as the conversation proceeds. Each entry carries a timestamp, a turn id, and a decay anchor. Retrieval from the episodic store ranks candidates by semantic similarity multiplied by an Ebbinghaus-style decay score $\exp(-(t_{\text{now}} - t_{\text{anchor}}) / \tau)$ with $\tau = 24$ hours by default and tunable from the Hydra configuration. The episodic store is the only one of the four typed stores writable at runtime; the same runtime-write flag enforces the asymmetry across all four.
+
+The verification pass confirms that the asymmetry is real and not just nominal. Self-facts and worldview writes raise; episodic writes succeed. The inverse test (writing to episodic) is the control that ensures the flag is not a blanket deny.
+
+\subsection{Storage and chunking}
+
+Each of the four memory types is backed by a separate ChromaDB collection\autocite{chromadb} keyed by the persona id and the store type. The separation is intentional: query semantics differ across stores (always-retrieved for identity, top-$k$ for self-facts and worldview, decay-ranked for episodic), and collapsing them into one collection would either lose those semantics or require runtime branching at every query.
+
+Chunking is one-item-per-chunk for self-facts, worldview entries, constraints, and identity, with each chunk carrying its type, the persona id, and the type-specific metadata fields (epistemic tag, valid time, confidence, domain). Persona atoms are already atomic. Splitting them further loses meaning and was tried briefly during early experiments before being abandoned.
+
+The persona-content embedder is sentence-transformers \texttt{all-MiniLM-L6-v2}. The 384-dimensional MiniLM is adequate for the small persona corpus (15 to 24 chunks per persona) and runs comfortably on CPU during local development. The knowledge store (Chapter~\ref{ch:mechanisms}, Section~\ref{sec:knowledge-store}) uses a stronger \texttt{bge-small-en-v1.5} embedder for the larger document corpus, but the persona stores stay on MiniLM because the contrastive bge prefix conventions add overhead that the persona-content scale does not justify\autocite{bgeembed2023}.
+
+\section{Persona vectors}
+\label{sec:architecture-pvectors}
+
+Persona vectors are derived from the schema at persona-registration time and cached on disk. They are not part of the typed memory schema, and the schema does not depend on them. The mechanism architecture in Chapter~\ref{ch:mechanisms} consumes the cached vectors as inputs.
+
+\subsection{Extraction methodology}
+
+We follow the published methodology\autocite{chen2025personavectors}. For each registered persona, we construct $n = 50$ contrastive prompt pairs by template. The in-persona side instructs the model to answer ``as [persona.role]'' on a topic drawn from the persona's worldview and self-facts. The out-of-persona side instructs the model to answer the same topic ``ignoring that you are [persona.role]''. Templates are deterministic and committed to the repository. The same fifty topics produce the same fifty pairs on every run.
+
+For each prompt, the LLMBackend returns the hidden state at the final prompt token (\texttt{pool=last}, \texttt{scope=prompt}) at the four layers \{8, 12, 16, 20\} on Gemma-2-9B-Instruct. The middle-band layer choice follows the published methodology's recommendation and the practical observation that early and late layers tend to encode either too generic or too output-conditioned representations to be useful as persona signals.
+
+The persona vector at each layer is the mass-mean difference $\bar h_{\text{in}} - \bar h_{\text{out}}$, where $\bar h_{\text{in}}$ and $\bar h_{\text{out}}$ are the centroids of the in-persona and out-of-persona hidden-state sets. The drift signal at inference is the cosine projection of a current hidden state onto the persona vector, mapped to $[-1, +1]$ such that the in-persona centroid projects to $+1$, the out-of-persona centroid projects to $-1$, and the decision boundary sits at zero.
+
+\subsection{Linear-separability probe}
+
+A logistic regression trained on the persona-vector projections of the train split, evaluated on the held-out prompt-disjoint test split, gives the per-layer \auroc{}. The split is hash-based on prompt id with $\texttt{test\_fraction} = 0.2$ and a fixed seed. The same script computes two Dubanowska defensive baselines: a shuffled-label probe (the same projections with permuted labels, ten randomisations averaged), and a random-feature probe (a probe trained on an unrelated feature derived from prompt length, ten randomisations averaged)\autocite{dubanowska2025}.
+
+The verdict thresholds are pre-registered. An \auroc{} $\geq 0.80$ on the held-out test set confirms the assumption; $0.70 \leq \auroc{} < 0.80$ is weak; $\auroc{} < 0.70$ is refuted. The random-feature control must stay below 0.70 for the main result not to be compromised, and the shuffled-label control should sit at chance. Chapter~\ref{ch:replication} reports the run.
+
+\subsection{Caching and registration}
+
+A registered persona produces five artefacts on disk: the four typed-store collections in ChromaDB, and a safetensors file containing the four-layer persona vectors and the in-persona and out-of-persona centroids, alongside a JSON meta file recording the extraction configuration (layers, scope, pool, contrast pair count, test fraction, seed, best layer after the layer sweep). The meta file is the operational handle the mechanism implementations consume.
+
+The cache is bit-exact across save and reload. The persistence test (Spec~03 Task~2) confirms that a persona registered once, the ChromaDB client closed, the persona reloaded from the same persistence path, returns byte-identical chunk ids and chunk texts across the reopen. The persona-vector cache reload was tested via \texttt{test\_vectors\_cache.py} for safetensors round-trip exactness.
+
+\section{Architectural state after Experiment 2}
+\label{sec:architecture-after-experiment-2}
+
+The schema and persona-vector pipeline described in this chapter are unchanged from the v3 PRD design. What changes after Experiment 2 (Chapter~\ref{ch:replication}) is the role the persona-vector projection plays in the mechanism set. The vector remains useful as a persona-conditioning utility (the cached vectors can be added to the residual stream, the projection of a chunk's hidden state can be inspected for diagnostic purposes), but the projection score does not serve as an inference-time content-quality signal for drift gating. The mechanism layer in Chapter~\ref{ch:mechanisms} works around the missing signal by reverting M3 to its v0.2 design where the gate is an LLM-as-judge call, and by dropping M2 entirely because the projection-as-rerank-signal was the central operation. The schema and the persona-vector infrastructure both survive the refutation. What does not survive is the architectural assumption that they would combine into a working drift gate.

@@ -1,0 +1,22 @@
+# Gemma 2 9B-Instruct model config at 8-bit int8 (quantization-sensitivity
+# ablation only). Inherits from default.yaml, then overrides the
+# quantization flags: 4-bit NF4 off, 8-bit int8 on. All other knobs stay
+# at the project standard (eager attention, fp16 compute_dtype on V100).
+#
+# Discoverability note: this config exists for symmetry with gemma.yaml.
+# The Spec-9 ablation driver (scripts/run_spec09_quantization_8bit.py)
+# builds HFBackendConfig programmatically rather than via Hydra, so the
+# flag flip there is a CLI option. This YAML is the right starting
+# point if a future Hydra-driven script needs 8-bit Gemma.
+
+defaults:
+  - default
+  - _self_
+
+name: gemma2-9b-it-8bit
+model_id: google/gemma-2-9b-it
+
+# Quantization: 8-bit int8 via bitsandbytes (Int8Params kernels).
+# load_in_4bit must be false; the backend enforces mutual exclusion.
+load_in_4bit: false
+load_in_8bit: true

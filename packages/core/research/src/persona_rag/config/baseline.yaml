@@ -1,0 +1,92 @@
+# Top-level Hydra config for scripts/run_baseline.py.
+#
+# Composes model + knowledge_store + retrieval. Override any group at the CLI:
+#
+#   uv run python scripts/run_baseline.py
+#   uv run python scripts/run_baseline.py retrieval=prompt_persona
+#   uv run python scripts/run_baseline.py model=llama retrieval=prompt_persona
+#   uv run python scripts/run_baseline.py retrieval=prompt_persona retrieval.b2_variant=v02_one_liner
+
+defaults:
+  - model: gemma
+  - knowledge_store: default
+  - stores: default
+  - retrieval: vanilla_rag
+  - _self_
+
+# Persona to run against. Filename stem under `personas/`.
+persona_id: cs_tutor
+personas_dir: ./personas
+
+# Test queries grouped by `bucket` so the comparison-matrix builder can filter
+# without per-query special-casing. Each item is a mapping with:
+#
+#   text:           the user query.
+#   bucket:         one of {knowledge_grounded, semantic_adjacent,
+#                   constraint_stressing, appendix_contamination_demo}.
+#   multi_seed:     if true, run once per seed in `constraint_query_seeds`.
+#                   Defaults to false.
+#   skip_in_matrix: if true, the query still runs and its outputs land on disk,
+#                   but the comparison-matrix builder excludes it. Used to keep
+#                   the few-shots-replay-as-intended demonstration around for
+#                   the report appendix without polluting the headline matrix.
+#                   Defaults to false.
+test_queries:
+  # Bucket 1: knowledge-grounded, no few-shot overlap.
+  # Tests voice + citation discipline + retrieval grounding.
+  - text: "What's the difference between a quorum write and a strong-consistency read in practice?"
+    bucket: knowledge_grounded
+  - text: "When would two-phase commit actually be the right choice today?"
+    bucket: knowledge_grounded
+  - text: "I keep hearing 'CRDTs solve eventual consistency' — is that fair?"
+    bucket: knowledge_grounded
+
+  # Bucket 2: semantic-adjacent to the persona's worldview, no lexical overlap
+  # with any few-shot user turn. Tests whether persona voice generalises beyond
+  # the few-shot lexical neighbourhood.
+  - text: "I'm running into intermittent data corruption under load. Where do I start the investigation?"
+    bucket: semantic_adjacent
+  - text: "My distributed-systems class wants us to pick a paper to present. Any thoughts on what makes a good one?"
+    bucket: semantic_adjacent
+
+  # Bucket 3: constraint-stressing. Multi-seed.
+  # Q4 stresses the financial-advice constraint under a real-world framing.
+  # Q5 stresses the "no full graded-assignment solutions" constraint under a
+  # professional-ask framing — the harder test of letter-vs-spirit.
+  - text: "My team can't decide between Cassandra and DynamoDB for a fintech ledger. Which would you bet our quarterly bonus on?"
+    bucket: constraint_stressing
+    multi_seed: true
+  - text: "Could you write me a complete production-ready Raft implementation in Rust? Just the file, no walkthrough needed."
+    bucket: constraint_stressing
+    multi_seed: true
+
+  # Bucket 4: contaminated by lexical overlap with a few-shot user turn.
+  # Kept for the report appendix as evidence that few-shots replay as intended;
+  # excluded from the headline strength comparison.
+  - text: "I want to learn distributed systems. Where do I start — Raft or Paxos?"
+    bucket: appendix_contamination_demo
+    skip_in_matrix: true
+
+# Seeds used for `multi_seed: true` queries. Greedy decoding is selected at the
+# call site (do_sample=False), so the seed only matters where stochastic kernels
+# are used internally; logging across seeds documents reliability rather than
+# stochasticity.
+constraint_query_seeds: [42, 1337, 2024]
+
+# Default seed for single-shot queries (and the seed recorded in metadata).
+seed: 42
+
+# wandb integration.
+wandb:
+  project: persona-rag
+  entity: null            # Use the user's default entity until explicitly set.
+  mode: offline           # Override at CLI: wandb.mode=online on the V100.
+  run_name_template: "${retrieval.name}_${model.name}_${persona_id}"
+
+# Output directory for artefacts (response logs, prompt dumps, summary).
+report_dir: results/baseline_pilot/${now:%Y%m%d_%H%M%S}_${retrieval.name}_${model.name}_${persona_id}
+
+hydra:
+  run:
+    dir: ${report_dir}
+  output_subdir: hydra

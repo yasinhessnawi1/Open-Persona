@@ -1,0 +1,11 @@
+# Gemma 2 9B-Instruct model config. Inherits defaults from default.yaml.
+#
+# Project-wide load constraints live in default.yaml; this file adds only the
+# Gemma-specific repo id and display name.
+
+defaults:
+  - default
+  - _self_
+
+name: gemma2-9b-it
+model_id: google/gemma-2-9b-it

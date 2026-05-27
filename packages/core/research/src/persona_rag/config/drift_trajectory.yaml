@@ -1,0 +1,45 @@
+# Hydra entry-point config for scripts/drift_trajectory_sanity.py.
+#
+# Usage:
+#   uv run python scripts/drift_trajectory_sanity.py model=gemma
+#   uv run python scripts/drift_trajectory_sanity.py model=gemma layer=8
+#   uv run python scripts/drift_trajectory_sanity.py model=gemma 'layer=[8,12,16,20]'
+#   uv run python scripts/drift_trajectory_sanity.py model=gemma \
+#       cache_dir=./.chroma/persona_vectors_generation
+#
+# Runs forward passes for every (persona, condition, turn) triple under
+# `conversations_dir`, projects the prompt-time hidden state at each
+# requested layer onto each persona's cached persona-vector centroid, and
+# records per-turn drift trajectories. Decides one of three verdicts per
+# layer based on `delta_h1` / `delta_h2`.
+
+defaults:
+  - model: gemma
+  - _self_
+
+# Layer(s) the drift signal is evaluated at. Accepts either a single int
+# (single-layer run, original behaviour) or a list of ints (sweep). When a
+# list is given, the report and raw.json carry per-layer sections, and one
+# trajectories.png is written per layer.
+layer: 8
+
+# Persona-vector cache directory written by the validation script. Override
+# with `cache_dir=path` if the cache lives elsewhere — e.g. when comparing
+# prompt-scope vs generation-scope persona vectors, point each run at its
+# own cache directory so they coexist.
+cache_dir: ./.chroma/persona_vectors
+
+# Where the conversation YAMLs live.
+conversations_dir: benchmarks_data/drift_trajectory
+
+# Verdict thresholds.
+delta_h1: 0.30  # signed delta >= this on >= 2 of N personas → "proceed"
+delta_h2: 0.10  # |signed delta| < this on ALL personas → "refuted"
+
+# Output dir.
+report_dir: results/drift_trajectory/${now:%Y%m%d_%H%M%S}
+
+hydra:
+  run:
+    dir: ${report_dir}
+  output_subdir: hydra

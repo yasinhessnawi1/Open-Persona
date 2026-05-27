@@ -1,0 +1,30 @@
+\chapter*{Acronyms}
+\addcontentsline{toc}{chapter}{Acronyms}
+
+\begin{tabularx}{\textwidth}{l X}
+  \toprule
+  \textbf{Acronym} & \textbf{Expansion and brief note} \\
+  \midrule
+  AUROC & Area Under the Receiver Operating Characteristic curve. Threshold-independent classifier-quality summary used in this report for the persona-vector linear-separability probe. \\
+  BM25 & Best Matching 25. Lexical retrieval baseline used in the hybrid retriever alongside dense embeddings. \\
+  CAA & Contrastive Activation Addition. Inference-time steering method that adds a scaled persona direction to the residual stream during generation. \\
+  CLI & Command-Line Interface. The pipeline exposes four CLIs: ingest, index, query, evaluate. \\
+  ID-RAG & Identity-grounded RAG. Architectural pattern where the persona identity chunk is retrieved every turn rather than once at conversation start. \\
+  LoRA & Low-Rank Adaptation. Parameter-efficient fine-tuning method that the B4 baseline (deferred in this project) would have used. \\
+  M1 & Mechanism 1 — typed retrieval with per-turn identity grounding. \\
+  M2 & Mechanism 2 — persona-compatibility-filtered retrieval. Dropped in this project after Experiment 2 (decision~\#035). \\
+  M3 & Mechanism 3 — drift-gated hybrid ranker. Reverts to LLM-as-judge gate in v3.1 after Experiment 2 (decision~\#034). \\
+  MS-MARCO & Microsoft Machine Reading Comprehension passage corpus, the training distribution for the cross-encoder reranker referenced in baseline comparisons. \\
+  NF4 & 4-bit NormalFloat quantisation format used by bitsandbytes for Gemma-2-9B inference on V100. \\
+  nDCG & Normalised Discounted Cumulative Gain. Retrieval ranking metric the Persona-RAG project does not report directly but inherits as background context. \\
+  PoLL & Panel of LLMs. Three-judge evaluation ensemble (Prometheus-2-7B, Qwen2.5-7B, Llama-3.1-8B) used in place of single-model LLM-as-judge to mitigate self-preference bias. \\
+  PRD & Product Requirements Document. The project's living design document; v0.3 records the April 2026 pivot toward persona vectors as a first-class component. \\
+  RAG & Retrieval-Augmented Generation. Standard term for retrieval-conditioned dialogue systems. \\
+  RoleGPT & A dialogue-engineering recipe for role-playing baselines: structured system prompt plus hand-authored few-shot exchanges. The B2 baseline in this report follows the RoleGPT methodology. \\
+  RRF & Reciprocal Rank Fusion. Score-free method for combining ranked lists from sparse and dense retrievers. \\
+  SAE & Sparse Autoencoder. Interpretability tool referenced in the future-work direction for unsupervised drift-taxonomy discovery. \\
+  SYCON & Sycophancy and Consistency benchmark; specifically its Turn-of-Flip and Number-of-Flip worldview-reversal metrics. \\
+  ToF, NoF & Turn-of-Flip and Number-of-Flip. The two SYCON-derived stance-flip statistics adapted in this project for counterfactual-retrieval reversal measurement. \\
+  V100 & NVIDIA Tesla V100 GPU. The shared hardware on which every empirical run in this report was produced. \\
+  \bottomrule
+\end{tabularx}

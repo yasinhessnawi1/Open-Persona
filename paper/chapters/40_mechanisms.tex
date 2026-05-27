@@ -1,0 +1,108 @@
+\chapter{Mechanisms and Baselines}
+\label{ch:mechanisms}
+
+This chapter describes the four pipelines the evaluation in Chapters~\ref{ch:mechanism-results} and~\ref{ch:ablations} compares. Two are baselines, B1 (vanilla RAG) and B2 (a RoleGPT-level prompt-only persona). Two are mechanisms, M1 (typed retrieval with per-turn identity grounding) and M3 (a drift-gated hybrid in its v3.1 form, with the LLM-judge gate that replaced the persona-vector gate after Experiment 2). The original M2 (persona-compatibility-filtered retrieval) is described briefly for historical record and then explicitly retired.
+
+\section{Knowledge store and the retrieval substrate}
+\label{sec:knowledge-store}
+
+All four pipelines share the same knowledge-side substrate. Documents are chunked with a sentence-aware splitter at roughly 512 tokens with 50-token overlap, embedded with sentence-transformers \texttt{bge-small-en-v1.5}\autocite{bgeembed2023}, and indexed in a ChromaDB collection separate from the persona-side stores\autocite{chromadb}. A parallel BM25 index over the same chunked corpus supports the sparse leg of hybrid retrieval. Hybrid retrieval fuses the dense top-$k$ and the BM25 top-$k$ via Reciprocal Rank Fusion with the standard $k = 60$ smoothing constant\autocite{rrf2009}.
+
+The retrieval pipeline abstraction is a single Python Protocol that takes a query, a registered persona, and a conversation history, and returns a structured response carrying the generated text, the retrieved knowledge chunks, the retrieved persona chunks by memory type, the prompt used, an optional drift signal, and mechanism-specific metadata. All four pipelines conform to the same interface, which keeps the evaluation runner agnostic and the diagnostic ablations clean.
+
+\section{B1: Vanilla RAG}
+
+B1 is the floor baseline. It runs hybrid knowledge retrieval on the query, fills the chunks into a standard RAG prompt template, and calls the generator. The persona argument is ignored. The response carries an empty persona-retrieval dictionary. The point of B1 in the comparison is to establish what RAG returns when nothing in the system encodes the persona at all. Chapter~\ref{ch:mechanism-results} reports that B1 collapses on multi-turn persona-adherence (PoLL persona 2.54 against the cluster's 4.5 to 4.7), which is the expected effect of persona-blindness on a benchmark that explicitly probes persona consistency. We include B1 partly as a sanity check that the metrics differentiate at the gross scale.
+
+\section{B2: RoleGPT-level prompt persona}
+
+B2 is the non-trivial baseline. The April 2026 review made it explicit that a weak prompt baseline inflates apparent mechanism gains, and the project pre-committed to making B2 honestly strong. The recipe follows the RoleGPT methodology\autocite{rolegpt2023, rolellm2023}: a structured system block assembled from the full persona YAML, plus two-to-three hand-authored dialogue few-shots per persona. The system block opens with the identity line (``You are [name], [role]. [background]''), enumerates self-facts as a bulleted list, lists worldview claims with their epistemic tags rendered in parentheses, and lists constraints as an explicit ``You must not'' numbered list. The few-shot exchanges are stored alongside the persona YAML in \texttt{personas/examples/} and are short, two or three turn each, chosen to demonstrate persona voice on a representative topic. The retrieval side runs hybrid knowledge retrieval on the query, identical to B1, and assembles a standard RAG context.
+
+The Gemma-2-9B chat template has no \texttt{system} role, so the assembled persona block is inline-prepended to the first user turn through an \texttt{LLMBackend.format\_persona\_prompt} helper. The same helper is used by M1 and M3 so that the persona-presentation surface is identical across pipelines.
+
+B2 was pilot-tested against an earlier one-liner persona baseline on a five-conversation set before being declared ready. The pilot found B2's structured block plus few-shots producing measurably more in-character refusals (the cleanest single example: refusing to write a production-ready Raft implementation on pedagogical-spirit grounds rather than capability grounds) and was retained as the project's reference prompt-only configuration.
+
+\section{M1: Typed retrieval with per-turn identity grounding}
+
+M1 is the surviving architectural mechanism. The pipeline assembles the prompt from five sources every turn. The identity chunk is retrieved on every call (the ID-RAG pattern\autocite{idrag2024}, configurable via \texttt{use\_identity\_every\_turn} but defaulting to on). Constraint chunks are returned alongside, top-3. Self-facts are queried with the user turn as the search key and returned top-$k_{\text{self-facts}}$. Worldview is queried with the user turn under an epistemic-tag filter (defaulting to all four tags) and returned top-$k_{\text{worldview}}$. The episodic store is queried only if the configuration enables it, defaulting to off for semester scope. Knowledge retrieval runs hybrid as for B1 and B2. The prompt template (rendered by a small Jinja file) concatenates these in a fixed order: identity, constraints, self-facts, worldview, optional episodic, knowledge, conversation history, and the current user turn.
+
+Three configuration switches expose M1's architectural commitments to ablation. The \texttt{use\_identity\_every\_turn} switch toggles the ID-RAG pattern (Chapter~\ref{ch:ablations} reports the ablation directly). The \texttt{use\_epistemic\_tags} switch toggles whether the rendered prompt includes epistemic markers (\texttt{(belief)}, \texttt{(contested)}) alongside worldview claims. The \texttt{epistemic\_allowlist} switch filters worldview retrieval by tag, allowing experiments that restrict the persona to only \texttt{fact}-tagged claims, for example.
+
+The mechanism logs the retrieval composition per turn (which chunks from which stores, whether identity was re-grounded, the worldview epistemic mix, the full rendered prompt) so that downstream analysis can trace exactly what the model saw on each call. The logging is the same shape as the metadata the evaluation runner consumes in Chapter~\ref{ch:methodology}.
+
+\section{M2: Persona-compatibility-filtered retrieval (dropped)}
+
+M2's design was hybrid knowledge retrieval at wide top-$k$ (around three times the final $k$ for re-ranking headroom) followed by a rerank step that combined the dense semantic score with a persona-compatibility score derived from the persona-vector projection of each candidate chunk. The architectural claim was that knowledge chunks retrieved by semantic similarity can be persona-incompatible (a climate-skeptic article retrieved for the climate-scientist persona is the canonical case), and that the persona-vector projection score could rerank them away from the top-$k$ at minimal cost.
+
+M2's central operation depended on the persona-vector projection serving as an inference-time content-quality signal. Experiment 2 (Chapter~\ref{ch:replication}) refutes the assumption that the projection differentiates content along the persona-fidelity dimension we care about. Unlike M3, where the gate signal is one component of a multi-piece mechanism and can be replaced by an LLM judge, the projection rerank is M2: there is no signal substitution that preserves the architectural claim. M2 is dropped (decision~\#035 in the project's decision log) and Spec~06 is marked deprecated. The infrastructure that would have been built for M2 (persona-vector cache, projection scorer) survives as utility code used by the diagnostic pipelines.
+
+\section{M3: Drift-gated hybrid ranker (v3.1)}
+
+M3 is the project's headline architectural claim, in its v3.1 form. The structural commitment is preserved from the original v3 design: most turns do not need expensive consistency machinery, and the system should pay the cost of N-candidate generation plus hybrid reranking only on turns the gate flags as drifting. The cheap path is M1's typed retrieval plus a single generation call. The gated path retains the typed retrieval, retrieves additional context (the user turn concatenated with the last assistant turn, to broaden retrieval beyond the strict query), generates $N$ candidates at varied temperatures, and reranks them with a hybrid scorer.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+      node distance=0.7cm and 0.9cm,
+      every node/.style={font=\small},
+      gate/.style={draw, diamond, aspect=2.4, inner sep=2pt, fill=orange!10, minimum width=3.6cm},
+      proc/.style={draw, rounded corners=2pt, minimum width=3.0cm, minimum height=0.75cm, fill=blue!5},
+      proc2/.style={draw, rounded corners=2pt, minimum width=3.0cm, minimum height=0.75cm, fill=purple!8},
+      outnode/.style={draw, rounded corners=2pt, minimum width=3.0cm, minimum height=0.75cm, fill=green!8},
+      arrow/.style={-Latex, thick},
+    ]
+    \node[proc] (turn) {turn start};
+    \node[gate, below=of turn] (judge) {LLM-judge gate};
+    \node[proc, below left=1.0cm and 0.3cm of judge] (cheap) {M1 typed retrieval};
+    \node[proc2, below right=1.0cm and 0.3cm of judge] (aug) {augmented retrieval};
+    \node[proc2, below=of aug] (cands) {$N$ candidates};
+    \node[proc2, below=of cands] (rank) {hybrid rerank};
+    \node[outnode, below=of cheap] (gen1) {generate response};
+    \node[outnode, below=2.6cm of rank] (gen2) {selected response};
+
+    \draw[arrow] (turn) -- (judge);
+    \draw[arrow] (judge) -- node[left, font=\footnotesize] {ok ($\sim 94\%$)} (cheap);
+    \draw[arrow] (judge) -- node[right, font=\footnotesize] {drift ($\sim 6\%$)} (aug);
+    \draw[arrow] (cheap) -- (gen1);
+    \draw[arrow] (aug) -- (cands);
+    \draw[arrow] (cands) -- (rank);
+    \draw[arrow] (rank) -- (gen2);
+
+    \node[font=\footnotesize, right=0.4cm of gen1, text width=3.2cm] {1 call (responder)\\ \textbf{2 calls total} \\ (gate + responder)};
+    \node[font=\footnotesize, right=0.4cm of gen2, text width=3.4cm] {$N$ candidate calls \\ $+$ ranker calls \\ \textbf{$\approx 7$ calls total}};
+  \end{tikzpicture}
+  \caption{M3 v3.1 cheap-path / gated-path flow. The gate fires on the 6.0\% of probe-corpus turns where the LLM-judge classifies the next turn as drifting. The cheap path pays the gate-judge call plus one responder call; the gated path pays the gate plus $N$ candidate generations plus rerank calls. Trigger rates and call counts come from the post-plumbing-fix harness run (Chapter~\ref{ch:mechanism-results}).}
+  \label{fig:m3-flow}
+\end{figure}
+
+What changes from v3 to v3.1 is the gate signal and the ranker composition. In v3, the gate was a persona-vector projection threshold and the hybrid ranker had three signals (CharacterRM, persona-vector projection, cross-family LLM judge). In v3.1, after Experiment 2's refutation cascade, the gate is a single LLM-as-judge call returning a structured flag (\texttt{drift} or \texttt{ok}) with a confidence in $[0, 1]$, and the hybrid ranker simplifies to a two-signal weighted combination of CharacterRM\autocite{charactereval2024} and a cross-family LLM judge. The CharacterRM signal is shipped behind a configuration flag because the model's transferability to English content was identified as an open assumption (A14 in the project's assumption register); under the operational configuration documented in Chapter~\ref{ch:methodology}, the CharacterRM signal is disabled and the ranker runs in its 1-signal LLM-judge fallback configuration.
+
+The gate-judge model is Qwen2.5-7B-Instruct on the operational configuration, selected after a four-judge cross-tier calibration sweep that compared Llama-3.1-8B, Prometheus-2-7B, Qwen2.5-7B, and GLM-4.7 (the last as a free-tier API sanity check). The sweep verdict landed Qwen2.5-7B as the best open-model gate with the lowest in-persona false-positive rate and the highest headline drift-differential among the four; the open-model ceiling capped at roughly $+0.40$ differential between drifting and in-persona turns, judge-class invariant\autocite{poll2024, prometheus2024}. The threshold defaults to 0.5 confidence; threshold sensitivity is addressed in Chapter~\ref{ch:ablations}.
+
+The per-turn cost difference between the cheap and gated paths is documented in Chapter~\ref{ch:mechanism-results}'s cost table. The cheap path is two LLM calls (gate judge plus responder). The gated path is two plus $N$ candidate generations plus the ranker calls. On the counterfactual-probe corpus, the gate fires on 6.0\% of turns and the realised per-turn cost averages 2.12 LLM calls.
+
+\section{Summary of the four pipelines}
+
+\begin{table}[H]
+  \centering
+  \small
+  \caption{Summary of the four pipelines compared in Chapter~\ref{ch:mechanism-results}. The original M2 row is retained for historical record; no M2 results are reported.}
+  \label{tab:pipelines-summary}
+  \begin{tabularx}{\textwidth}{l X l l}
+    \toprule
+    \textbf{Pipeline} & \textbf{Description} & \textbf{Persona-side} & \textbf{LLM calls/turn} \\
+    \midrule
+    B1 vanilla RAG & Hybrid retrieval, standard RAG prompt. & None & 1 \\
+    B2 prompt persona & RoleGPT-level system block + few-shots. & Inline-prepended & 1 \\
+    M1 typed retrieval & Per-turn ID-RAG + typed memory retrieval. & 4 typed stores & 1 \\
+    M3 v3.1 drift-gated & LLM-judge gate; cheap or gated path. & M1 + augmented retrieval & 2 (cheap), $2 + N + r$ (gated) \\
+    \midrule
+    \multicolumn{4}{c}{\textit{Historical, not evaluated:}} \\
+    M2 compat-filter & Wide retrieval, persona-vector projection rerank. & Persona-vector & --- (dropped) \\
+    B3 activation steering & CAA / persona-vector addition at generation. & Persona-vector & --- (deferred) \\
+    B4 LoRA persona & Per-persona LoRA adapter on the generator. & Trained LoRA & --- (stretch) \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+B3 was deferred (decision~\#036) pending M3 v3.1's empirical numbers; the reframe-or-drop call follows the result that on this benchmark the cost premium of any drift-gated mechanism over M1 is not architecturally justified, which makes a separate steering-based comparison less informative than it would have been with stronger headroom. B4 was a pre-committed stretch goal that the Week 7 checkpoint did not select.

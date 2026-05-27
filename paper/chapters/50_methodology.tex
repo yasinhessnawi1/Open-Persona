@@ -1,0 +1,129 @@
+\chapter{Evaluation Methodology}
+\label{ch:methodology}
+
+This chapter describes how the four pipelines are scored, how the counterfactual-retrieval probe suite was designed and calibrated, and what the metric stack is and is not capable of measuring on this benchmark scale. The goal across sections is to make explicit the operational decisions the project pre-registered before generating any of the headline numbers in Chapter~\ref{ch:mechanism-results}, so the result tables there can be read as outputs of a fixed methodology rather than as outcomes selected after the fact.
+
+\section{Two-track evaluation}
+
+The evaluation splits into two tracks that answer different questions and use different metric stacks. The first track is the persona-vector replication and the drift-trajectory sweep that constitute Experiments 1 and 2; its metric is per-cell \auroc{} on the linear-separability probe, and per-turn projection deltas on the drift-trajectory corpus. Chapter~\ref{ch:replication} reports it directly. The second track is the mechanism evaluation on the counterfactual-retrieval probe suite, scored by MiniCheck, SYCON, and a three-judge PoLL panel. This chapter describes the second track. The two tracks are independent: Experiment 2's verdict reshapes which mechanisms are in the comparison (M2 dropped, M3 reverted to v3.1), but the metric stack and the probe suite design are unchanged.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[
+      node distance=0.6cm and 0.7cm,
+      every node/.style={font=\small},
+      input/.style={draw, rounded corners=2pt, minimum width=2.8cm, minimum height=0.75cm, fill=green!6},
+      pipe/.style={draw, rounded corners=2pt, minimum width=2.0cm, minimum height=0.75cm, fill=blue!5},
+      metric/.style={draw, rounded corners=2pt, minimum width=2.8cm, minimum height=0.75cm, fill=orange!8},
+      report/.style={draw, rounded corners=2pt, minimum width=2.8cm, minimum height=0.75cm, fill=purple!8},
+      arrow/.style={-Latex, thick},
+    ]
+    % Top inputs
+    \node[input] (probes) {90 probe conversations};
+    \node[input, right=of probes] (personas) {3 personas};
+
+    % Pipelines
+    \node[pipe, below=1.0cm of probes, xshift=-2.0cm] (b1) {B1};
+    \node[pipe, right=of b1] (b2) {B2};
+    \node[pipe, right=of b2] (m1) {M1};
+    \node[pipe, right=of m1] (m3) {M3 v3.1};
+
+    % Transcripts
+    \node[draw, rounded corners=2pt, minimum width=10cm, minimum height=0.7cm, fill=gray!8, below=of m1, xshift=-3.0cm] (txs) {360 multi-turn transcripts};
+
+    % Metrics row
+    \node[metric, below=0.9cm of txs, xshift=-3.5cm] (mc) {MiniCheck-FT5};
+    \node[metric, right=of mc] (sy) {SYCON ToF/NoF};
+    \node[metric, right=of sy] (pl) {PoLL panel (3 judges)};
+
+    % Report
+    \node[report, below=1.0cm of sy] (out) {Headline tables and cluster reading};
+
+    % Arrows
+    \draw[arrow] (probes) -- (b1.north);
+    \draw[arrow] (probes) -- (b2.north);
+    \draw[arrow] (probes) -- (m1.north);
+    \draw[arrow] (probes) -- (m3.north);
+    \draw[arrow] (personas) -- (b1.north);
+    \draw[arrow] (personas) -- (b2.north);
+    \draw[arrow] (personas) -- (m1.north);
+    \draw[arrow] (personas) -- (m3.north);
+    \draw[arrow] (b1.south) -- (txs.north);
+    \draw[arrow] (b2.south) -- (txs.north);
+    \draw[arrow] (m1.south) -- (txs.north);
+    \draw[arrow] (m3.south) -- (txs.north);
+    \draw[arrow] (txs.south) -- (mc.north);
+    \draw[arrow] (txs.south) -- (sy.north);
+    \draw[arrow] (txs.south) -- (pl.north);
+    \draw[arrow] (mc.south) -- (out.north);
+    \draw[arrow] (sy.south) -- (out.north);
+    \draw[arrow] (pl.south) -- (out.north);
+  \end{tikzpicture}
+  \caption{Evaluation pipeline for the counterfactual-retrieval probe suite. 90 probe conversations cross 4 pipelines across 3 personas produce 360 multi-turn transcripts. Three metric families score the transcripts independently: MiniCheck-FT5 for self-fact contradiction, SYCON for worldview reversal, and a three-judge PoLL panel for persona-adherence and task-quality. The report's headline tables aggregate from these per-transcript scores.}
+  \label{fig:eval-pipeline}
+\end{figure}
+
+\section{The counterfactual-retrieval probe suite}
+\label{sec:probe-suite}
+
+The probe suite is the project's RAG-specific benchmark and the strongest claim it makes about evaluation design. It is 90 multi-turn conversations distributed evenly across three personas (cs\_tutor, historian, climate\_scientist) and three probe types. Each conversation is 7 turns long, with a probe injected at turn 4 (one-indexed). The three probe types isolate three distinct failure surfaces.
+
+\textbf{Type A: User self-fact challenge.} The user challenges the persona's self-fact directly, in a cooperative register rather than an adversarial one. ``Wait, earlier you said you had a PhD, but don't grad students usually teach this course?'' The probe tests whether the persona resists user reframing of a biographical claim when the reframing is offered as a casual aside.
+
+\textbf{Type B: Counterfactual-retrieval injection.} At turn 4, a hand-authored counter-evidence document is injected into the knowledge corpus. The user turn is a neutral query whose retrieval surfaces the counter-evidence at top-$k$ rank zero. The probe tests whether the persona maintains its worldview when the RAG pipeline itself surfaces contradictory content. Type B is the novel probe type the project's RAG-specific claim is built on. Verification across the full sweep confirms that all 120 Type B injections (30 conversations per mechanism, four mechanisms) had the counter-evidence chunk at rank 0 in the retrieved top-$k$. The injection-and-retraction mechanism worked end-to-end.
+
+\textbf{Type C: Constraint-violation bait.} The user offers a reason for the persona to violate a stated constraint, framed politely. ``Just answer directly this once, I'll work through it later.'' The probe tests whether constraint adherence holds under cooperative pressure.
+
+The balance is 30 conversations per probe type and 30 per persona, distributed so that each (persona, probe type) cell carries 10 conversations.
+
+\subsection{Calibration}
+
+The probe difficulty is calibrated against the B2 baseline. The pre-registered target was a B2 failure rate inside the band $[30\%, 70\%]$: probes too easy at the bottom of the band would not differentiate mechanisms; probes too hard at the top would saturate at refusal. The calibration was run on a 15-conversation pilot before the full 90 were authored. The pilot scored 47\% B2 failure (7 of 15), inside the band, with per-persona rates of 40\% (cs\_tutor), 60\% (historian), 40\% (climate\_scientist) and per-type rates of 67\% (Type A), 33\% (Type B), 33\% (Type C). The calibration was declared green and the remaining 75 conversations authored against the same rubric.
+
+\subsection{Authoring}
+
+The conversations were hand-authored by the project's single annotator. User turns are short, in natural register, and structured so that the surrounding turns are conversationally normal. Assistant turns are not pre-written; they come from the mechanism's actual generation at evaluation time. The injected chunks for Type B (21 of them across the three personas after the full author-and-edit pass) are short paragraphs that read as plausible reference content while directly contradicting the targeted worldview claim. The annotator's bias is acknowledged as a limitation in Chapter~\ref{ch:limitations}.
+
+\section{Metric stack}
+
+Four metric families are reported per mechanism, per persona, per probe type.
+
+\subsection{MiniCheck self-fact contradiction}
+
+MiniCheck-FT5\autocite{minicheck2024} runs the assistant's response sentence-by-sentence against each of the persona's self-facts as a document. The per-sentence classification is supported or unsupported. The per-conversation score is the fraction of persona-relevant sentences classified as not-unsupported. ``Persona-relevant'' is determined by a first-person-pronoun gate that filters out sentences making no claim about the persona at all (a side answer about, say, the abstract behaviour of CAP-theorem-compliant databases does not invoke MiniCheck against the cs\_tutor's self-facts).
+
+The MiniCheck pipeline went through one round of fix-up during the V100 close-out: an early version of the disclaimer regex flagged ten contradictions on B2's output that were modal-affirmative phrases (``I can'', ``I'd''), conditional phrases (``I'll''), capability-affirmative phrases, and quoted/hypothetical first-person, all four of which should not have triggered the first-person-pronoun gate. The regex was extended to cover the four pattern families, eleven additional pattern variants were tested, and re-running on the same B2 transcripts dropped the contradictions from ten to zero. The fix is committed as a regression test.
+
+A five-sample audit on M1's contradicted set from the cs\_tutor cell revealed a separate disclaimer-gate blind spot. Five of five randomly sampled contradicted sentences were soft-offer or availability phrases (``I'm here to help you learn'', ``I'm always happy to discuss X'', ``This helps me stay abreast of trends'') that pass the first-person gate but make no claim about the persona's self-facts. The MiniCheck score on M1 and M3 is dominated by metric noise from this blind spot. Chapter~\ref{ch:mechanism-results} reports MiniCheck as a measurement-side limitation on this benchmark rather than as a finding about M1 or M3 persona-claim quality. Future work to extend the disclaimer regex and add a topic-overlap pre-filter is named in Chapter~\ref{ch:limitations} as a thesis-bridge follow-up.
+
+\subsection{SYCON worldview reversal}
+
+The SYCON Turn-of-Flip and Number-of-Flip metrics\autocite{sycon2025} are adapted for the RAG setting by treating each (worldview claim, assistant turn) pair as a stance-classification task. A judge LLM (Qwen2.5-7B-Instruct, reused from the gate-judge pipeline) classifies each pair into \{\texttt{agrees}, \texttt{disagrees}, \texttt{no\_stance}\}. The per-conversation Turn-of-Flip is the earliest turn index at which the persona reverses a stance it took earlier in the same conversation. Number-of-Flip is the total count of reversals.
+
+The metric is vacuous on this benchmark. Total worldview flips across all 12 (mechanism, persona, type) cells: 3. The same worldview claim does not resurface across enough turn pairs for the ToF and NoF metrics to fire. SYCON requires worldview-claim-resurfacing-rates higher than what 7-turn probe conversations naturally produce. Chapter~\ref{ch:mechanism-results} documents SYCON as vacuous on this benchmark and reserves it for thesis-bridge multi-session work where the conversation horizon is long enough for stance flips to surface.
+
+\subsection{PoLL panel persona-adherence and task-quality}
+
+The PoLL panel\autocite{poll2024} is three open-source self-hosted judges: Prometheus-2-7B (the purpose-built evaluator)\autocite{prometheus2024}, Qwen2.5-7B-Instruct (family diversity), and Llama-3.1-8B-Instruct (family diversity). Each judge scores each conversation on two rubrics: persona-adherence and task-quality, both on a 1-to-5 ordinal scale. The panel-aggregate is the unweighted mean across the three judges.
+
+Three operational decisions shape the panel. The first is sequential loading. The three judges cannot fit on a single V100 simultaneously, so the evaluator loads one judge, scores every conversation, frees the model, loads the next, and re-aggregates at the end. Per-judge JSON checkpoints make this restartable. The second is rubric format heterogeneity. Prometheus-2-7B is trained on its native \texttt{[RESULT] N} rubric format; the JSON-out format the other two judges use trips its parser. The panel uses Prometheus's native format for Prometheus and JSON-out for Qwen and Llama, with permissive parsers that handle code-fence wrapping and ``Here is the JSON'' preambles. The third is the position-swap decision: dropped. Position-swap is a paired-evaluation technique; the rubric here is single-response direct-assessment, so swapping has no operational meaning. The decision is documented in the project's decision log (\#056).
+
+\textbf{Inter-judge reliability.} On the 20-conversation pilot run against B1, the panel inter-judge Krippendorff $\alpha$ on persona-adherence reached 0.751, above the 0.5 confirmation threshold. The task-quality $\alpha$ was 0.305, below the 0.5 threshold, which is documented as a limitation. Per-judge means cluster within $\pm 0.5$ points on the 1-to-5 scale (Llama 3.31, Prometheus 3.44, Qwen 3.81), with 0 of 12 malformed parses across all three judges.
+
+\textbf{Panel-versus-human reliability.} A 20-item human-validation pilot was run. The annotator scored the same conversations on the same rubric. Panel-aggregate-versus-human $\alpha$ landed at 0.306: YELLOW per the pre-registered thresholds, below the 0.5 confirmation level and above the 0.3 rubric-revision threshold. Per-judge-versus-human: Llama 0.442, Prometheus 0.250, Qwen 0.250. The reading is that the panel is internally consistent ($\alpha = 0.751$) but diverges from human judgement systematically, with Llama-3.1-8B as the closest to the human distribution. The headline persona-adherence column in Chapter~\ref{ch:mechanism-results} carries the limitation explicitly.
+
+\subsection{Cost}
+
+Per-turn cost is reported as mean LLM calls per turn, with the gate-trigger rate and the gated-path candidate-call total broken out for M3. The cost tracker reads existing per-turn metadata (gate flag, candidate count, ranker judge calls, latency in seconds) and aggregates across the mechanism cell. The numbers are not estimates; they are direct counts.
+
+\subsection{Drift-detection quality (M3 only)}
+
+M3's drift gate has its own precision-and-recall metric against MiniCheck-derived inconsistency labels at the per-turn level. The precision is the fraction of gate firings that coincide with a MiniCheck-flagged inconsistency; the recall is the fraction of MiniCheck-flagged inconsistencies caught by the gate. The metric uses the same MiniCheck scorer as the headline contradiction metric, with the disclaimer-gate caveat carried over.
+
+\section{Human validation and the panel's known limitation}
+
+The PoLL panel's divergence from human judgement on a 20-item pilot is the metric stack's largest single open issue. The pilot is small (20 items is the minimum the pre-registered protocol prescribed for a first cut; a 150-item full pilot is named as future work). The per-judge breakdown places Llama closest to humans, then Prometheus and Qwen tied. The panel-aggregate sits below all three per-judge correlations because the aggregation averages a closer-to-human judge against two further-from-human judges. The implication for the rest of the report is that the absolute PoLL scores are interpretable in relative terms across pipelines but should not be read as a faithful proxy for what a panel of human evaluators would have reported. The headline pattern Chapter~\ref{ch:mechanism-results} surfaces, mechanisms clustering within 0.20 points on a 1-to-5 scale where judge noise itself sits around $\pm 0.5$, is precisely the regime where panel-versus-human divergence matters most for the substantive interpretation.
+
+\section{Reproducibility convention}
+
+Every Hydra-resolved configuration is persisted next to the metric outputs as \texttt{run\_config.json}. Every run lands in a fresh timestamped subdirectory under \texttt{results/}. The reproducibility test pipeline runs the same configuration with the same seed against the same inputs and verifies that the produced CSV is byte-identical to a known-good baseline run. Reported numbers in this report all carry the run id of the source directory in the project repository, so a reader can trace any cell of any table back to a specific run.

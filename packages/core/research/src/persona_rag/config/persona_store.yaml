@@ -1,0 +1,8 @@
+# Hydra config for the persona vector store.
+# See src/persona_rag/stores/persona_store.py.
+
+persist_path: ./.chroma/persona
+collection_name: persona_chunks
+# Default embedder. Small (~90 MB), 384-dim, cosine-trained. Upgrade via this
+# config line if retrieval quality turns out noisy — no code change required.
+embedding_model: sentence-transformers/all-MiniLM-L6-v2

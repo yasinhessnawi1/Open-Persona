@@ -1,0 +1,111 @@
+\documentclass[11pt,a4paper,oneside]{report}
+
+% Encoding and fonts
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[british]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+% Layout
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{titlesec}
+
+% Maths and symbols
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+
+% Tables and figures
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\captionsetup{labelfont=bf,font=small}
+
+% TikZ / pgfplots for figures
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,fit,calc,decorations.pathreplacing,patterns}
+
+% Code listings
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+}
+
+% Cross-references and hyperlinks
+\usepackage[colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+
+% Bibliography — verbose + footnote citations, biber backend
+\usepackage[backend=biber,style=verbose,autocite=footnote,sorting=nyt]{biblatex}
+\addbibresource{refs.bib}
+
+% Acronyms
+\usepackage[acronym,nomain,nopostdot,nonumberlist]{glossaries}
+\makeglossaries
+
+% Custom commands
+\newcommand{\auroc}{AUROC}
+\newcommand{\polljudge}{PoLL}
+
+\title{
+  \vspace{-2cm}
+  \Large\textbf{Persona-Drift-Gated Retrieval over Typed Memory} \\[0.3cm]
+  \large A Replication, an Architectural Mechanism, and a Negative Result \\
+  \large on Persona-Vector Drift Detection
+}
+\author{Yasin Hessnawi}
+\date{University of Agder, 2026}
+
+\begin{document}
+
+% Front matter (roman pagination, no chapter numbers)
+\pagenumbering{roman}
+
+\input{chapters/00_titlepage}
+\input{chapters/01_acknowledgements}
+\input{chapters/02_abstract}
+
+\tableofcontents
+\listoffigures
+\listoftables
+\input{chapters/03_acronyms}
+
+% Main matter
+\clearpage
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+\input{chapters/10_introduction}
+\input{chapters/20_background}
+\input{chapters/30_architecture}
+\input{chapters/40_mechanisms}
+\input{chapters/50_methodology}
+\input{chapters/60_replication}
+\input{chapters/70_mechanism_results}
+\input{chapters/80_ablations}
+\input{chapters/90_discussion}
+\input{chapters/95_limitations}
+\input{chapters/99_conclusion}
+
+% Bibliography
+\printbibliography[heading=bibintoc,title={Bibliography}]
+
+% Appendices
+\appendix
+\input{chapters/A1_persona_schema}
+\input{chapters/A2_probe_taxonomy}
+
+\end{document}

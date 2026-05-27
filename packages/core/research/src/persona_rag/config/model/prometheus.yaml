@@ -1,0 +1,16 @@
+# Prometheus-2-7B v2.0 model config. Inherits defaults from default.yaml.
+#
+# Prometheus-2-7B is a Mistral-Instruct-based evaluator model (KAIST).
+# Used as an open-model judge candidate for the drift-gate calibration
+# sweep alongside Llama-3.1-8B and Qwen2.5-7B.
+#
+# Mistral-Instruct base does not accept a native `system` role; the
+# backend folds system content into the first user turn (same pattern as
+# the Gemma 2 backend).
+
+defaults:
+  - default
+  - _self_
+
+name: prometheus-2-7b
+model_id: prometheus-eval/prometheus-7b-v2.0

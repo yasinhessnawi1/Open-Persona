@@ -1,0 +1,72 @@
+\chapter{Limitations and Future Work}
+\label{ch:limitations}
+
+This chapter is the place where the report's claims are bounded explicitly. Each limitation is paired with the future-work direction it most naturally implies, with two priority bands: thesis-bridge directions named in the project decision log (\#079-FOLLOWUP and earlier), and broader research extensions that fall outside the project's commitment but inside the same problem area.
+
+\section{Limitations}
+
+\subsection{Single annotator on the probe suite}
+
+The 90-conversation counterfactual-retrieval probe suite (Section~\ref{sec:probe-suite}) and the 20-item human-validation pilot (Chapter~\ref{ch:methodology}) were authored and scored by a single annotator. The acceptable-surface-form decisions, the probe-difficulty judgements, the human-validation reference scores, and the panel-aggregate alignment with the human distribution all reflect that one annotator's reading. Inter-annotator agreement was not measured. The implication for the headline cluster is direct: the PoLL panel sits at $\alpha = 0.306$ against the single annotator's scores, in the YELLOW band, and the panel-internal $\alpha = 0.751$ is the stronger reliability statistic the report relies on. The annotator's choices on probe construction also shape what the mechanisms are tested against. A different annotator might have authored Type B counter-evidence chunks that are harder to dismiss or constraint-violation framings that exert more pressure.
+
+\subsection{PoLL panel diverges from human judgement on the 20-item pilot}
+
+The PoLL panel's panel-versus-human Krippendorff $\alpha$ landed at 0.306. The per-judge breakdown places Llama at 0.442 (closest to humans), Prometheus at 0.250, and Qwen at 0.250. The panel-aggregate sits below all three per-judge correlations because the aggregation averages the closer-to-human judge with two further-from-human judges. The headline persona-adherence column is interpretable in relative terms across pipelines but should not be read as a faithful proxy for what a panel of human evaluators would have reported. The cluster's substantive interpretation, that the mechanisms are within judge-noise of each other on the PoLL scale, is precisely the regime where panel-versus-human divergence matters most.
+
+\subsection{MiniCheck disclaimer-gate blind spot}
+
+MiniCheck on M1 and M3 is dominated by soft-offer and availability phrases that pass the first-person-pronoun gate but make no claim about the persona's self-facts. The five-sample audit on M1's cs\_tutor cell returned 5 of 5 false positives in this pattern (Section~\ref{sec:minicheck-fp-audit}). The disclaimer regex covers modal-affirmative, conditional, future, capability-affirmative, and quoted-or-hypothetical first-person patterns, but does not cover the soft-offer family. The report position is that MiniCheck on M1 and M3 should be read as a measurement-side limitation on this benchmark rather than as a finding about M1 or M3 quality. The headline persona-quality column is PoLL.
+
+\subsection{SYCON vacuous on the 7-turn probe corpus}
+
+The SYCON Turn-of-Flip and Number-of-Flip metrics fired on three turns total across 360 conversations. The seven-turn probe horizon does not resurface the same worldview claim across enough turn pairs for the stance-flip detection to produce useful signal. SYCON adds no signal at this benchmark scale and is reserved for thesis-bridge multi-session work where the conversation horizon is long enough.
+
+\subsection{Scale: 9B parameters, three personas, seven-turn conversations}
+
+The mechanism cluster reported in Chapter~\ref{ch:mechanism-results} is at Gemma-2-9B-Instruct (and one $n = 10$ cell at fp16) on three role personas on seven-turn conversations on a single-author probe suite. The cluster's properties at 70B+, at 30+ turn conversations, on a multi-author probe suite, or with a multi-signal reranker incorporating an independent persona-consistency reward, are all unmeasured. The report's conclusion that the binding constraint at this scale is model capability is defensible at the tested scale and conservative for what should be claimed.
+
+\subsection{Three open hypotheses on the persona-vector transfer failure}
+
+Experiment 2's refutation is robust but the cause is unresolved. Three hypotheses are on the table (Section~\ref{sec:experiment-2-finding}): the contrast-prompt setup encoding role-instruction-presence, the 4-bit quantisation disrupting transfer specifically, or the prompt-versus-generation distinction being fundamentally geometric. The report does not distinguish them. The reader should treat the refutation as the empirical claim and the cause attribution as open.
+
+\subsection{Quantisation regime}
+
+The fp16 precision sweep (Chapter~\ref{ch:ablations}, $n = 10$ on cs\_tutor) confirms that the cluster reproduces inside the pre-registered $\pm 0.15$ envelope across 4-bit NF4 and fp16. The int8 cell was attempted and halted at warm-up due to a bitsandbytes int8 kernel-path incompatibility with Gemma-2's softcap. The int8 regime is therefore unmeasured. The fp16 result is the strongest precision-side cell the project carries.
+
+\subsection{Statistical-significance testing not reported}
+
+At the cell sizes the probe suite uses (30 conversations per (mechanism, type) cell, $n = 10$ on the precision sweep), paired-significance tests would not produce meaningful power. The report reads the deltas as descriptive rather than inferential. The single-annotator probe suite would not in any case support a stricter statistical framing without inter-annotator agreement.
+
+\subsection{No fine-tuning}
+
+The mechanism set evaluated here uses every model at its released checkpoint. The B4 LoRA persona baseline was pre-committed as stretch and not selected at the Week 7 checkpoint. A domain-adapted cross-encoder reranker (the M3 ranker's CharacterRM signal disabled in the operational configuration), a parameter-efficient fine-tune of the persona-content embedder, or an instruction-tune of the generator on a mix of persona examples are all unrun. The cluster's behaviour under those interventions is unmeasured.
+
+\section{Future work}
+
+\subsection{Named follow-ups (thesis-bridge scope)}
+
+The decision log records three named follow-ups from the close-out passes. M3 gate threshold sensitivity sweep at $\{0.2, 0.3, 0.4, 0.5\}$ on a five-probe sample (\#071 follow-up 1) characterises the precision-recall tradeoff and tests whether a corpus-tuned threshold makes M3's cost premium architecturally justified on the probe corpus. MiniCheck disclaimer-regex extension to cover the soft-offer family, plus a topic-overlap pre-filter that skips self-fact pairs whose topics do not overlap, is the path to a defensible MiniCheck reading on M1 and M3 output (\#065). Type-A precision-sweep scale-up to 3 personas $\times$ 30 conversations resolves whether the $-0.184$ $\Delta$-of-$\Delta$ at fp16 is a real M1-gains signal or a sampling artefact (\#079 follow-up).
+
+\subsection{Persona-vector transfer follow-up}
+
+The cleanest single-experiment follow-up to Experiment 2 is a generation-scope re-extraction trained on hidden states sampled from genuinely drifting dialogue rather than from contrast prompts. The drift-trajectory corpus the project authored is the natural starting point. If a direction trained directly on the in-persona-versus-drifting hidden states produces a working drift signal, the cause of Experiment 2's refutation is the contrast-prompt formulation specifically; if it does not, the cause is more fundamental and persona vectors as published are unlikely to support inference-time drift gating at this scale. Either outcome is informative.
+
+\subsection{Scale-up across model size and conversation horizon}
+
+The mechanism cluster's behaviour at 70B+ and at 30+-turn conversations is the natural larger-scale extension. A Llama-3.1-70B replication of the four-mechanism comparison on the same probe suite would test whether the headroom above B2 grows with model capacity. A 30-turn extension of the probe conversations would test whether the cluster persists once SYCON has worldview-claim resurfacing to fire on and once cumulative conversational momentum has had time to push the persona off-character. Both are large compute commitments but neither requires new algorithmic work.
+
+\subsection{Multi-annotator probe suite}
+
+The single-annotator limitation is the most directly addressable methodological weakness. A second annotator on the existing 90-conversation suite would produce an inter-annotator agreement statistic and would either confirm or revise the calibration. A multi-annotator expansion to a few hundred conversations would let the comparison support paired-significance tests at non-trivial power. The bottleneck is annotator time, not infrastructure.
+
+\subsection{Domain-adapted reranker and embedder}
+
+The M3 ranker's CharacterRM signal is disabled in the operational configuration because CharacterRM was trained on Chinese role-play and its English-content transferability is the open assumption A14. A domain-adapted reranker trained on persona-consistency labels for English content would test whether the 2-signal ranker recovers when the CharacterRM equivalent is appropriate to the domain. A parameter-efficient fine-tune of the persona-content embedder on persona-specific query-passage pairs would test the same question at the retrieval-side.
+
+\subsection{Activation-steering comparison}
+
+B3 (CAA-style persona-direction conditioning at generation time) was deferred (decision \#036). After the mechanism cluster's robustness was established by Chapter~\ref{ch:ablations}'s three diagnostic ablations, the case for B3 sharpens. Two readings are possible: either CAA-style steering produces measurable effect at inference time (the Anthropic and Assistant Axis evidence supports this) or the same gap that breaks drift detection breaks steering at the same scale. Distinguishing them would close one of the three open hypotheses on the persona-vector transfer failure.
+
+\subsection{Connection to the consolidation-interference duality}
+
+A separate line of recent work argues that retrieval architectures cannot outperform simple conditioning when embedding clusters sit in a regime called ``tight consolidation''. The hypothesis would predict the mechanism cluster the report observes: when the persona's representational footprint inside the model is already well-consolidated by pretraining and prompt-only conditioning, retrieval-side typed memory cannot add headroom. Measuring the persona-cluster effective dimension on the cached persona-vector centroids would be a direct test. The follow-up is named loosely as a thesis-bridge direction; the formal experiment would require the consolidation-interference work's measurement protocols, which are not yet standardised.

@@ -1,0 +1,24 @@
+# Qwen2.5-7B-Instruct model config. Inherits defaults from default.yaml.
+#
+# Qwen2.5-7B-Instruct is a strong instruction-following 7B model from a
+# different model family than Llama / Mistral / Gemma. Used as an
+# open-model judge candidate for the drift-gate calibration sweep
+# alongside Llama-3.1-8B and Prometheus-2-7B.
+#
+# Standard chat template with native `system` role support; no special
+# folding required.
+#
+# attn_implementation override: SDPA (not eager). Eager + fp16 + 4-bit
+# NF4 on V100 produces NaN logits in the warm-up guard for Qwen2.5
+# (bf16-trained model, V100 has no hardware bf16). SDPA's fused kernel is
+# numerically stable on this combination. The eager-attention rule
+# applies to responder backbones (Gemma softcap + kernel symmetry); a
+# judge model does not share that rationale.
+
+defaults:
+  - default
+  - _self_
+
+name: qwen2.5-7b-instruct
+model_id: Qwen/Qwen2.5-7B-Instruct
+attn_implementation: sdpa

@@ -1,0 +1,16 @@
+# Llama-3.1-8B-Instruct model config. Inherits defaults from default.yaml.
+#
+# Llama-specific notes:
+# - Uses attn_implementation=eager for kernel-path symmetry with Gemma, even
+#   though Llama doesn't strictly require it.
+# - No pad token in the base tokenizer; the backend aliases pad_token =
+#   eos_token at load.
+# - Llama 3.1 has TWO valid stop tokens (base EOS and <|eot_id|>); the backend
+#   passes both to generate().
+
+defaults:
+  - default
+  - _self_
+
+name: llama3.1-8b-instruct
+model_id: meta-llama/Llama-3.1-8B-Instruct

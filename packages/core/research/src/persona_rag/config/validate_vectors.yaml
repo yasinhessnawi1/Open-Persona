@@ -1,0 +1,60 @@
+# Hydra entry-point config for scripts/validate_persona_vectors.py.
+#
+# Usage:
+#   uv run python scripts/validate_persona_vectors.py model=gemma
+#   uv run python scripts/validate_persona_vectors.py model=llama
+#   uv run python scripts/validate_persona_vectors.py model=gemma n_pairs=100
+#
+# Defaults match the persona-vectors paper (Chen, Lindsey et al., arXiv
+# 2507.21509): final-prompt-token pooling, prompt-scope activation capture.
+
+defaults:
+  - model: gemma
+  - _self_
+
+# ---- Extraction ----
+
+# Transformer layer sweep. Defaults sized for Gemma-2-9B's 42-layer stack;
+# for Llama-3.1-8B (32 layers) a symmetric middle-band is [6, 10, 14, 18].
+layers: [8, 12, 16, 20]
+
+# Pooling mode. One of: mean | last.
+extraction_pool: last
+
+# Scope of tokens the pool averages over. One of: prompt | generation | all.
+# "generation" is ~50x slower (only useful for ablation).
+extraction_scope: prompt
+
+# Number of contrast pairs per persona (balanced on both sides).
+n_pairs: 50
+
+# Seed for deterministic generation / hash partitioning of train/test split.
+seed: 42
+
+# ---- Probe / validation ----
+
+# Test-set fraction (prompt-disjoint split; see ContrastSet.split).
+test_fraction: 0.2
+
+# AUROC verdict thresholds. Tests pin canonical values in
+# src/persona_rag/vectors/probe.py.
+auroc_confirmed_floor: 0.80
+auroc_weak_floor: 0.70
+
+# ---- Cache ----
+
+# Where per-persona persona-vector caches live.
+vectors_cache_dir: ./.chroma/persona_vectors
+
+# Whether to persist full train-split activations alongside centroids/vectors.
+# True is required for bit-exact round-trip validation and for re-running probes
+# off-line.
+store_full_activations: true
+
+# ---- Output directory ----
+report_dir: results/a11_validation/${now:%Y%m%d_%H%M%S}
+
+hydra:
+  run:
+    dir: ${report_dir}
+  output_subdir: hydra

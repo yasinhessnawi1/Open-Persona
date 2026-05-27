@@ -1,0 +1,28 @@
+# Gemma 2 9B-Instruct model config at unquantized fp16 (quantization-sensitivity
+# ablation only). Inherits from default.yaml, then overrides the
+# quantization flags: 4-bit NF4 off, 8-bit int8 off. Loads the safetensors
+# checkpoint directly into V100's native fp16 path; ``HFBackend`` builds
+# ``quantization_config=None`` when both quantization flags are False.
+#
+# Peak VRAM expected ~22-25 GB on V100 32 GB (~18.5 GB weights + ~3-4 GB
+# activations + ~0.5 GB KV cache for 7-turn 3500-token context). Comfortable
+# headroom; no CPU offload needed.
+#
+# Discoverability note: this config exists for symmetry with gemma.yaml and
+# gemma_8bit.yaml. The Spec-9 ablation driver
+# (scripts/run_spec09_quantization_fp16.py) builds HFBackendConfig
+# programmatically rather than via Hydra, so the flag flip there is in the
+# driver itself. This YAML is the right starting point if a future
+# Hydra-driven script needs fp16 Gemma.
+
+defaults:
+  - default
+  - _self_
+
+name: gemma2-9b-it-fp16
+model_id: google/gemma-2-9b-it
+
+# Quantization: none. Both flags off → HFBackend builds quant_cfg=None
+# and torch_dtype=float16 takes effect.
+load_in_4bit: false
+load_in_8bit: false

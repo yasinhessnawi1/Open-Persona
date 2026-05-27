@@ -1,0 +1,46 @@
+# Hydra entry-point config for scripts/smoke_test_models.py.
+#
+# Usage:
+#   uv run python scripts/smoke_test_models.py model=gemma
+#   uv run python scripts/smoke_test_models.py model=llama
+#   uv run python scripts/smoke_test_models.py model=gemma report_dir=results/smoke_gemma_$(date +%s)
+#
+# Runs an aggressive multi-prompt stability suite, NaN/inf guard, greedy-
+# reproducibility check, and hidden-state-shape probes. Exit code is non-zero
+# if any stability criterion fails.
+
+defaults:
+  - model: gemma
+  - _self_
+
+# Where to write the per-run report (load_report.json, stability_results.json,
+# stability_outputs.txt, etc.). A subdirectory is created automatically.
+report_dir: results/smoke_${model.name}
+
+# Number of repeated runs for the greedy-reproducibility check.
+reproducibility_runs: 3
+
+# Number of prompts to sample from the stability suite for the reproducibility check.
+reproducibility_sample_size: 10
+
+# Max new tokens per stability-suite generation.
+max_new_tokens: 128
+
+# Seed used for all deterministic portions of the smoke test.
+seed: 42
+
+# Coherence pass bar: at least this many of the stability-suite outputs must be
+# flagged "OK" by the heuristic check (non-empty, no catastrophic repetition,
+# not all-punct).
+coherence_min_pass: 28
+
+# Reproducibility pass bar: fraction of sampled prompts that must reproduce
+# token-for-token across all reproducibility_runs. The hard fail threshold
+# triggers exit-nonzero; the warn threshold logs a warning band between them.
+reproducibility_hard_min: 0.9
+reproducibility_warn_below: 0.95
+
+hydra:
+  run:
+    dir: ${report_dir}
+  output_subdir: hydra

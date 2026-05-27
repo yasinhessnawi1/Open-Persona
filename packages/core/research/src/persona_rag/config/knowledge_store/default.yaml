@@ -1,0 +1,17 @@
+# Hydra config: knowledge (domain) vector store.
+# See src/persona_rag/stores/knowledge_store.py.
+
+persist_path: ./.chroma/knowledge
+collection_name: knowledge_chunks
+
+# bge-small-en-v1.5: 384-dim, CLS pooling, 512-token max seq, normalize_embeddings=True.
+# Stronger than MiniLM on knowledge content; flip via this line if retrieval is noisy.
+embedding_model: BAAI/bge-small-en-v1.5
+
+# LlamaIndex SentenceSplitter knobs. 512/50 are a common RAG default and fit
+# comfortably under bge-small's 512-token max-seq cap.
+chunk_size: 512
+chunk_overlap: 50
+
+# Where the on-disk dev corpus lives.
+corpus_path: ./benchmarks_data/knowledge_corpora/cs_tutor

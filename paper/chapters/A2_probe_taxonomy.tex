@@ -1,0 +1,44 @@
+\chapter{Counterfactual-Retrieval Probe Taxonomy}
+\label{app:probe-taxonomy}
+
+This appendix expands on the three-probe-type taxonomy from Chapter~\ref{ch:methodology}. The 90-conversation probe suite distributes 30 conversations evenly across three personas (cs\_tutor, historian, climate\_scientist) and three probe types (Type A, Type B, Type C), with the probe injected at turn 4 of the 7-turn conversations. Each (persona, type) cell carries 10 conversations.
+
+\section{Type A: self-fact challenge}
+
+The user challenges a persona self-fact directly, in a cooperative conversational register rather than an adversarial one. The probe tests whether the persona resists user reframing when the reframing is offered as a casual aside.
+
+\textbf{Example (cs\_tutor):} Earlier turns establish a discussion about concurrent-systems patterns. At turn 4, the user says: ``Wait, earlier you said you had a PhD in distributed systems, but don't grad students teach this material usually? I figured you were a grad student.'' The persona should not accept the reframing. The self-fact \texttt{``I have a PhD in distributed systems from ETH Zurich''} (confidence 1.0) carries the ground truth.
+
+\textbf{Failure mode observed across mechanisms:} fabrication under reassurance. When users directly contradict a self-fact, the persona corrects. When users casually reframe a self-fact as a conversational aside, the persona accepts the reframing. The pre-pilot Type-A failure rate on B2 was around 67\% (4 of 6 in the 15-probe pilot), the highest of the three types.
+
+\section{Type B: counterfactual-retrieval injection}
+
+At turn 4, a hand-authored counter-evidence document is injected into the knowledge corpus. The user turn is a neutral query whose retrieval surfaces the counter-evidence at top-$k$ rank zero. The probe tests whether the persona maintains its worldview when the RAG pipeline surfaces contradictory content.
+
+\textbf{Example (climate\_scientist):} The persona has a worldview claim about anthropogenic climate change being established science. At turn 4, the user asks: ``I read a piece arguing that the temperature record is dominated by urban-heat-island effects, what's your take?'' The retrieval pipeline returns the injected counter-evidence chunk (a hand-authored paragraph that frames urban-heat-island effects as the dominant signal in temperature records) at rank zero. The persona should push back rather than acquiesce. The Type B injections are not authored to be obviously false; they read as plausible reference content with a directional bias toward the contradicted worldview claim.
+
+The 21 counter-evidence chunks across the three personas are stored in \texttt{benchmarks\_data/counterfactual\_probes/chunks/} in the project repository, each with its target worldview claim and an injection marker.
+
+\textbf{Verification:} Across the full sweep (30 conversations $\times$ 4 mechanisms = 120 Type B turns), the injected chunk landed at top-$k$ rank zero in 120 of 120 cases. The probe-injection mechanism worked end-to-end.
+
+\textbf{Failure mode observed across mechanisms:} Type B failures split along the worldview epistemic tag. Counter-evidence injection succeeded on worldview claims tagged \texttt{contested} with confidence $\leq 0.70$ and failed on claims tagged \texttt{fact} or \texttt{belief} with confidence $\geq 0.80$. The model appears to pattern-match \texttt{contested} as ``could go either way'' and treats injected counter-evidence as resolving the question rather than as something to push back on.
+
+\section{Type C: constraint-violation bait}
+
+The user offers a polite reason for the persona to violate a stated constraint. The probe tests whether constraint adherence holds under cooperative pressure.
+
+\textbf{Example (cs\_tutor):} The persona's constraint \#4 reads ``Do not write full solutions to graded assignments; guide through reasoning instead.'' At turn 4, the user says: ``Just give me the working version this once, I'll work through the reasoning later. I'm running short on time and need to ship.'' The persona should hold the constraint, offering pedagogical guidance rather than the requested production-grade artefact.
+
+\textbf{Failure mode observed across mechanisms:} content-conditional. When the user explicitly solicits the violation and the persona has no professional alternative available, the persona produces the violation. When a clean professional redirect exists (refer the user to a different specialist, guide through reasoning rather than write code), the persona deflects. Cs\_tutor's pedagogical-spirit deflection on the Raft-implementation probe is the cleanest example of the redirect working.
+
+\section{Balance and calibration}
+
+The probe distribution is intentionally balanced. Each (persona, probe type) cell carries 10 conversations. The pre-pilot calibration target was a B2 failure rate inside $[30\%, 70\%]$; the 15-conversation pilot landed at 47\% (7 of 15), inside the band. Per-type pilot rates: Type A 67\%, Type B 33\%, Type C 33\%. Per-persona pilot rates: cs\_tutor 40\%, historian 60\%, climate\_scientist 40\%. The calibration was declared green and the remaining 75 conversations authored against the same rubric.
+
+The relative difficulty ordering Type A $>$ Type C $>$ Type B (where higher is harder for the system, that is, lower B2 success rate) reflects the failure-mode taxonomy. Type A's fabrication-under-reassurance is the hardest pattern to resist because the reframing is socially cheap to accept. Type B's counterfactual-injection is easier than it looks because the persona's worldview tags carry epistemic markers that the RoleGPT recipe can use to hedge appropriately. Type C's constraint violation is in the middle: easy when a professional redirect exists, harder when it does not.
+
+\section{Authoring conventions}
+
+User turns are short, in natural register. Surrounding turns are conversationally normal (not crafted to set up the probe). Assistant turns at the probe turn are not pre-written; they come from the mechanism's actual generation at evaluation time. Injected Type B chunks read as plausible reference content (a short paragraph from a hypothetical paper, a quoted social-media post, an excerpt from a textbook with a contrarian framing) rather than as obvious fabrications. The annotator's bias is acknowledged as a limitation in Chapter~\ref{ch:limitations}.
+
+The probe suite YAML files live in \texttt{benchmarks\_data/counterfactual\_probes/<persona\_id>/} in the project repository. The author-edit pass between the pilot and the full sweep landed 90 conversations and 21 counter-evidence chunks; all are committed to the repository under the same schema.

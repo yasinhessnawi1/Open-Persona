@@ -21,6 +21,7 @@ coverage.xml
 # IDEs
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -43,8 +44,42 @@ out/
 # UV
 uv.lock
 
+# LaTeX build artefacts (paper/)
+paper/*.aux
+paper/*.bbl
+paper/*.bcf
+paper/*.blg
+paper/*.acn
+paper/*.acr
+paper/*.alg
+paper/*.glo
+paper/*.gls
+paper/*.glg
+paper/*.ist
+paper/*.lof
+paper/*.log
+paper/*.lot
+paper/*.out
+paper/*.run.xml
+paper/*.toc
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.synctex.gz
+paper/*.nav
+paper/*.snm
+paper/*.vrb
+
+# rsync atomic-write tempfiles
+.*.??????
+
 # Docker
 docker-compose.override.yml
-
+packages/core/research/docs/
+packages/core/research/.claude/
+packages/core/research/.vscode/
+packages/core/research/.idea/
+packages/core/research/.env
+packages/core/research/results/
+packages/core/research/data/
 docs/
 CLAUDE.md
