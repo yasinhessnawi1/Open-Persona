@@ -7,7 +7,6 @@ structured-context formatting inherited from :class:`PersonaError`.
 from __future__ import annotations
 
 import pytest
-
 from persona.backends.errors import (
     AuthenticationError,
     BackendTimeoutError,
@@ -26,9 +25,7 @@ class TestInheritance:
         "subclass",
         [AuthenticationError, RateLimitError, ModelNotFoundError, BackendTimeoutError],
     )
-    def test_subclasses_inherit_from_provider_error(
-        self, subclass: type[ProviderError]
-    ) -> None:
+    def test_subclasses_inherit_from_provider_error(self, subclass: type[ProviderError]) -> None:
         assert issubclass(subclass, ProviderError)
         assert issubclass(subclass, PersonaError)
 
@@ -48,9 +45,7 @@ class TestInheritance:
 
 class TestStructuredContext:
     def test_provider_error_carries_context(self) -> None:
-        err = ProviderError(
-            "upstream failure", context={"provider": "anthropic", "model": "x"}
-        )
+        err = ProviderError("upstream failure", context={"provider": "anthropic", "model": "x"})
         rendered = str(err)
         assert "upstream failure" in rendered
         assert "provider=anthropic" in rendered

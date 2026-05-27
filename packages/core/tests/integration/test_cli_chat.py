@@ -1,11 +1,16 @@
 """Integration tests for ``persona chat`` — spec §8 #6.
 
-Verifies the REPL flow end-to-end against the EchoBackend + a real
-ChromaBackend on tmp_path, and that episodic memory from session N is
-retrievable in session N+1 (same ``PERSONA_CHROMA_PATH``).
+Verifies the REPL flow end-to-end against a ``MockChatBackend`` (injected
+via monkeypatch) + a real ChromaBackend on tmp_path. Confirms episodic
+memory from session N is retrievable in session N+1 (same
+``PERSONA_CHROMA_PATH``).
 
-To keep these fast we stub ``SentenceTransformerEmbedder`` with the
-:class:`HashEmbedder` from ``tests._embedder`` via monkeypatching.
+Spec 02 deleted the `EchoBackend` stub from src/; production code never
+ships a fake backend (D-02-12). Tests inject ``MockChatBackend`` from
+``tests/_mock_backend.py`` by patching ``persona.cli.chat_cmd.load_backend``.
+
+To keep these fast we also stub ``SentenceTransformerEmbedder`` with the
+:class:`HashEmbedder` from ``tests._embedder``.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from persona.cli.main import app
 from typer.testing import CliRunner
 
 from tests._embedder import HashEmbedder
+from tests._mock_backend import MockChatBackend
 
 pytestmark = pytest.mark.integration
 
@@ -32,6 +38,15 @@ def stub_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def stub_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace ``load_backend`` with a factory returning MockChatBackend."""
+    monkeypatch.setattr(
+        "persona.cli.chat_cmd.load_backend",
+        lambda _config: MockChatBackend(),
+    )
+
+
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
@@ -39,13 +54,16 @@ def runner() -> CliRunner:
 
 def _env(tmp_path: Path) -> dict[str, str]:
     return {
-        "PERSONA_BACKEND": "echo",
+        # Mock backend is injected via monkeypatch, but BackendConfig() still
+        # constructs — set provider + a dummy key so it validates cleanly.
+        "PERSONA_PROVIDER": "anthropic",
+        "PERSONA_API_KEY": "mock-key",
         "PERSONA_CHROMA_PATH": str(tmp_path / "chroma"),
         "PERSONA_AUDIT_PATH": str(tmp_path / "audit"),
     }
 
 
-def test_chat_replies_via_echo_backend(
+def test_chat_replies_via_mock_backend(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for k, v in _env(tmp_path).items():

@@ -1,13 +1,19 @@
-"""``persona chat <path>`` — REPL loop against a placeholder backend.
+"""``persona chat <path>`` — REPL loop against a real backend.
 
-Spec 02 replaces the :class:`EchoBackend` with a real model backend; this
-command's structure stays the same. Episodic memory persists across REPL
-sessions because the registry indexes through a stable ``PERSONA_CHROMA_PATH``.
+Spec 02 wired this command to ``persona.backends.load_backend(BackendConfig())``.
+The CLI streams the response so users see token-by-token output. Episodic
+memory persists across REPL sessions because the registry indexes through a
+stable ``PERSONA_CHROMA_PATH``.
+
+Errors from the backend (missing API key, rate limit, etc.) surface as
+domain exceptions and exit non-zero with a clear message — no silent
+fallback to a fake backend (D-02-12).
 """
 # ruff: noqa: B008 — typer.Argument/Option in defaults is the framework idiom
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003 — typer needs runtime access
 from typing import TYPE_CHECKING
@@ -15,7 +21,8 @@ from typing import TYPE_CHECKING
 import typer
 
 from persona.audit import JSONLAuditLogger
-from persona.cli._echo import ChatBackendStub, EchoBackend
+from persona.backends import BackendConfig, load_backend
+from persona.backends.errors import ProviderError
 from persona.config import PersonaCoreConfig
 from persona.history import ConversationHistoryManager
 from persona.logging import get_logger
@@ -32,6 +39,7 @@ from persona.stores import (
 )
 
 if TYPE_CHECKING:
+    from persona.backends.protocol import ChatBackend
     from persona.stores.base import TypedStore
 
 _log = get_logger("cli.chat")
@@ -44,7 +52,11 @@ def chat(
 ) -> None:
     """Start a REPL chat with the persona at ``persona_path``."""
     config = PersonaCoreConfig()
-    backend = _build_backend(config)
+    try:
+        backend = _build_backend()
+    except ProviderError as exc:
+        typer.echo(f"backend error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
     embedder = SentenceTransformerEmbedder(model_name="BAAI/bge-small-en-v1.5")
     chroma = ChromaBackend(persist_path=config.chroma_path, embedder=embedder)
@@ -62,7 +74,7 @@ def chat(
     persona_id = persona.persona_id or persona_path.stem
 
     typer.echo(f"Loaded {persona.identity.name} ({persona_id}).")
-    typer.echo(f"Backend: {getattr(backend, 'name', type(backend).__name__)}")
+    typer.echo(f"Backend: {backend.provider_name} / {backend.model_name}")
     typer.echo("Type a message and press Enter. Empty line to exit.\n")
 
     history_manager = ConversationHistoryManager()
@@ -89,14 +101,18 @@ def chat(
         conversation.messages.append(user_msg)
 
         prompt_messages = history_manager.manage(conversation, _no_op_summariser)
-        reply_text = backend.generate(prompt_messages)
+        try:
+            reply_text = asyncio.run(_stream_reply(backend, prompt_messages, persona))
+        except ProviderError as exc:
+            typer.echo(f"backend error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
         assistant_msg = ConversationMessage(
             role="assistant", content=reply_text, created_at=datetime.now(UTC)
         )
         conversation.messages.append(assistant_msg)
-        typer.echo(f"{persona.identity.name}: {reply_text}")
 
-        # Write the exchange to episodic memory as one chunk.
+        # Episodic write-back unchanged from spec 01.
         _write_turn_to_episodic(
             episodic_store,
             persona_id=persona_id,
@@ -107,21 +123,28 @@ def chat(
         turn_index += 1
 
 
-def _build_backend(config: PersonaCoreConfig) -> ChatBackendStub:
-    """Return the configured backend or the echo placeholder."""
-    # In v0.1 only the echo backend exists. Spec 02 routes via PERSONA_BACKEND.
-    if config.backend not in {"echo", "anthropic", "openai", "deepseek", "groq", "ollama"}:
-        typer.echo(
-            f"unknown PERSONA_BACKEND={config.backend!r}; falling back to echo",
-            err=True,
-        )
-    if config.backend != "echo":
-        typer.echo(
-            "Note: no real model backends are wired yet (spec 02 ships them). "
-            "Using EchoBackend; set PERSONA_BACKEND=echo to suppress this notice.",
-            err=True,
-        )
-    return EchoBackend()
+def _build_backend() -> ChatBackend:
+    """Construct the configured backend; surfaces clear errors on misconfig."""
+    config = BackendConfig()
+    return load_backend(config)
+
+
+async def _stream_reply(
+    backend: ChatBackend,
+    messages: list[ConversationMessage],
+    persona: object,
+) -> str:
+    """Stream the assistant reply and print it token-by-token. Returns the full text."""
+    typer.echo(f"{getattr(persona.identity, 'name', 'assistant')}: ", nl=False)  # type: ignore[attr-defined]
+    parts: list[str] = []
+    async for chunk in backend.chat_stream(messages=messages):
+        if chunk.delta:
+            typer.echo(chunk.delta, nl=False)
+            parts.append(chunk.delta)
+        if chunk.is_final:
+            break
+    typer.echo("")  # trailing newline
+    return "".join(parts)
 
 
 def _no_op_summariser(messages: list[ConversationMessage]) -> str:
