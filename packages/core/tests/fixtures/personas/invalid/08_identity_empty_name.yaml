@@ -1,0 +1,6 @@
+schema_version: "1.0"
+identity:
+  # REASON: name must be a non-empty string.
+  name: ""
+  role: tester
+  background: tests min_length=1 enforcement.

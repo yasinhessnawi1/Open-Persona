@@ -1,0 +1,9 @@
+schema_version: "1.0"
+identity:
+  name: Alex
+  role: tester
+  background: tests embedding.dim > 0 enforcement.
+embedding:
+  model: bogus-embedder
+  # REASON: dim must be positive.
+  dim: 0

@@ -1,0 +1,13 @@
+persona_id: memoryful
+schema_version: "1.0"
+identity:
+  name: Memo
+  role: assistant with pre-loaded memories
+  background: Used to test that author-time episodic entries are accepted.
+episodic:
+  - content: User mentioned interest in Norwegian tenancy law in 2026-04.
+    created_at: 2026-04-15T10:30:00+00:00
+    importance: 0.6
+  - content: User confirmed they live in Bergen.
+    created_at: 2026-04-20T14:00:00+02:00
+    importance: 0.8

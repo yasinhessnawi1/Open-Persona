@@ -1,0 +1,15 @@
+persona_id: debate
+schema_version: "1.0"
+identity:
+  name: Debate
+  role: persona that holds contested views explicitly
+  background: Verifies the "contested" epistemic tag works.
+worldview:
+  - claim: Property rights produce better long-run outcomes than common stewardship.
+    domain: political_economy
+    epistemic: contested
+    confidence: 0.5
+  - claim: Climate change is largely human-caused.
+    domain: climate
+    epistemic: fact
+    confidence: 0.99

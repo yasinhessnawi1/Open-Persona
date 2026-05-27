@@ -1,0 +1,5 @@
+schema_version: "1.0"
+identity:
+  name: Minimal
+  role: testing assistant
+  background: Smallest possible persona, only the required fields.

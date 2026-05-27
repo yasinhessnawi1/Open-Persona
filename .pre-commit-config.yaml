@@ -1,3 +1,7 @@
+# Pre-commit hooks for Open Persona.
+# Local-only (no SaaS), fast on incremental commits.
+# Install: `uv run pre-commit install`. Run all: `uv run pre-commit run --all-files`.
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.5.0
@@ -5,3 +9,25 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy-core
+        name: mypy --strict (persona-core)
+        entry: uv run mypy packages/core/src --strict
+        language: system
+        types: [python]
+        files: ^packages/core/src/
+        pass_filenames: false
+
+      - id: pytest-collect
+        name: pytest --collect-only (import-time check)
+        # `bash -c '... || [ $? -eq 5 ]'` treats "no tests collected" (exit 5)
+        # as OK. Real import-time errors return other codes (1, 2, 3, 4) and
+        # still fail the hook. This matters during T01 of spec 01 when no
+        # tests have been authored yet but we still want the import sanity
+        # check on every commit.
+        entry: bash -c 'uv run pytest --collect-only -q "$@"; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ]'
+        language: system
+        types: [python]
+        pass_filenames: false

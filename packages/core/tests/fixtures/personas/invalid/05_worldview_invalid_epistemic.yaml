@@ -1,0 +1,9 @@
+schema_version: "1.0"
+identity:
+  name: Alex
+  role: tester
+  background: tests worldview epistemic-tag validation.
+worldview:
+  - claim: water is wet
+    # REASON: epistemic must be one of fact/belief/hypothesis/contested.
+    epistemic: maybe

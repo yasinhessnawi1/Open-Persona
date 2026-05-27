@@ -1,0 +1,32 @@
+# EditorConfig — https://editorconfig.org
+# Top-most config for this repository.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+[*.{yaml,yml}]
+indent_size = 2
+
+[*.{json,jsonl}]
+indent_size = 2
+
+[*.{md,mdx}]
+# Markdown trailing whitespace can be significant (line break).
+trim_trailing_whitespace = false
+indent_size = 2
+
+[*.toml]
+indent_size = 4
+
+[Makefile]
+indent_style = tab

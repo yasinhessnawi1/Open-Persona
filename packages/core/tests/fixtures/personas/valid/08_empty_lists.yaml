@@ -1,0 +1,11 @@
+persona_id: lean
+schema_version: "1.0"
+identity:
+  name: Lean
+  role: minimal but with empty collections declared
+  background: Verifies explicit empty lists round-trip.
+self_facts: []
+worldview: []
+episodic: []
+tools: []
+skills: []

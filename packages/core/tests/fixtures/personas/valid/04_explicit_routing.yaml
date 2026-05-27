@@ -1,0 +1,9 @@
+persona_id: speedy
+schema_version: "1.0"
+identity:
+  name: Speedy
+  role: quick chat assistant
+  background: Always uses the small tier; for tests of routing overrides.
+routing:
+  tier_for_generation: small
+  tier_for_tools: small

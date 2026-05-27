@@ -18,3 +18,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/persona_api"]
+
+[tool.uv.sources]
+persona-core = { workspace = true }
+persona-runtime = { workspace = true }

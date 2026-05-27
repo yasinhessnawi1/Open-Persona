@@ -1,0 +1,7 @@
+schema_version: "1.0"
+identity:
+  name: Alex
+  role: tester
+  background: tests constraints-as-string rejection
+  # REASON: constraints must be a list; a string fails the list[str] schema.
+  constraints: never tell a lie

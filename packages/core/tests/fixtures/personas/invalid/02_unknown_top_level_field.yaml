@@ -1,0 +1,7 @@
+schema_version: "1.0"
+identity:
+  name: Alex
+  role: tester
+  background: tests unknown field rejection
+# REASON: 'mood' is not a known top-level field; extra="forbid" rejects.
+mood: cheerful

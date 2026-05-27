@@ -1,0 +1,5 @@
+schema_version: "2.0"   # REASON: unsupported schema version.
+identity:
+  name: FromFuture
+  role: visitor from 2027
+  background: tests SchemaVersionMismatchError emission.

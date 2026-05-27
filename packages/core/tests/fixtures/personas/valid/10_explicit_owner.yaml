@@ -1,0 +1,8 @@
+persona_id: owned
+schema_version: "1.0"
+owner_id: user_abc123
+visibility: private
+identity:
+  name: Owned
+  role: persona with explicit owner_id (set at runtime usually)
+  background: Verifies owner_id is accepted at load time.

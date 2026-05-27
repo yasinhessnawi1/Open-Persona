@@ -1,0 +1,8 @@
+schema_version: "1.0"
+identity:
+  name: Alex
+  role: tester
+  background: tests routing tier-literal validation.
+routing:
+  # REASON: tier must be one of frontier/mid/small/auto.
+  tier_for_generation: enormous
