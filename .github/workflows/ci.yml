@@ -14,7 +14,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
-      - run: uv sync
+      - run: uv sync --all-packages
       - run: uv run ruff check
       - run: uv run ruff format --check
       - run: uv run mypy packages/core/src --strict
@@ -26,8 +26,15 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
-      - run: uv sync
-      - run: uv run pytest
+      - run: uv sync --all-packages
+      - name: pytest
+        run: |
+          set +e
+          uv run pytest
+          code=$?
+          # exit 5 = no tests collected; acceptable while suites are bootstrapping
+          if [ $code -eq 5 ]; then exit 0; fi
+          exit $code
 
   test-integration:
     runs-on: ubuntu-latest
@@ -50,7 +57,14 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
-      - run: uv sync
-      - run: uv run pytest -m integration
+      - run: uv sync --all-packages
+      - name: pytest -m integration
         env:
           DATABASE_URL: postgresql+asyncpg://persona:persona@localhost:5432/persona
+        run: |
+          set +e
+          uv run pytest -m integration
+          code=$?
+          # exit 5 = no tests collected; acceptable while suites are bootstrapping
+          if [ $code -eq 5 ]; then exit 0; fi
+          exit $code
