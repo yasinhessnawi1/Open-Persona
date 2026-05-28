@@ -175,6 +175,31 @@ Key contracts:
 
 See [`docs/specs/spec_05/spec_05_runtime.md`](../../docs/specs/spec_05/spec_05_runtime.md) and [`docs/specs/spec_05/decisions.md`](../../docs/specs/spec_05/decisions.md) for the full surface.
 
+## Agentic loop (Spec 06) — `persona_runtime.agentic`
+
+Spec 06 adds the **plan-act-reflect execution loop** for end-to-end tasks, in the `persona_runtime.agentic` subpackage. It is the *simplest possible* agent loop (architecture §5.2): one model decides at each step whether to call a tool, ask the user, or produce a final answer — no multi-agent orchestration, no graph-of-thought. The value is in the error-handling and budget management around the loop, not the loop body (~150 lines).
+
+```
+persona_runtime.agentic
+├── errors.py     MaxStepsReachedError, RunCancelledError (defined; the loop returns a Run, doesn't raise — D-06-2)
+├── step.py       StepType (StrEnum) + Step (frozen Pydantic; carries per-step telemetry — D-06-3)
+├── run.py        RunStatus (StrEnum) + Run (frozen Pydantic) + CancelToken (plain mutable class — D-06-1)
+├── events.py     RunEvent (frozen Pydantic) + typed constructors, serialised to SSE by the API (§8)
+├── compactor.py  StepHistoryCompactor — compacts step history at the tier budget (§6)
+└── loop.py       AgenticLoop.run(task, on_event, user_respond, cancel_token) -> Run
+```
+
+Key contracts:
+- **The cycle** (architecture §5.2, spec §4.1): `for step in range(max_steps)` — check cancellation at the step boundary (never mid-step; D-06-7 keeps a step = one `chat()` call), choose a tier (`_tier_for_step`, in the loop — not the chat Router; D-06-6), generate via **non-streaming `chat()`**, classify the action (`tool_call` / `ask_user` / `final` / `reasoning`), dispatch tools and feed results back, compact if over budget, repeat. `max_steps`=20 is the only budget (no inner tool-round cap; D-06-7).
+- **Action classification** (spec §4.2): `[ASK_USER]` / `[FINAL]` markers are the primary signal (injected by the loop, D-06-5); a simple question-mark heuristic is the fallback. **No classifier** (architecture §5.3). A marker-ignoring mid-tier model is mitigated by forcing frontier (D-06-6), not a smarter detector.
+- **Error recovery** (spec §5): a failed/hallucinated tool feeds back a `ToolResult(is_error=True, content=...)` (`tool_name` required — D-03-3); the *model* decides how to recover. Same hallucinated name twice → a stronger instruction.
+- **Step-history compaction** (spec §6): reuses the D-05-X async-bridge *idiom* locally (the loop pre-computes the small-tier summary; the compactor takes a resolved string — D-06-4). The persona block and task description are never touched (the run's invariant floor).
+- **Terminal status is authoritative:** `RunStatus` distinguishes `completed` / `cancelled` / `max_steps_reached` / `error`; a best-effort max-steps summary never reads as `completed` (D-06-2).
+- **End-of-run episodic write-back** tags the chunk as a skill candidate for a future spec 13 (`source="agentic_run"`, `run_id`, `task`, `tools_used`, `steps`, `status`; D-06-8), one combined chunk, `source=SYSTEM`, `written_by="agentic.run"`.
+- **Spec 08 owns** what the loop does not: per-step `Run` persistence, the `user_respond` blocking wiring (the loop just `await`s the injected callback; D-06-10), `RunEvent`→SSE serialisation, and the `TierRegistry` lifecycle.
+
+See [`docs/specs/spec_06/spec_06_agentic.md`](../../docs/specs/spec_06/spec_06_agentic.md) and [`docs/specs/spec_06/decisions.md`](../../docs/specs/spec_06/decisions.md) for the full surface.
+
 ## Dependencies
 
 ```
@@ -211,7 +236,7 @@ Coverage target: every public class and function has at least one test.
 
 - Tool implementations (spec 03).
 - Skill implementations (spec 04).
-- Conversation loop, router, agentic loop (spec 05/06).
+- Conversation loop, router, agentic loop (spec 05/06 — these live in `persona-runtime`, not `persona-core`).
 - `PostgresPGVectorStore` (spec 07 — same protocol, different backend).
 - HTTP API or web UI.
 

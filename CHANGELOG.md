@@ -13,6 +13,24 @@ Per-spec entries are added by the close-out phase of each spec.
 
 _Nothing here yet._
 
+## [0.6.0] — 2026-05-28
+
+Spec 06 close-out. The agentic loop (`persona_runtime.agentic`) — the plan-act-reflect execution engine for end-to-end tasks ("draft a complaint about my landlord refusing to fix mould"). Pure orchestration over specs 01–05; zero new dependencies. The simplest possible agent loop (architecture §5.2): one model decides at each step whether to call a tool, ask the user, or produce a final answer.
+
+### Added
+- `persona_runtime.agentic.errors` — `MaxStepsReachedError`, `RunCancelledError` (under `PersonaError`). Defined for spec-08's optional use; the loop itself returns a `Run` with a terminal `RunStatus` rather than raising (D-06-2). ([`errors.py`](packages/runtime/src/persona_runtime/agentic/errors.py))
+- `persona_runtime.agentic.step` — `StepType` (StrEnum) + `Step` (frozen Pydantic). A step records its action, tool calls/results, question/answer, content, and per-step telemetry (`tier_used`/`tokens`/`latency_ms` — the v0.1 telemetry sink; no separate `StepLog` writer, D-06-3). ([`step.py`](packages/runtime/src/persona_runtime/agentic/step.py))
+- `persona_runtime.agentic.run` — `RunStatus` (StrEnum) + `Run` (frozen Pydantic, UUID default id, tz-aware datetimes, JSON-serialisable per acceptance #10) + `CancelToken` (plain mutable control class — D-06-1). The loop holds mutable working state and emits the frozen `Run` at the end. ([`run.py`](packages/runtime/src/persona_runtime/agentic/run.py))
+- `persona_runtime.agentic.events` — `RunEvent` (frozen Pydantic) + 12 typed classmethod constructors (`started`/`thinking`/`tool_calling`/`tool_result`/`asking_user`/`user_responded`/`reasoning`/`completed`/`cancelled`/`max_steps`/`error`/`finished`). The single place each event's `type`+`data` payload is defined; the API serialises these to SSE (§8). ([`events.py`](packages/runtime/src/persona_runtime/agentic/events.py))
+- `persona_runtime.agentic.compactor.StepHistoryCompactor` — compacts step history at 80% of the tier budget (§6). Preserves the persona block + task (the floor, `context[0]`) and the recent tail verbatim (acceptance #8). The async-bridge is kept local (no shared `_bridge.py`): the loop pre-computes the small-tier summary and passes the compactor a resolved string (D-06-4). ([`compactor.py`](packages/runtime/src/persona_runtime/agentic/compactor.py))
+- `persona_runtime.agentic.loop.AgenticLoop` — the keystone. `async run(task, on_event, user_respond, cancel_token) -> Run` runs the plan-act-reflect cycle: non-streaming `chat()` per step; classification via `[ASK_USER]`/`[FINAL]` markers + a question-mark heuristic fallback (no classifier); error recovery (a hallucinated/failed tool feeds back `ToolResult(is_error=True, ...)`, D-03-3; same bad name twice → a stronger instruction, §5.2); boundary-only cancellation (D-06-7); a best-effort frontier summary at `max_steps` (status `max_steps_reached`, never `completed` — D-06-2); the `use_skill` intercept (D-04-10); step-tier policy in the loop (`_tier_for_step` + a `force_frontier_tier` escape hatch, D-06-6); and an end-of-run episodic write tagging the chunk as a skill candidate for a future spec 13 (`source=agentic_run` + run/task/tools/steps/status metadata, D-06-8). `max_steps` default 20; no inner per-step tool-round cap (D-06-7). ([`loop.py`](packages/runtime/src/persona_runtime/agentic/loop.py))
+- `persona_runtime.agentic.__init__` re-exports the public surface: `AgenticLoop`, `Run`, `RunStatus`, `Step`, `StepType`, `RunEvent`, `CancelToken`, `StepHistoryCompactor`, `MaxStepsReachedError`, `RunCancelledError`. ([`__init__.py`](packages/runtime/src/persona_runtime/agentic/__init__.py))
+
+### Changed
+- `packages/core/SPEC.md` — added an "Agentic loop (Spec 06)" subsection.
+- `.env.example` — noted `max_steps` is a constructor default (20), no env knob.
+- No new dependencies — spec 06 is orchestration over existing surfaces.
+
 ## [0.5.0] — 2026-05-28
 
 Spec 05 close-out. `persona-runtime` — the conversation loop, prompt builder, router, tier registry, and per-turn logging. The first integration spec; composes specs 01–04 into a runnable turn loop. First code outside `persona-core`.

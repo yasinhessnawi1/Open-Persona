@@ -57,12 +57,21 @@ class ScriptedBackend:
         *,
         provider_name: str = "anthropic",  # a provider the formatter knows (D-03-6)
         model_name: str = "claude-sonnet-4-6",
+        chat_script: list[Any] | None = None,
     ) -> None:
         self._rounds = rounds
         self._index = 0
         self._provider_name = provider_name
         self._model_name = model_name
         self.chat_stream_calls = 0
+        # The agentic loop (spec 06) drives non-streaming chat() through a
+        # scripted SEQUENCE of ChatResponses (plan -> tool -> tool -> final).
+        # When chat_script is provided, chat() consumes it in order; when it is
+        # None, chat() keeps the fixed-"SUMMARY" behaviour the conversation
+        # loop's summariser relies on (backward-compatible — research §7).
+        self._chat_script: list[Any] = list(chat_script) if chat_script else []
+        self._chat_index = 0
+        self.chat_calls = 0
 
     @property
     def provider_name(self) -> str:
@@ -85,9 +94,25 @@ class ScriptedBackend:
         max_tokens: int = 4096,
         stop: list[str] | None = None,
     ) -> Any:
-        # Used by the summariser adapter; return a simple object with .content.
         from persona.backends.types import ChatResponse
 
+        self.chat_calls += 1
+        # Agentic-loop path: replay the scripted ChatResponse sequence.
+        if self._chat_script:
+            if self._chat_index < len(self._chat_script):
+                response = self._chat_script[self._chat_index]
+                self._chat_index += 1
+                return response
+            # Exhausted: a defensive empty final (the loop should have stopped).
+            return ChatResponse(
+                content="",
+                tool_calls=[],
+                usage=TokenUsage(prompt_tokens=1, completion_tokens=0, total_tokens=1),
+                model=self._model_name,
+                provider=self._provider_name,
+                latency_ms=0.0,
+            )
+        # Conversation-loop summariser path: a fixed "SUMMARY" response.
         return ChatResponse(
             content="SUMMARY",
             tool_calls=[],
