@@ -120,6 +120,35 @@ Public guarantees:
 
 See [`docs/specs/spec_03/spec_03_tools.md`](../../docs/specs/spec_03/spec_03_tools.md) and [`docs/specs/spec_03/decisions.md`](../../docs/specs/spec_03/decisions.md) for the full surface.
 
+## Skills (Spec 04)
+
+Spec 04 adds `persona.skills/` — the layer that turns a chatbot into an agent that can complete a task A-to-Z. A skill is a directory containing a `SKILL.md` (YAML front matter + Markdown body); the persona's `skills: [...]` list declares which to load.
+
+```
+persona.skills
+├── _tokens.py            count_tokens() — wraps tiktoken cl100k_base
+├── _frontmatter.py       parse_skill_markdown(path) -> (dict, body)
+├── scanner.py            SkillScanner.scan(declared_skills, *, tool_allow_list)
+├── index.py              render_skill_index(skills: list[SkillSpec]) -> str  (pure)
+├── injector.py           SkillInjector.TOKEN_BUDGET=2000; async inject(skill)
+├── use_skill_tool.py     make_use_skill_tool(skills) -> AsyncTool factory
+└── builtin/
+    ├── web_research/SKILL.md       (over-budget stub; exercises summariser/truncator)
+    └── document_drafting/SKILL.md  (under-budget stub; exercises verbatim pass-through)
+```
+
+`persona.schema.skills.SkillSpec` extends additively with `tools_required: list[str]`, `content: str`, `content_token_count: int` (D-04-1). Existing spec-01 fields (`name`, `description`, `path`, `when_to_use`) unchanged.
+
+Public guarantees:
+- `SkillScanner` reads declared skills, parses YAML front matter (hand-rolled ~25-LOC parser per D-04-3), validates `tools_required` against the persona's tool allow-list (WARN if missing), and emits one `SkillSpec` per discovered skill. Per-skill `Exception` envelope — warn-and-skip on missing-on-disk OR malformed YAML OR `SkillSpec` validation error (D-04-4). Absent user `skills/` dir is silently skipped; same-name override of a built-in is WARNING-logged (D-04-5).
+- `render_skill_index(skills)` produces the always-injected compact "available skills" Markdown block. Pure function — no I/O, no clock, no state (D-04-6). Empty list returns empty string (no header).
+- `SkillInjector.TOKEN_BUDGET = 2000` — class constant, non-negotiable in v0.1 per architecture §5.1.2 (D-04-7). `async inject(skill)`: verbatim pass-through under budget; summariser call if over and a summariser was injected; binary-search truncation on character index with marker `"\n\n[truncated]"` otherwise (D-04-8).
+- `make_use_skill_tool(skills)` produces a synthetic `use_skill` `AsyncTool` (Pattern-1 activation; Pattern 2 string-matching deferred entirely per D-04-9). The tool returns `ToolResult(data={"skill_name": ...})` on valid skill activation for the runtime to intercept. **Exported from `persona.skills`**, NOT auto-registered in `build_default_toolbox` — spec 05's runtime composes when `persona.skills` is non-empty (D-04-10; mirrors D-03-2 sibling pattern).
+- For non-native-tool backends (Ollama default + HF local), the spec-02 prompt-shim JSON-block wire format `{"tool": "use_skill", "args": {...}}` (D-02-6) IS the activation channel. No new wire format introduced.
+- Two built-in skill packs ship: `web_research` (>2000 tokens, exercises over-budget injector path end-to-end) and `document_drafting` (<2000 tokens, exercises verbatim pass-through). Real polish content lands in week 14.
+
+See [`docs/specs/spec_04/spec_04_skills.md`](../../docs/specs/spec_04/spec_04_skills.md) and [`docs/specs/spec_04/decisions.md`](../../docs/specs/spec_04/decisions.md) for the full surface.
+
 ## Dependencies
 
 ```
@@ -131,7 +160,7 @@ typer>=0.12,<1
 pyyaml>=6.0,<7
 loguru>=0.7,<1
 httpx>=0.27,<1       # live in spec 02 (OllamaBackend)
-tiktoken>=0.7,<1     # parked; spec 05 (prompt builder)
+tiktoken>=0.7,<1     # live in spec 04 (skill token-budget enforcement)
 anthropic>=0.30,<1   # spec 02 (Anthropic SDK)
 openai>=1.30,<2      # spec 02 (OpenAI/DeepSeek/Groq/Together)
 trafilatura>=2.0,<3  # spec 03 (web_fetch HTML extraction)

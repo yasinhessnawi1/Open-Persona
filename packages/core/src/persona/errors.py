@@ -27,6 +27,7 @@ __all__ = [
     "RuntimeWriteForbiddenError",
     "SandboxViolationError",
     "SchemaVersionMismatchError",
+    "SkillManifestError",
     "StoreNotFoundError",
     "ToolExecutionError",
     "ToolNotAllowedError",
@@ -138,4 +139,21 @@ class MCPServerUnavailableError(PersonaError):
     Subclass of :class:`PersonaError` (flat hierarchy per D-03-1). Used by
     :class:`persona.tools.mcp.client.MCPClient` when ``strict=True`` and the
     underlying transport fails.
+    """
+
+
+class SkillManifestError(PersonaError):
+    """Raised when a ``SKILL.md`` file is malformed.
+
+    Spec 04 (D-04-3). Surfaces from
+    :func:`persona.skills._frontmatter.parse_skill_markdown` for: missing
+    opening/closing front-matter delimiter, malformed YAML in the front
+    matter, or a non-mapping YAML value where the front-matter dict was
+    expected.
+
+    The ``context`` always carries ``{"path": "<absolute path>"}`` and may
+    carry ``{"reason": "<truncated yaml.YAMLError detail>"}`` when the
+    underlying problem was a YAML parse failure. The scanner's per-skill
+    envelope (D-04-4) catches this exception and logs a structured warning;
+    the persona keeps loading with the offending skill omitted.
     """

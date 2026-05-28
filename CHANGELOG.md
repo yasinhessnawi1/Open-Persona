@@ -13,6 +13,28 @@ Per-spec entries are added by the close-out phase of each spec.
 
 _Nothing here yet._
 
+## [0.4.0] — 2026-05-27
+
+Spec 04 close-out. Skills layer — scanner, injector, index renderer, `use_skill` synthetic activation tool, two built-in skill packs.
+
+### Added
+- `persona.skills/` package — skill scanner, injector, index renderer, `use_skill` synthetic tool. ([`packages/core/src/persona/skills/`](packages/core/src/persona/skills/))
+- `persona.skills._tokens.count_tokens` — wraps `tiktoken cl100k_base` at module import; hard-imported (no `len // 4` fallback per D-04-2). Single module-level `_ENCODER` singleton; thread-safe. ([`skills/_tokens.py`](packages/core/src/persona/skills/_tokens.py))
+- `persona.skills._frontmatter.parse_skill_markdown` — hand-rolled ~25-LOC YAML front-matter parser (D-04-3; declines `python-frontmatter` due to BOM silent-failure gap found in Phase 3 §2 research). Tolerates UTF-8 BOM and CRLF line endings; distinguishes all malformed cases with typed `SkillManifestError`. ([`skills/_frontmatter.py`](packages/core/src/persona/skills/_frontmatter.py))
+- `persona.errors.SkillManifestError` — raised by the front-matter parser on malformed input. Includes `context["path"]` always and `context["reason"]` on YAML parse failures. ([`errors.py`](packages/core/src/persona/errors.py))
+- `persona.skills.scanner.SkillScanner` — `scan(declared_skills, *, tool_allow_list)` with per-skill warn-and-skip envelope catching `SkillManifestError`, `ValidationError`, `KeyError` for missing required front-matter fields, and broad `Exception` (D-04-4); `BaseException` propagates. Silent skip on absent user `skills/` dir (D-04-5); same-name override of a built-in is WARNING-logged. Output preserves declared order. ([`skills/scanner.py`](packages/core/src/persona/skills/scanner.py))
+- `persona.skills.index.render_skill_index(skills) -> str` — pure function producing the always-injected compact "available skills" Markdown block (D-04-6). Empty list returns empty string (no header). `when_to_use=None` skips the "Use when:" sub-line. ([`skills/index.py`](packages/core/src/persona/skills/index.py))
+- `persona.skills.injector.SkillInjector` — `TOKEN_BUDGET = 2000` class constant (D-04-7, non-negotiable per architecture §5.1.2); `async inject(skill)` with verbatim pass-through / summariser-call / binary-search-truncation branches. Defensive: summariser returning over-budget output falls through to truncation. `MARKER = "\n\n[truncated]"`, ceil-bisection on character index (D-04-8); 16 tokeniser calls for 85 KB body. ([`skills/injector.py`](packages/core/src/persona/skills/injector.py))
+- `persona.skills.use_skill_tool.make_use_skill_tool(skills)` — closure-based factory producing the synthetic `use_skill` `AsyncTool` via spec-03's `@tool` decorator unchanged (Pattern-1 activation; D-04-9). On valid skill name: returns `ToolResult(is_error=False, data={"skill_name": "X"})` for runtime interception. On unknown name: returns `ToolResult(is_error=True)` with sorted comma-joined available list. Exported from `persona.skills`, NOT auto-registered in `build_default_toolbox` (D-04-10; spec 05 composes). For non-native-tool backends, spec-02's prompt-shim JSON-block format `{"tool": "use_skill", "args": {...}}` (D-02-6) IS the activation channel — no new wire format. ([`skills/use_skill_tool.py`](packages/core/src/persona/skills/use_skill_tool.py))
+- `persona.schema.skills.SkillSpec` extended additively (D-04-1) with `tools_required: list[str]`, `content: str`, `content_token_count: int` — all optional with defaults (`list()`, `""`, `0` respectively). Spec-01's four-field construction surface unchanged. ([`schema/skills.py`](packages/core/src/persona/schema/skills.py))
+- Built-in skill packs `web_research` (2,804 tokens, exercises the over-budget injector path end-to-end) and `document_drafting` (1,151 tokens, exercises the verbatim pass-through path) under `persona/skills/builtin/`. Both regression-guarded by `tests/integration/test_builtin_skills.py::TestTokenCountRegressionGuards`. ([`skills/builtin/web_research/SKILL.md`](packages/core/src/persona/skills/builtin/web_research/SKILL.md), [`skills/builtin/document_drafting/SKILL.md`](packages/core/src/persona/skills/builtin/document_drafting/SKILL.md))
+- `persona.skills.__init__` re-exports seven public names: `SkillSpec`, `SkillScanner`, `SkillInjector`, `render_skill_index`, `make_use_skill_tool`, `count_tokens`, `SkillManifestError`. ([`skills/__init__.py`](packages/core/src/persona/skills/__init__.py))
+
+### Changed
+- `tiktoken` dependency status changes from "parked" (D-01-11) to "live" — used by `persona.skills._tokens` for skill-content token counting. No version-pin change; `tiktoken>=0.7,<1` was already in core deps.
+- `packages/core/SPEC.md` — added "Skills (Spec 04)" subsection summarising the package structure, public guarantees, and the seven D-04 decisions. `tiktoken` Dependencies-comment updated from "parked; spec 05 (prompt builder)" to "live in spec 04 (skill token-budget enforcement)".
+- `.env.example` — added an informational comment block in the new "Skills (spec 04)" section noting that `TOKEN_BUDGET` is a module constant (no env knob in v0.1 per D-04-7) and that absent user `skills/` directories are silently skipped (D-04-5).
+
 ## [0.3.0] — 2026-05-27
 
 Spec 03 close-out. Tools, MCP, and the Toolbox.
