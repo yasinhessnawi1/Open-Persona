@@ -7,14 +7,19 @@ import { buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import type { AuthoringDraft } from "@/lib/api";
 import { ApiError } from "@/lib/api/client";
 import { useAuthor } from "@/lib/hooks/use-author";
-import { savePersona } from "@/lib/persona-actions";
+import { createPersona } from "@/lib/persona-actions";
 import { type PersonaDoc, yamlToDoc } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
 import { PersonaEditor } from "./persona-editor";
 
 type Phase = "describe" | "loading" | "review";
+
+// Matches the server-side cap (D-10-5); the UI hides the questions after this,
+// the server (POST /author/refine) backstops it.
+const MAX_REFINE_ROUNDS = 3;
 
 export function AuthorWizard({
   tools,
@@ -24,14 +29,28 @@ export function AuthorWizard({
   skills: string[];
 }) {
   const t = useTranslations("author");
-  const { author } = useAuthor();
+  const { author, refine } = useAuthor();
   const [description, setDescription] = useState("");
   const [phase, setPhase] = useState<Phase>("describe");
-  const [created, setCreated] = useState<{
-    id: string;
-    doc: PersonaDoc;
-  } | null>(null);
+  const [draft, setDraft] = useState<AuthoringDraft | null>(null);
+  const [doc, setDoc] = useState<PersonaDoc | null>(null);
+  const [round, setRound] = useState(0);
+  const [refining, setRefining] = useState(false);
+  // bumped on each refine so PersonaEditor re-mounts with the regenerated draft
+  const [editorKey, setEditorKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
+
+  function applyDraft(next: AuthoringDraft): boolean {
+    try {
+      setDoc(yamlToDoc(next.yaml));
+      setDraft(next);
+      return true;
+    } catch {
+      // best-effort YAML from a retry-exhausted draft didn't parse (rare)
+      setError(t("authorError"));
+      return false;
+    }
+  }
 
   async function generate() {
     const desc = description.trim();
@@ -39,9 +58,11 @@ export function AuthorWizard({
     setPhase("loading");
     setError(null);
     try {
-      const persona = await author(desc);
-      setCreated({ id: persona.id, doc: yamlToDoc(persona.yaml) });
-      setPhase("review");
+      const result = await author(desc);
+      setRound(0);
+      setEditorKey((k) => k + 1);
+      if (applyDraft(result)) setPhase("review");
+      else setPhase("describe");
     } catch (e) {
       setError(
         e instanceof ApiError && e.isRateLimited
@@ -52,7 +73,32 @@ export function AuthorWizard({
     }
   }
 
-  if (phase === "review" && created) {
+  async function answerQuestion(
+    question: string,
+    answer: string,
+    currentYaml: string,
+  ) {
+    if (refining || round >= MAX_REFINE_ROUNDS) return;
+    setRefining(true);
+    setError(null);
+    try {
+      const next = await refine({ currentYaml, question, answer, round });
+      if (applyDraft(next)) {
+        setRound((r) => r + 1);
+        setEditorKey((k) => k + 1);
+      }
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.isRateLimited
+          ? t("rateLimited")
+          : t("authorError"),
+      );
+    } finally {
+      setRefining(false);
+    }
+  }
+
+  if (phase === "review" && draft && doc) {
     return (
       <div className="flex flex-col gap-6">
         <header>
@@ -63,12 +109,21 @@ export function AuthorWizard({
             {t("reviewTitle")}
           </h1>
         </header>
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
         <PersonaEditor
-          initialDoc={created.doc}
+          key={editorKey}
+          initialDoc={doc}
           tools={tools}
           skills={skills}
-          onSave={savePersona.bind(null, created.id)}
+          onSave={createPersona}
           saveLabel={t("save")}
+          refinement={{
+            questions: draft.questions ?? [],
+            round,
+            maxRounds: MAX_REFINE_ROUNDS,
+            refining,
+            onAnswer: (q, a, yaml) => void answerQuestion(q, a, yaml),
+          }}
         />
       </div>
     );

@@ -1,3 +1,4 @@
+import { Markdown } from "@/components/ui/markdown";
 import { TierBadge } from "./tier-badge";
 import { ToolCallCard, type ToolEntry } from "./tool-call-card";
 
@@ -30,12 +31,18 @@ export function MessageBubble({ message }: { message: ChatMessageView }) {
         </div>
       ) : null}
       {message.content || message.streaming ? (
-        <div className="text-sm leading-relaxed whitespace-pre-wrap">
-          {message.content}
-          {message.streaming ? (
+        message.streaming ? (
+          // Plain text while streaming — avoids half-typed `**`/unclosed ``` fences
+          // flickering; the caret stays inline. Renders to Markdown once complete.
+          <div className="text-sm leading-relaxed whitespace-pre-wrap">
+            {message.content}
             <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-0.5 animate-pulse rounded-full bg-primary" />
-          ) : null}
-        </div>
+          </div>
+        ) : (
+          <div className="text-sm leading-relaxed">
+            <Markdown>{message.content}</Markdown>
+          </div>
+        )
       ) : null}
       {message.tier && !message.streaming ? (
         <TierBadge tier={message.tier} />

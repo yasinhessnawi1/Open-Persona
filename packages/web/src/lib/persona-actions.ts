@@ -38,3 +38,23 @@ export async function savePersona(
   }
   redirect(`/personas/${personaId}`);
 }
+
+/**
+ * Create a persona from a reviewed authoring draft (spec 10, D-10-2). Authoring
+ * now returns a draft (no row); the user saves the reviewed YAML here, which
+ * creates the persona and redirects to its detail page. Validation errors are
+ * returned structured (redirect only on success).
+ */
+export async function createPersona(
+  yaml: string,
+): Promise<{ error: string } | undefined> {
+  const api = await serverApi();
+  const res = await api.POST("/v1/personas", { body: { yaml } });
+  if (res.error !== undefined) {
+    const body = res.error as { error?: string; detail?: unknown };
+    return {
+      error: formatDetail(body.detail, body.error ?? "save_failed"),
+    };
+  }
+  redirect(`/personas/${res.data.id}`);
+}

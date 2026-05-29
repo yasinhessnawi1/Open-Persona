@@ -15,6 +15,7 @@ __all__ = [
     "CreateConversationRequest",
     "CreatePersonaRequest",
     "PostMessageRequest",
+    "RefinePersonaRequest",
     "RespondToRunRequest",
     "StartRunRequest",
     "UpdatePersonaRequest",
@@ -63,6 +64,20 @@ class AuthorPersonaRequest(_Input):
     """LLM-assisted authoring from a natural-language description (§5.1, §6.3)."""
 
     description: str = Field(min_length=1, max_length=4000)
+
+
+class RefinePersonaRequest(_Input):
+    """Refine a draft persona by answering a clarifying question (spec 10, §4 / D-10-2).
+
+    Stateless: ``round`` is the count of refinements already applied (the UI owns
+    the counter); the server rejects ``round > 3`` as the backstop on the
+    3-round cap (D-10-5).
+    """
+
+    current_yaml: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    answer: str = Field(min_length=1)
+    round: int = Field(default=0, ge=0)
 
 
 class CreateConversationRequest(_Input):

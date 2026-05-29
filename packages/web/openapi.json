@@ -104,7 +104,7 @@
       "post": {
         "tags": ["personas"],
         "summary": "Author Persona",
-        "description": "Generate a draft persona from a description, then create it (\u00a76.3).",
+        "description": "Generate a DRAFT persona from a description for review (D-10-2).\n\nReturns the draft envelope (YAML + clarifying questions + prompt version) \u2014\nit does NOT create a persona row. The user reviews/refines, then saves via\n``POST /v1/personas``. The flat authoring credit is deducted per call (the\ncost is the frontier-model call, not a row; D-10-8).",
         "operationId": "author_persona_v1_personas_author_post",
         "requestBody": {
           "content": {
@@ -122,7 +122,47 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PersonaDetail"
+                  "$ref": "#/components/schemas/AuthoringDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas/author/refine": {
+      "post": {
+        "tags": ["personas"],
+        "summary": "Refine Persona",
+        "description": "Refine a draft persona by answering a clarifying question (\u00a74, D-10-2).\n\nStateless: the request carries ``round`` (refinements already applied); the\nserver rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5).\nReturns the updated draft envelope; deducts the flat authoring credit.",
+        "operationId": "refine_persona_v1_personas_author_refine_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefinePersonaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthoringDraft"
                 }
               }
             }
@@ -871,6 +911,44 @@
         "title": "AuthorPersonaRequest",
         "description": "LLM-assisted authoring from a natural-language description (\u00a75.1, \u00a76.3)."
       },
+      "AuthoringDraft": {
+        "properties": {
+          "yaml": {
+            "type": "string",
+            "title": "Yaml"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/ClarifyingQuestion"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "prompt_version": {
+            "type": "string",
+            "title": "Prompt Version"
+          },
+          "errors": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["yaml", "prompt_version"],
+        "title": "AuthoringDraft",
+        "description": "The draft envelope returned by ``/author`` and ``/author/refine`` (D-10-2).\n\nA draft is NOT a persona row \u2014 the user reviews/refines it, then saves via\n``POST /v1/personas`` (which creates the row). ``errors`` is populated only\nwhen validation retries are exhausted (best-effort YAML returned for the form\nto fix, \u00a73.3); ``None`` on success."
+      },
       "ChannelContext": {
         "properties": {
           "platform": {
@@ -912,6 +990,23 @@
         "required": ["platform"],
         "title": "ChannelContext",
         "description": "Opaque connector context passed through the chat endpoint (D-08-3).\n\nThe API stores this on the message row and never interprets it \u2014 ``platform``\nis a free-form string, NEVER an enum the API branches on. All connector logic\nlives in the future spec-12 connectors. Null/absent is the web-UI case."
+      },
+      "ClarifyingQuestion": {
+        "properties": {
+          "section": {
+            "type": "string",
+            "title": "Section"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["section", "question"],
+        "title": "ClarifyingQuestion",
+        "description": "One suggested question the user can answer to improve a draft persona.\n\n``section`` is a free-form hint (expected: identity | self_facts | worldview\n| constraints | tools | skills) \u2014 NOT an enum, so a model that names a\nsection we don't anticipate doesn't sink the parse."
       },
       "ConversationDetail": {
         "properties": {
@@ -1203,6 +1298,36 @@
         "required": ["content"],
         "title": "PostMessageRequest",
         "description": "Send a user message; the response streams over SSE (\u00a75.2).\n\n``channel`` is the optional connector passthrough (D-08-3) \u2014 null for the\nweb UI. The runtime ignores it in v0.1; the API just stores it on the\nmessage row and echoes ``format_hints`` on the ``done`` event."
+      },
+      "RefinePersonaRequest": {
+        "properties": {
+          "current_yaml": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Current Yaml"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Question"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Answer"
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Round",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["current_yaml", "question", "answer"],
+        "title": "RefinePersonaRequest",
+        "description": "Refine a draft persona by answering a clarifying question (spec 10, \u00a74 / D-10-2).\n\nStateless: ``round`` is the count of refinements already applied (the UI owns\nthe counter); the server rejects ``round > 3`` as the backstop on the\n3-round cap (D-10-5)."
       },
       "RespondToRunRequest": {
         "properties": {

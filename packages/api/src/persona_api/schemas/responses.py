@@ -13,7 +13,9 @@ from datetime import datetime  # noqa: TC003 — Pydantic needs it at runtime
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
+    "AuthoringDraft",
     "ChunkEvent",
+    "ClarifyingQuestion",
     "ConversationDetail",
     "ConversationSummary",
     "CreditsResponse",
@@ -58,6 +60,36 @@ class PersonaDetail(_Output):
     avatar_url: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+# -- LLM-assisted authoring (spec 10, §3 / D-10-6) --------------------------
+
+
+class ClarifyingQuestion(_Output):
+    """One suggested question the user can answer to improve a draft persona.
+
+    ``section`` is a free-form hint (expected: identity | self_facts | worldview
+    | constraints | tools | skills) — NOT an enum, so a model that names a
+    section we don't anticipate doesn't sink the parse.
+    """
+
+    section: str
+    question: str
+
+
+class AuthoringDraft(_Output):
+    """The draft envelope returned by ``/author`` and ``/author/refine`` (D-10-2).
+
+    A draft is NOT a persona row — the user reviews/refines it, then saves via
+    ``POST /v1/personas`` (which creates the row). ``errors`` is populated only
+    when validation retries are exhausted (best-effort YAML returned for the form
+    to fix, §3.3); ``None`` on success.
+    """
+
+    yaml: str
+    questions: list[ClarifyingQuestion] = Field(default_factory=list)
+    prompt_version: str
+    errors: list[str] | None = None
 
 
 # -- conversations ----------------------------------------------------------

@@ -36,6 +36,7 @@ __all__ = [
     "ConversationNotFoundError",
     "CreditsExhaustedError",
     "RateLimitExceededError",
+    "RefinementLimitError",
     "RunNotFoundError",
     "register_exception_handlers",
 ]
@@ -64,6 +65,10 @@ class RateLimitExceededError(PersonaError):
     ``X-RateLimit-*`` / ``Retry-After`` headers: ``limit``, ``remaining`` (0),
     ``reset`` (epoch seconds when the window resets).
     """
+
+
+class RefinementLimitError(PersonaError):
+    """Raised when an authoring-refinement request exceeds the 3-round cap (→ 422; D-10-5)."""
 
 
 def _body(error: str, detail: str, context: dict[str, str]) -> dict[str, Any]:
@@ -137,6 +142,15 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content=_body("rate_limit_exceeded", exc.message or "rate limit exceeded", exc.context),
             headers=headers,
+        )
+
+    @app.exception_handler(RefinementLimitError)
+    async def _refine_limit_422(_: Request, exc: RefinementLimitError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content=_body(
+                "refinement_limit_exceeded", exc.message or "refinement limit reached", exc.context
+            ),
         )
 
     @app.exception_handler(SchemaVersionMismatchError)

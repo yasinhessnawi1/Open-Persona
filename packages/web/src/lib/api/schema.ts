@@ -39,9 +39,38 @@ export interface paths {
     put?: never;
     /**
      * Author Persona
-     * @description Generate a draft persona from a description, then create it (§6.3).
+     * @description Generate a DRAFT persona from a description for review (D-10-2).
+     *
+     *     Returns the draft envelope (YAML + clarifying questions + prompt version) —
+     *     it does NOT create a persona row. The user reviews/refines, then saves via
+     *     ``POST /v1/personas``. The flat authoring credit is deducted per call (the
+     *     cost is the frontier-model call, not a row; D-10-8).
      */
     post: operations["author_persona_v1_personas_author_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/personas/author/refine": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Refine Persona
+     * @description Refine a draft persona by answering a clarifying question (§4, D-10-2).
+     *
+     *     Stateless: the request carries ``round`` (refinements already applied); the
+     *     server rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5).
+     *     Returns the updated draft envelope; deducts the flat authoring credit.
+     */
+    post: operations["refine_persona_v1_personas_author_refine_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -373,6 +402,25 @@ export interface components {
       description: string;
     };
     /**
+     * AuthoringDraft
+     * @description The draft envelope returned by ``/author`` and ``/author/refine`` (D-10-2).
+     *
+     *     A draft is NOT a persona row — the user reviews/refines it, then saves via
+     *     ``POST /v1/personas`` (which creates the row). ``errors`` is populated only
+     *     when validation retries are exhausted (best-effort YAML returned for the form
+     *     to fix, §3.3); ``None`` on success.
+     */
+    AuthoringDraft: {
+      /** Yaml */
+      yaml: string;
+      /** Questions */
+      questions?: components["schemas"]["ClarifyingQuestion"][];
+      /** Prompt Version */
+      prompt_version: string;
+      /** Errors */
+      errors?: string[] | null;
+    };
+    /**
      * ChannelContext
      * @description Opaque connector context passed through the chat endpoint (D-08-3).
      *
@@ -391,6 +439,20 @@ export interface components {
       metadata?: {
         [key: string]: string;
       };
+    };
+    /**
+     * ClarifyingQuestion
+     * @description One suggested question the user can answer to improve a draft persona.
+     *
+     *     ``section`` is a free-form hint (expected: identity | self_facts | worldview
+     *     | constraints | tools | skills) — NOT an enum, so a model that names a
+     *     section we don't anticipate doesn't sink the parse.
+     */
+    ClarifyingQuestion: {
+      /** Section */
+      section: string;
+      /** Question */
+      question: string;
     };
     /**
      * ConversationDetail
@@ -556,6 +618,27 @@ export interface components {
       /** Content */
       content: string;
       channel?: components["schemas"]["ChannelContext"] | null;
+    };
+    /**
+     * RefinePersonaRequest
+     * @description Refine a draft persona by answering a clarifying question (spec 10, §4 / D-10-2).
+     *
+     *     Stateless: ``round`` is the count of refinements already applied (the UI owns
+     *     the counter); the server rejects ``round > 3`` as the backstop on the
+     *     3-round cap (D-10-5).
+     */
+    RefinePersonaRequest: {
+      /** Current Yaml */
+      current_yaml: string;
+      /** Question */
+      question: string;
+      /** Answer */
+      answer: string;
+      /**
+       * Round
+       * @default 0
+       */
+      round: number;
     };
     /**
      * RespondToRunRequest
@@ -744,7 +827,40 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["PersonaDetail"];
+          "application/json": components["schemas"]["AuthoringDraft"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  refine_persona_v1_personas_author_refine_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RefinePersonaRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AuthoringDraft"];
         };
       };
       /** @description Validation Error */

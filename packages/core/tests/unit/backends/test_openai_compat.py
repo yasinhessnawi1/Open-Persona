@@ -9,6 +9,7 @@ calls live behind ``@pytest.mark.external`` (not in this file).
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator  # noqa: TC003 — used at runtime in helpers
 from datetime import UTC, datetime
 from typing import Any
@@ -138,6 +139,16 @@ class TestConstruction:
         backend = OpenAICompatibleBackend(config)
         # _openai client base_url string is configured.
         assert backend._openai is not None  # type: ignore[attr-defined]
+
+    def test_anthropic_base_url_has_no_doubled_v1(self) -> None:
+        # Regression for D-10-9: the `anthropic` SDK appends its own
+        # /v1/messages, so the default base_url must NOT carry a /v1/ suffix
+        # (else requests hit /v1/v1/messages -> 404). The OpenAI-compat
+        # providers DO keep /v1/ (their SDK does not append it).
+        anth = OpenAICompatibleBackend(_config("anthropic"))
+        assert "/v1" not in str(anth._anthropic.base_url)  # type: ignore[union-attr]
+        oai = OpenAICompatibleBackend(_config("openai"))
+        assert str(oai._openai.base_url).rstrip("/").endswith("/v1")  # type: ignore[union-attr]
 
 
 # -----------------------------------------------------------------------------
@@ -600,3 +611,27 @@ class TestShimFallback:
             )
         assert response.tool_calls == []
         assert response.content == "just plain text"
+
+
+# -----------------------------------------------------------------------------
+# Real-API smoke test (D-10-9) — manual, paid, non-deterministic.
+# Proves the Anthropic base_url fix end-to-end: a real chat returns content.
+# Skipped unless PERSONA_FRONTIER_API_KEY is set.
+# -----------------------------------------------------------------------------
+
+
+class TestAnthropicRealCall:
+    @pytest.mark.external
+    @pytest.mark.asyncio
+    async def test_anthropic_real_chat_returns_content(self) -> None:
+        key = os.environ.get("PERSONA_FRONTIER_API_KEY")
+        if not key:
+            pytest.skip("PERSONA_FRONTIER_API_KEY not set")
+        model = os.environ.get("PERSONA_FRONTIER_MODEL", "claude-sonnet-4-6")
+        backend = OpenAICompatibleBackend(
+            BackendConfig(provider="anthropic", model=model, api_key=SecretStr(key))
+        )
+        response = await backend.chat([_user("Reply with the single word: ok")], max_tokens=16)
+        # A non-empty reply means the request reached /v1/messages (not /v1/v1/...).
+        assert response.content.strip()
+        assert response.provider == "anthropic"

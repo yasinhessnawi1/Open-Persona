@@ -8,12 +8,15 @@ from persona_api.schemas.requests import (
     CreateConversationRequest,
     CreatePersonaRequest,
     PostMessageRequest,
+    RefinePersonaRequest,
     RespondToRunRequest,
     StartRunRequest,
     UpdatePersonaRequest,
 )
 from persona_api.schemas.responses import (
+    AuthoringDraft,
     ChunkEvent,
+    ClarifyingQuestion,
     ConversationDetail,
     ConversationSummary,
     CreditsResponse,
@@ -30,8 +33,10 @@ from persona_api.schemas.responses import (
 
 __all__ = [
     "AuthorPersonaRequest",
+    "AuthoringDraft",
     "ChannelContext",
     "ChunkEvent",
+    "ClarifyingQuestion",
     "ConversationDetail",
     "ConversationSummary",
     "CreateConversationRequest",
@@ -42,6 +47,7 @@ __all__ = [
     "PersonaDetail",
     "PersonaSummary",
     "PostMessageRequest",
+    "RefinePersonaRequest",
     "RespondToRunRequest",
     "RunStatusResponse",
     "StartRunRequest",

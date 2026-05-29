@@ -11,15 +11,28 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, status
 
 from persona_api.auth import AuthenticatedUser, get_current_user
+from persona_api.errors import RefinementLimitError
 from persona_api.middleware.rate_limit import rate_limit
 from persona_api.schemas import (
+    AuthoringDraft,
     AuthorPersonaRequest,
     CreatePersonaRequest,
     PersonaDetail,
     PersonaSummary,
+    RefinePersonaRequest,
     UpdatePersonaRequest,
 )
-from persona_api.services import audit_service, authoring_service, credits_service, persona_service
+from persona_api.services import (
+    audit_service,
+    authoring_service,
+    catalog_service,
+    credits_service,
+    persona_service,
+)
+
+# The 3-round refinement cap (D-10-5): the UI owns the counter, the server is
+# the backstop. `round` is the count of refinements already applied.
+_MAX_REFINE_ROUNDS = 3
 
 router = APIRouter(prefix="/v1/personas", tags=["personas"])
 
@@ -63,39 +76,96 @@ async def create_persona(
     return _persona_detail(row)
 
 
-@router.post("/author", response_model=PersonaDetail, dependencies=[Depends(rate_limit("author"))])
+@router.post("/author", response_model=AuthoringDraft, dependencies=[Depends(rate_limit("author"))])
 async def author_persona(
     body: AuthorPersonaRequest,
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> PersonaDetail:
-    """Generate a draft persona from a description, then create it (§6.3)."""
+) -> AuthoringDraft:
+    """Generate a DRAFT persona from a description for review (D-10-2).
+
+    Returns the draft envelope (YAML + clarifying questions + prompt version) —
+    it does NOT create a persona row. The user reviews/refines, then saves via
+    ``POST /v1/personas``. The flat authoring credit is deducted per call (the
+    cost is the frontier-model call, not a row; D-10-8).
+    """
     backend = request.app.state.tier_registry.get(request.app.state.authoring_tier)
-    yaml_str = await authoring_service.author_persona_yaml(backend, body.description)
-    persona_id = persona_service.create_persona(
-        rls_engine=request.app.state.rls_engine,
-        embedder=request.app.state.embedder,
-        audit_root=request.app.state.audit_root,
-        owner_id=user.id,
-        yaml_str=yaml_str,
+    draft = await authoring_service.generate_authoring_draft(
+        backend,
+        body.description,
+        [name for name, _ in catalog_service.list_tools()],
+        [name for name, _ in catalog_service.list_skills()],
     )
-    # Flat credit deduction for the frontier-model authoring call (§11 risk).
+    _deduct_and_audit(
+        request, user, "persona.author", draft.prompt_version, reason="persona_authoring"
+    )
+    return draft
+
+
+@router.post(
+    "/author/refine", response_model=AuthoringDraft, dependencies=[Depends(rate_limit("author"))]
+)
+async def refine_persona(
+    body: RefinePersonaRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthoringDraft:
+    """Refine a draft persona by answering a clarifying question (§4, D-10-2).
+
+    Stateless: the request carries ``round`` (refinements already applied); the
+    server rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5).
+    Returns the updated draft envelope; deducts the flat authoring credit.
+    """
+    if body.round >= _MAX_REFINE_ROUNDS:
+        raise RefinementLimitError(
+            "refinement limit reached",
+            context={"round": str(body.round), "max_rounds": str(_MAX_REFINE_ROUNDS)},
+        )
+    backend = request.app.state.tier_registry.get(request.app.state.authoring_tier)
+    draft = await authoring_service.refine_authoring_draft(
+        backend,
+        body.current_yaml,
+        body.question,
+        body.answer,
+        [name for name, _ in catalog_service.list_tools()],
+        [name for name, _ in catalog_service.list_skills()],
+    )
+    _deduct_and_audit(
+        request,
+        user,
+        "persona.author_refine",
+        draft.prompt_version,
+        reason="persona_authoring_refine",
+    )
+    return draft
+
+
+def _deduct_and_audit(
+    request: Request,
+    user: AuthenticatedUser,
+    action: str,
+    prompt_version: str,
+    *,
+    reason: str,
+) -> None:
+    """Deduct the flat authoring credit + record a targetless audit event (D-10-8).
+
+    Author/refine create no persona row, so the audit ``target`` is empty; the
+    eventual ``POST /v1/personas`` audits ``persona.create`` against the real id.
+    """
     credits_service.deduct(
         rls_engine=request.app.state.rls_engine,
         user_id=user.id,
         amount=request.app.state.config.authoring_credit_cost,
-        reason="persona_authoring",
+        reason=reason,
     )
     audit_service.record(
         engine=request.app.state.rls_engine,
         user_id=user.id,
-        action="persona.author",
-        target=persona_id,
+        action=action,
+        target="",
+        metadata={"prompt_version": prompt_version},
     )
-    row = persona_service.get_persona(
-        rls_engine=request.app.state.rls_engine, persona_id=persona_id
-    )
-    return _persona_detail(row)
 
 
 @router.get("", response_model=list[PersonaSummary])

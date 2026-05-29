@@ -34,7 +34,10 @@ Provider = Literal[
 # user can override via ``BackendConfig.base_url`` for proxies or new
 # providers. Not exported from ``persona.backends.__init__``.
 DEFAULT_BASE_URLS: dict[str, str] = {
-    "anthropic": "https://api.anthropic.com/v1/",
+    # No trailing /v1/ for Anthropic: the `anthropic` SDK appends its own
+    # /v1/messages, so a /v1/ suffix here produces /v1/v1/messages → 404
+    # (D-10-9). The OpenAI-compat providers keep /v1/ — their SDK does not append it.
+    "anthropic": "https://api.anthropic.com",
     "openai": "https://api.openai.com/v1/",
     "deepseek": "https://api.deepseek.com/v1/",
     "groq": "https://api.groq.com/openai/v1/",

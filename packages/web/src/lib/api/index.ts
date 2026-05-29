@@ -19,6 +19,8 @@ export type RunStatusResponse = Schemas["RunStatusResponse"];
 export type ToolSummary = Schemas["ToolSummary"];
 export type CreditsResponse = Schemas["CreditsResponse"];
 export type UsageEntry = Schemas["UsageEntry"];
+export type AuthoringDraft = Schemas["AuthoringDraft"];
+export type ClarifyingQuestion = Schemas["ClarifyingQuestion"];
 
 // Requests
 export type CreatePersonaRequest = Schemas["CreatePersonaRequest"];
