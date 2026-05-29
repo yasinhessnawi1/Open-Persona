@@ -94,7 +94,7 @@ class StepHistoryCompactor:
             return context
 
         floor = context[0]
-        recent = context[self._recent_start(context):]
+        recent = context[self._recent_start(context) :]
         summary_message = ConversationMessage(
             role="system",
             content=f"Earlier in this run: {summary}",
