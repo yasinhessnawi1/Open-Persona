@@ -284,7 +284,13 @@ class AgenticLoop:
         """
         await self._emit(on_event, RunEvent.tool_calling(step_num, list(response.tool_calls)))
         new_context = list(context)
-        if response.content:
+        if backend.supports_native_tools:
+            # Native providers require the assistant's tool_calls to precede the
+            # tool results (spec 11 soak finding); carry any narration as content.
+            new_context.append(
+                self._assistant_with_tool_calls(response.content, list(response.tool_calls))
+            )
+        elif response.content:
             new_context.append(self._assistant(response.content))
 
         results: list[ToolResult] = []
@@ -578,6 +584,14 @@ class AgenticLoop:
     @staticmethod
     def _assistant(text: str) -> ConversationMessage:
         return ConversationMessage(role="assistant", content=text, created_at=datetime.now(UTC))
+
+    @staticmethod
+    def _assistant_with_tool_calls(text: str, calls: list[ToolCall]) -> ConversationMessage:
+        """The assistant message that issued tool_calls — required to precede the
+        tool results for native providers (spec 11 soak finding)."""
+        return ConversationMessage(
+            role="assistant", content=text, created_at=datetime.now(UTC), tool_calls=calls
+        )
 
     async def _emit(
         self,

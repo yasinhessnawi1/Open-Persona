@@ -183,9 +183,15 @@ class RunStatusResponse(_Output):
 
 
 class CreditsResponse(_Output):
-    """The user's current credit balance (stub counter)."""
+    """The user's current credit balance (stub counter).
+
+    ``low_balance`` is True when the balance is below
+    :data:`credits_service.LOW_BALANCE_THRESHOLD` (10 000 by default) — the web
+    app uses it to surface the under-limit warning (D-11-12).
+    """
 
     balance: int
+    low_balance: bool = False
 
 
 class UsageEntry(_Output):

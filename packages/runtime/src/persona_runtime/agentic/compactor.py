@@ -94,7 +94,7 @@ class StepHistoryCompactor:
             return context
 
         floor = context[0]
-        recent = context[-_KEEP_RECENT_MESSAGES:]
+        recent = context[self._recent_start(context):]
         summary_message = ConversationMessage(
             role="system",
             content=f"Earlier in this run: {summary}",
@@ -102,6 +102,22 @@ class StepHistoryCompactor:
             metadata={"kind": "step_compaction"},
         )
         return [floor, summary_message, *recent]
+
+    @staticmethod
+    def _recent_start(context: Sequence[ConversationMessage]) -> int:
+        """Index where the verbatim recent tail begins.
+
+        Never index 0 (the floor), and never on a dangling ``tool`` message: a
+        ``tool`` result must keep the preceding assistant ``tool_calls`` message
+        in the same context window, or native providers (OpenAI/DeepSeek) reject
+        the request ("'tool' must follow a message with 'tool_calls'"). We walk
+        the boundary back over any leading ``tool`` messages so the kept tool-call
+        group stays intact. Spec 11 soak finding.
+        """
+        start = max(1, len(context) - _KEEP_RECENT_MESSAGES)
+        while start > 1 and context[start].role == "tool":
+            start -= 1
+        return start
 
     def middle_to_summarise(
         self, context: Sequence[ConversationMessage]
@@ -114,4 +130,5 @@ class StepHistoryCompactor:
         """
         if len(context) <= 1 + _KEEP_RECENT_MESSAGES:
             return []
-        return list(context[1:-_KEEP_RECENT_MESSAGES])
+        start = self._recent_start(context)
+        return list(context[1:start])

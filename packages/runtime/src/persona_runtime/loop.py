@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from persona.logging import get_logger
 from persona.schema.chunks import ChunkProvenance, PersonaChunk, WriteSource, make_chunk_id
 from persona.schema.conversation import ConversationMessage
-from persona.schema.tools import ToolCall
+from persona.schema.tools import ToolCall, ToolResult
 from persona.skills import render_skill_index
 from persona.tools import format_tool_result
 
@@ -242,9 +242,23 @@ class ConversationLoop:
                 # `tool_calling` event) before dispatching them.
                 if on_event is not None:
                     await on_event(RunEvent.tool_calling(-1, round_calls))
+                # Native tool-calling providers (OpenAI/DeepSeek/Anthropic) require
+                # the assistant message that issued the tool_calls to precede the
+                # matching tool results in the re-prompt — otherwise the provider
+                # 400s ("'tool' must follow a message with 'tool_calls'"). Spec 11
+                # soak finding. Shim providers carry the calls as text, so skip.
+                if backend.supports_native_tools:
+                    tool_messages.append(
+                        ConversationMessage(
+                            role="assistant",
+                            content=round_text,
+                            created_at=datetime.now(UTC),
+                            tool_calls=round_calls,
+                        )
+                    )
                 # Dispatch each call; feed results back; intercept use_skill.
                 for call in round_calls:
-                    result = await self._toolbox.dispatch(call)
+                    result = await self._dispatch(call)
                     tool_call_count += 1
                     if on_event is not None:
                         await on_event(RunEvent.tool_result(-1, call.name, result))
@@ -441,6 +455,38 @@ class ConversationLoop:
                 names[delta.call_id] += delta.name_delta
                 args_json[delta.call_id] += delta.arguments_delta
         outcome.calls = [self._build_call(cid, names[cid], args_json[cid]) for cid in order]
+
+    async def _dispatch(self, call: ToolCall) -> ToolResult:
+        """Dispatch a tool call, converting structural failures to is_error results.
+
+        A hallucinated, empty, or not-allowed tool name raises ``ToolNotAllowedError``
+        (spec 03, D-03-8); a registered tool that blows up raises
+        ``ToolExecutionError``. Both are caught and turned into
+        ``ToolResult(is_error=True, ...)`` so the model can self-correct on the
+        next round instead of the error escaping the turn generator and crashing
+        the SSE mid-stream ("response already started"). Mirrors the agentic
+        loop's ``_dispatch`` (one tool-failure discipline across both loops).
+        A tool that runs but fails already returns ``is_error=True`` unchanged.
+        """
+        from persona.errors import ToolExecutionError, ToolNotAllowedError
+
+        try:
+            return await self._toolbox.dispatch(call)
+        except ToolNotAllowedError:
+            available = ", ".join(self._toolbox.names())
+            return ToolResult(
+                tool_name=call.name,
+                call_id=call.call_id,
+                is_error=True,
+                content=f"Tool '{call.name}' is not available. Available tools: {available}",
+            )
+        except ToolExecutionError as exc:
+            return ToolResult(
+                tool_name=call.name,
+                call_id=call.call_id,
+                is_error=True,
+                content=f"Tool '{call.name}' failed: {exc}",
+            )
 
     @staticmethod
     def _build_call(call_id: str, name: str, raw_args: str) -> ToolCall:

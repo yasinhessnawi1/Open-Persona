@@ -19,9 +19,14 @@ async def get_credits(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> CreditsResponse:
-    """The caller's current credit balance (stub counter; §5.5)."""
+    """The caller's current credit balance (stub counter; §5.5).
+
+    ``low_balance`` is surfaced inline so the web app shows the under-limit
+    warning without a second round-trip (D-11-12).
+    """
     balance = credits_service.get_balance(rls_engine=request.app.state.rls_engine, user_id=user.id)
-    return CreditsResponse(balance=balance)
+    low = balance < credits_service.LOW_BALANCE_THRESHOLD
+    return CreditsResponse(balance=balance, low_balance=low)
 
 
 @router.get("/usage", response_model=list[UsageEntry])

@@ -22,7 +22,7 @@ from persona_api.schemas import (
     MessageView,
     PostMessageRequest,
 )
-from persona_api.services import audit_service, chat_service
+from persona_api.services import audit_service, chat_service, credits_service
 
 router = APIRouter(prefix="/v1", tags=["conversations"])
 
@@ -137,6 +137,8 @@ async def post_message(
     chat_service.get_conversation(
         rls_engine=request.app.state.rls_engine, conversation_id=conversation_id
     )
+    # Pre-flight credit guard: 402 BEFORE streaming starts (D-11-12 / spec 11 §5).
+    credits_service.require_credits(rls_engine=request.app.state.rls_engine, user_id=user.id)
     generator = chat_service.stream_chat(
         rls_engine=request.app.state.rls_engine,
         loop_builder=request.app.state.build_conversation_loop,

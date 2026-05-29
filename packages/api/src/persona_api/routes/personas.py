@@ -89,6 +89,8 @@ async def author_persona(
     ``POST /v1/personas``. The flat authoring credit is deducted per call (the
     cost is the frontier-model call, not a row; D-10-8).
     """
+    # Pre-flight credit guard (D-11-12 / spec 11 §5).
+    credits_service.require_credits(rls_engine=request.app.state.rls_engine, user_id=user.id)
     backend = request.app.state.tier_registry.get(request.app.state.authoring_tier)
     draft = await authoring_service.generate_authoring_draft(
         backend,
@@ -121,6 +123,8 @@ async def refine_persona(
             "refinement limit reached",
             context={"round": str(body.round), "max_rounds": str(_MAX_REFINE_ROUNDS)},
         )
+    # Pre-flight credit guard (D-11-12 / spec 11 §5).
+    credits_service.require_credits(rls_engine=request.app.state.rls_engine, user_id=user.id)
     backend = request.app.state.tier_registry.get(request.app.state.authoring_tier)
     draft = await authoring_service.refine_authoring_draft(
         backend,

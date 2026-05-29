@@ -21,13 +21,24 @@ from persona_api.db.models import conversations as conversations_t
 from persona_api.db.models import credit_transactions as credit_tx_t
 from persona_api.db.models import credits as credits_t
 from persona_api.db.models import turn_logs as turn_logs_t
+from persona_api.errors import CreditsExhaustedError
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
 
-__all__ = ["deduct", "ensure_balance", "get_balance", "list_turn_usage", "list_usage"]
+__all__ = [
+    "LOW_BALANCE_THRESHOLD",
+    "deduct",
+    "ensure_balance",
+    "get_balance",
+    "list_turn_usage",
+    "list_usage",
+    "require_credits",
+]
 
 _DEFAULT_BALANCE = 100_000
+# Below this threshold the web app surfaces a low-balance warning (D-11-12).
+LOW_BALANCE_THRESHOLD = 10_000
 
 
 def ensure_balance(*, rls_engine: Engine, user_id: str) -> int:
@@ -45,6 +56,25 @@ def ensure_balance(*, rls_engine: Engine, user_id: str) -> int:
 def get_balance(*, rls_engine: Engine, user_id: str) -> int:
     """Current balance (creates the default row if absent)."""
     return ensure_balance(rls_engine=rls_engine, user_id=user_id)
+
+
+def require_credits(*, rls_engine: Engine, user_id: str) -> int:
+    """Pre-flight credit check: raise :class:`CreditsExhaustedError` (→ 402) if
+    the caller has no credits left. Returns the balance.
+
+    Called at the **top** of every generation endpoint — chat, agentic runs,
+    persona authoring and refinement — *before* the SSE stream / run starts.
+    Raising inside the SSE generator yields the spec-08 "response already
+    started" trap, so the pre-flight gate is the right place (D-11-12).
+    The post-success ``deduct`` (D-08-6) is unchanged.
+    """
+    balance = ensure_balance(rls_engine=rls_engine, user_id=user_id)
+    if balance <= 0:
+        raise CreditsExhaustedError(
+            "Your free credits are used up. Top-up coming soon — contact support.",
+            context={"balance": str(balance)},
+        )
+    return balance
 
 
 def deduct(*, rls_engine: Engine, user_id: str, amount: int, reason: str) -> int:

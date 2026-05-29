@@ -171,6 +171,32 @@ class TestToolCallLoop:
         # Two chat_stream calls: tool round + final text round.
         assert backend.chat_stream_calls == 2
 
+    @pytest.mark.asyncio
+    async def test_hallucinated_tool_name_recovers_instead_of_crashing(self) -> None:
+        # Spec-11 soak finding (T03): the model emits a tool call whose name is
+        # not in the allow-list (a hallucination — or an empty name from a
+        # malformed call). ``toolbox.dispatch`` raises ``ToolNotAllowedError``;
+        # the loop must catch it, feed an is_error result back, and let the turn
+        # FINISH — not let the error escape the generator and crash the SSE
+        # mid-stream ("response already started"). Mirrors the agentic loop's
+        # ``_dispatch`` (one tool-failure discipline across both loops).
+        backend = ScriptedBackend(
+            [
+                ScriptedRound(tool_name="ghost_tool", tool_args={"x": "y"}, call_id="c0"),
+                ScriptedRound(text="That tool doesn't exist — here is a direct answer."),
+            ]
+        )
+        loop, _stores, writer = _make_loop(backend)
+
+        chunks = [c async for c in loop.turn(_conv(0), "do the thing")]  # must NOT raise
+
+        accumulated = "".join(c.delta for c in chunks)
+        assert "direct answer" in accumulated
+        assert chunks[-1].is_final is True
+        # the bad call was dispatched once (and recovered), then the model re-answered
+        assert writer.logs[0].tool_calls == 1
+        assert backend.chat_stream_calls == 2
+
 
 class TestMaxToolRoundsCap:
     @pytest.mark.asyncio

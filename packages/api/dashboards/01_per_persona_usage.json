@@ -1,0 +1,97 @@
+{
+  "title": "Open Persona — Per-Persona Usage (§6.1)",
+  "uid": "open-persona-per-persona-usage",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "tags": ["open-persona", "spec-11", "section-6.1"],
+  "timezone": "browser",
+  "time": {"from": "now-30d", "to": "now"},
+  "refresh": "5m",
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "barchart",
+      "title": "Conversations per persona (last 30 days)",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"orientation": "horizontal", "legend": {"showLegend": false}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p.id AS persona_id, COUNT(c.id) AS conversations FROM personas p LEFT JOIN conversations c ON c.persona_id = p.id AND c.created_at > NOW() - INTERVAL '30 days' GROUP BY p.id ORDER BY conversations DESC LIMIT 50;"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Average turns per conversation (over time)",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"showLegend": true}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('day', tl.created_at) AS time, AVG(turns)::float AS avg_turns FROM (SELECT conversation_id, COUNT(*) AS turns, MAX(created_at) AS created_at FROM turn_logs WHERE $__timeFilter(created_at) GROUP BY conversation_id) tl GROUP BY 1 ORDER BY 1;"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Episodic memory chunks per persona",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 5000},
+              {"color": "red", "value": 20000}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^chunks$/"}, "textMode": "auto"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT persona_id, COUNT(*) AS chunks FROM memory_chunks WHERE kind = 'episodic' AND superseded_by IS NULL GROUP BY persona_id ORDER BY chunks DESC LIMIT 25;"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Compaction events per persona (≈ ⌊compacted_up_to / 10⌋ per conversation; spec 05 K=10)",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"showLegend": true}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('day', updated_at) AS time, persona_id AS metric, SUM(compacted_up_to / 10)::int AS compactions FROM conversations WHERE $__timeFilter(updated_at) AND compacted_up_to > 0 GROUP BY 1, persona_id ORDER BY 1;"
+        }
+      ]
+    }
+  ]
+}

@@ -29,11 +29,15 @@ from persona.backends.errors import (
 from persona.backends.openai_compat import (
     _NATIVE_TOOLS_CAPABILITY,
     OpenAICompatibleBackend,
+    _message_to_anthropic,
+    _message_to_openai,
     _native_tools_supported,
 )
 from persona.backends.protocol import ChatBackend
 from persona.backends.types import ChatResponse, StreamChunk, ToolSpec
 from persona.schema.conversation import ConversationMessage  # noqa: TC001
+from persona.schema.tools import ToolCall, ToolResult
+from persona.tools import format_tool_result
 from pydantic import SecretStr
 
 
@@ -80,6 +84,77 @@ class TestCapabilityMatrix:
 
     def test_unsupported_groq_unlisted_model(self) -> None:
         assert _native_tools_supported("groq", "whisper-large-v3") is False
+
+
+class TestToolCallMessageProtocol:
+    """The native tool-calling message round-trip (spec 11 soak findings).
+
+    A native provider requires the assistant message that issued the tool_calls
+    to precede the tool result, and the result's id to match the call's id.
+    These regression-gate the four soak fixes that the (external) soak proved.
+    """
+
+    def _now(self) -> datetime:
+        return datetime(2026, 5, 29, tzinfo=UTC)
+
+    def test_openai_assistant_message_serialises_tool_calls(self) -> None:
+        msg = ConversationMessage(
+            role="assistant",
+            content="searching…",
+            created_at=self._now(),
+            tool_calls=[ToolCall(name="web_search", args={"query": "mould"}, call_id="call_0")],
+        )
+        out = _message_to_openai(msg)
+        assert out["role"] == "assistant"
+        assert out["tool_calls"][0]["id"] == "call_0"
+        assert out["tool_calls"][0]["type"] == "function"
+        assert out["tool_calls"][0]["function"]["name"] == "web_search"
+        # arguments is a JSON STRING per the OpenAI schema
+        assert out["tool_calls"][0]["function"]["arguments"] == '{"query": "mould"}'
+
+    def test_openai_assistant_without_tool_calls_unchanged(self) -> None:
+        msg = ConversationMessage(role="assistant", content="hi", created_at=self._now())
+        out = _message_to_openai(msg)
+        assert "tool_calls" not in out
+        assert out == {"role": "assistant", "content": "hi"}
+
+    def test_openai_tool_result_id_matches_the_call(self) -> None:
+        # the whole pairing: assistant.tool_calls[].id == tool message tool_call_id
+        call = ToolCall(name="web_search", args={"query": "x"}, call_id="call_42")
+        result = ToolResult(tool_name="web_search", content="results", call_id="call_42")
+        result_msg = format_tool_result(call, result, provider_name="deepseek")
+        out = _message_to_openai(result_msg)
+        assert out["role"] == "tool"
+        assert out["tool_call_id"] == "call_42"  # NOT "" (the soak metadata-key bug)
+
+    def test_anthropic_assistant_message_serialises_tool_use_blocks(self) -> None:
+        msg = ConversationMessage(
+            role="assistant",
+            content="searching…",
+            created_at=self._now(),
+            tool_calls=[ToolCall(name="web_search", args={"query": "mould"}, call_id="tu_1")],
+        )
+        out = _message_to_anthropic(msg)
+        assert out["role"] == "assistant"
+        blocks = out["content"]
+        assert {"type": "text", "text": "searching…"} in blocks
+        tool_use = next(b for b in blocks if b["type"] == "tool_use")
+        assert tool_use["id"] == "tu_1"
+        assert tool_use["name"] == "web_search"
+        assert tool_use["input"] == {"query": "mould"}
+
+    def test_anthropic_tool_result_carries_the_id(self) -> None:
+        # KNOWN LIMITATION (spec 11, documented in the README): the Anthropic
+        # native tool path is NOT soak-verified — DeepSeek is the demo-primary
+        # (D-11-9), Anthropic the outage backup. format_tool_result(anthropic)
+        # encodes the tool_result block as a user message, so the id is present
+        # but not yet a structured top-level block. The OpenAI/DeepSeek path
+        # (above) is the soak-proven one. Use DeepSeek for tool-heavy demos.
+        call = ToolCall(name="web_search", args={}, call_id="tu_9")
+        result = ToolResult(tool_name="web_search", content="r", call_id="tu_9")
+        out = _message_to_anthropic(format_tool_result(call, result, provider_name="anthropic"))
+        assert out["role"] == "user"
+        assert "tu_9" in out["content"]
 
     def test_unsupported_unknown_provider(self) -> None:
         assert _native_tools_supported("nonsense", "x") is False

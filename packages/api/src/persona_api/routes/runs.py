@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from persona_api.auth import AuthenticatedUser, get_current_user
 from persona_api.middleware.rate_limit import rate_limit
 from persona_api.schemas import RespondToRunRequest, RunStatusResponse, StartRunRequest
-from persona_api.services import audit_service, run_service
+from persona_api.services import audit_service, credits_service, run_service
 
 router = APIRouter(prefix="/v1", tags=["runs"])
 
@@ -31,6 +31,8 @@ async def start_run(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> RunStatusResponse:
     """Start an agentic run (returns the run_id immediately; runs in background)."""
+    # Pre-flight credit guard (D-11-12 / spec 11 §5): 402 before the background task starts.
+    credits_service.require_credits(rls_engine=request.app.state.rls_engine, user_id=user.id)
     run_id = await run_service.start_run(
         rls_engine=request.app.state.rls_engine,
         registry=request.app.state.run_registry,

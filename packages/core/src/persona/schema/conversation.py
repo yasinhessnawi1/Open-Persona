@@ -18,6 +18,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from persona.schema.tools import ToolCall  # noqa: TC001 — Pydantic needs runtime access
+
 __all__ = [
     "Conversation",
     "ConversationHistory",
@@ -37,6 +39,12 @@ class ConversationMessage(BaseModel):
         created_at: UTC-aware datetime of the message.
         metadata: Arbitrary string-keyed metadata (tool-call ids, tier
             used, latency, etc.).
+        tool_calls: Structured tool calls issued by an ``assistant`` message.
+            Populated by the runtime when a native-tool-calling backend
+            requests tools, so the re-prompt carries the assistant's
+            ``tool_calls`` *before* the matching ``tool`` results — the
+            OpenAI/Anthropic protocol requires this pairing (spec 11 soak
+            finding). Empty for every other message.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -45,6 +53,7 @@ class ConversationMessage(BaseModel):
     content: str
     created_at: datetime
     metadata: dict[str, str] = Field(default_factory=dict)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
     @field_validator("created_at", mode="after")
     @classmethod

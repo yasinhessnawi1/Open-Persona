@@ -422,6 +422,11 @@ class OpenAICompatibleBackend:
 
         usage: TokenUsage | None = None
         stream = await self._openai.chat.completions.create(**kwargs)
+        # OpenAI/DeepSeek streaming sends a tool call's `id` only on its FIRST
+        # delta; continuation deltas carry the same `index` but an empty `id`.
+        # Resolve the stable id by index so every emitted delta carries it (spec
+        # 11 soak finding — otherwise continuations collapse to call_id="").
+        id_by_index: dict[int, str] = {}
         async for chunk in stream:
             chunk_usage = getattr(chunk, "usage", None)
             if chunk_usage is not None:
@@ -446,10 +451,20 @@ class OpenAICompatibleBackend:
                     yield StreamChunk(delta=text)
             for tc in tool_calls:
                 fn = getattr(tc, "function", None)
+                idx = getattr(tc, "index", 0) or 0
+                raw_id = getattr(tc, "id", "") or ""
+                if raw_id:
+                    id_by_index[idx] = raw_id
+                elif idx not in id_by_index:
+                    # Some providers (DeepSeek) stream tool calls with an `index`
+                    # but no `id`; synthesise a stable, unique id per index so the
+                    # call's deltas accumulate together and the assistant.tool_calls
+                    # id matches its tool_result tool_call_id (spec 11 soak finding).
+                    id_by_index[idx] = f"call_{idx}"
                 yield StreamChunk(
                     delta="",
                     tool_call_delta=ToolCallDelta(
-                        call_id=getattr(tc, "id", "") or "",
+                        call_id=id_by_index[idx],
                         name_delta=(getattr(fn, "name", "") if fn else "") or "",
                         arguments_delta=(getattr(fn, "arguments", "") if fn else "") or "",
                     ),
@@ -546,11 +561,23 @@ def _message_to_anthropic(msg: ConversationMessage) -> dict[str, Any]:
             "content": [
                 {
                     "type": "tool_result",
-                    "tool_use_id": msg.metadata.get("call_id", ""),
+                    "tool_use_id": msg.metadata.get("tool_call_id", ""),
                     "content": msg.content,
                 }
             ],
         }
+    if role == "assistant" and msg.tool_calls:
+        # Anthropic requires the assistant's tool_use blocks to precede the
+        # matching tool_result (spec 11 soak finding). An optional leading text
+        # block carries any narration.
+        blocks: list[dict[str, Any]] = []
+        if msg.content:
+            blocks.append({"type": "text", "text": msg.content})
+        blocks.extend(
+            {"type": "tool_use", "id": tc.call_id, "name": tc.name, "input": tc.args}
+            for tc in msg.tool_calls
+        )
+        return {"role": "assistant", "content": blocks}
     return {"role": role, "content": msg.content}
 
 
@@ -558,7 +585,19 @@ def _message_to_openai(msg: ConversationMessage) -> dict[str, Any]:
     """Convert one ``ConversationMessage`` to OpenAI's message shape."""
     base: dict[str, Any] = {"role": msg.role, "content": msg.content}
     if msg.role == "tool":
-        base["tool_call_id"] = msg.metadata.get("call_id", "")
+        base["tool_call_id"] = msg.metadata.get("tool_call_id", "")
+    if msg.role == "assistant" and msg.tool_calls:
+        # OpenAI/DeepSeek require the assistant's tool_calls to precede the
+        # matching role="tool" results (spec 11 soak finding). arguments is a
+        # JSON string per the OpenAI function-calling schema.
+        base["tool_calls"] = [
+            {
+                "id": tc.call_id,
+                "type": "function",
+                "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
+            }
+            for tc in msg.tool_calls
+        ]
     return base
 
 

@@ -94,11 +94,21 @@ class TestCompactIfNeeded:
     def test_compaction_reduces_token_count(self) -> None:
         compactor = StepHistoryCompactor()
         big = "x " * 3000
-        context = [_floor(), *[_msg("tool", big) for _ in range(12)], _msg("assistant", "done")]
+        # A realistic agentic context: each step is an assistant turn that issued
+        # tool_calls followed by its big tool result (a tool message never appears
+        # without a preceding assistant turn — the provider would reject it).
+        steps: list[ConversationMessage] = []
+        for _ in range(6):
+            steps.append(_msg("assistant", "calling a tool"))
+            steps.append(_msg("tool", big))
+        context = [_floor(), *steps, _msg("assistant", "done")]
         before = count_tokens("\n".join(f"{m.role}: {m.content}" for m in context))
         result = compactor.compact_if_needed(context, budget=2000, summary="brief summary")
         after = count_tokens("\n".join(f"{m.role}: {m.content}" for m in result))
         assert after < before
+        # the verbatim tail must not begin with a dangling tool message (spec 11)
+        tail = result[2:]  # [floor, summary, *tail]
+        assert tail[0].role != "tool"
 
 
 class TestMiddleToSummarise:

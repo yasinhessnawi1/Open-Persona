@@ -1,0 +1,89 @@
+{
+  "title": "Open Persona — Routing Health (§6.2)",
+  "uid": "open-persona-routing-health",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "tags": ["open-persona", "spec-11", "section-6.2"],
+  "timezone": "browser",
+  "time": {"from": "now-7d", "to": "now"},
+  "refresh": "5m",
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Tier distribution: frontier / mid / small (stacked area)",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 9},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "line", "fillOpacity": 50, "stacking": {"mode": "percent"}, "showPoints": "never"}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"showLegend": true, "displayMode": "table", "values": ["lastNotNull", "mean"]}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('hour', created_at) AS time, tier_used AS metric, COUNT(*)::int AS turns FROM turn_logs WHERE $__timeFilter(created_at) GROUP BY 1, tier_used ORDER BY 1;"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Estimated cost per conversation (cents, line) — from turn_logs.cost_cents",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 9, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4}, "overrides": []},
+      "options": {"legend": {"showLegend": true}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT MAX(created_at) AS time, conversation_id AS metric, (SUM(cost_cents) / 100.0)::float AS cost_usd FROM turn_logs WHERE $__timeFilter(created_at) GROUP BY conversation_id ORDER BY time;"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "histogram",
+      "title": "Tool calls per turn (histogram)",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 12, "y": 9, "w": 12, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"bucketSize": 1, "legend": {"showLegend": false}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT tool_calls FROM turn_logs WHERE $__timeFilter(created_at);"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Skill activations per day (counter)",
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 17, "w": 24, "h": 7},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"showLegend": true}},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('day', created_at) AS time, skill_used AS metric, COUNT(*)::int AS activations FROM turn_logs WHERE $__timeFilter(created_at) AND skill_used IS NOT NULL GROUP BY 1, skill_used ORDER BY 1;"
+        }
+      ]
+    }
+  ]
+}
