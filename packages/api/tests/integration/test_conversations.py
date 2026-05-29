@@ -15,14 +15,16 @@ import pytest
 from fastapi.testclient import TestClient
 from persona.backends import StreamChunk, TokenUsage
 from persona.schema.conversation import ConversationMessage
+from persona.schema.tools import ToolCall, ToolResult
 from persona_api.app import create_app
 from persona_api.auth import AuthenticatedUser
 from persona_api.config import APIConfig
 from persona_api.middleware.rls_context import make_rls_engine
+from persona_runtime.agentic.events import RunEvent
 from sqlalchemy import text
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
     from persona.schema.conversation import Conversation
     from sqlalchemy import Engine
@@ -44,15 +46,22 @@ identity:
 
 class _ScriptedLoop:
     """A stand-in for ConversationLoop: yields chunks + mutates the conversation
-    the way the real loop does (appends user + assistant messages on success)."""
+    the way the real loop does (appends user + assistant messages on success).
+    Accepts the real ``on_event`` param and fires a ``tier`` event."""
 
-    def __init__(self, reply: str = "Hello there!") -> None:
+    def __init__(self, reply: str = "Hello there!", *, tier: str = "mid") -> None:
         self._reply = reply
+        self._tier = tier
 
     async def turn(
-        self, conversation: Conversation, user_message: str
+        self,
+        conversation: Conversation,
+        user_message: str,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)
+        if on_event is not None:
+            await on_event(RunEvent.tier(self._tier))
         conversation.messages.append(
             ConversationMessage(role="user", content=user_message, created_at=now)
         )
@@ -66,6 +75,45 @@ class _ScriptedLoop:
             delta="",
             is_final=True,
             usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        )
+
+
+class _ToolUsingLoop:
+    """A stand-in that dispatches a tool mid-turn — surfaces tool_calling +
+    tool_result via on_event exactly as the real loop now does, on a chosen
+    (non-frontier) tier. Proves the chat SSE tool-event + real-tier contract."""
+
+    def __init__(self, *, tier: str = "mid") -> None:
+        self._tier = tier
+
+    async def turn(
+        self,
+        conversation: Conversation,
+        user_message: str,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        now = datetime.now(UTC)
+        assert on_event is not None
+        await on_event(RunEvent.tier(self._tier))
+        conversation.messages.append(
+            ConversationMessage(role="user", content=user_message, created_at=now)
+        )
+        # the model calls web_search; the loop surfaces tool_calling then dispatches
+        call = ToolCall(name="web_search", args={"query": "Norwegian tenancy law"}, call_id="c1")
+        await on_event(RunEvent.tool_calling(-1, [call]))
+        result = ToolResult(
+            tool_name="web_search", content="results about husleieloven", call_id="c1"
+        )
+        await on_event(RunEvent.tool_result(-1, "web_search", result))
+        # then the final answer
+        conversation.messages.append(
+            ConversationMessage(role="assistant", content="Based on my search…", created_at=now)
+        )
+        yield StreamChunk(delta="Based on my search…", is_final=False)
+        yield StreamChunk(
+            delta="",
+            is_final=True,
+            usage=TokenUsage(prompt_tokens=20, completion_tokens=8, total_tokens=28),
         )
 
 
@@ -283,3 +331,70 @@ def test_auto_title_failure_is_best_effort(client: tuple[TestClient, str, str]) 
     assert resp.status_code == 200  # the turn succeeded despite the title failure
     hist = c.get(f"/v1/conversations/{conv_id}", headers=_auth(uid)).json()
     assert [m["role"] for m in hist["messages"]] == ["user", "assistant"]  # both persisted
+
+
+# -- the gap fix: chat SSE emits tool_calling/tool_result + real tier --------
+
+
+def test_tool_using_turn_emits_tool_events_and_real_tier(
+    client: tuple[TestClient, str, str],
+) -> None:
+    """A chat turn whose model calls a tool emits tool_calling then tool_result
+    (is_error+content, never `error`), in order, BEFORE done — and done.tier is
+    the router's actual choice (here 'mid'), not the old hardcoded 'frontier'."""
+    import json
+
+    c, uid, persona_id = client
+
+    async def _build_tool_loop(_pid: str) -> _ToolUsingLoop:
+        return _ToolUsingLoop(tier="mid")
+
+    c.app.state.build_conversation_loop = _build_tool_loop  # type: ignore[attr-defined]
+    conv_id = _new_conversation(c, uid, persona_id)
+
+    resp = c.post(
+        f"/v1/conversations/{conv_id}/messages",
+        json={"content": "what does Norwegian tenancy law say?"},
+        headers=_auth(uid),
+    )
+    assert resp.status_code == 200
+    events = _read_sse(resp.text)
+    kinds = [e for e, _ in events]
+
+    # tool_calling then tool_result, both before done (order preserved)
+    assert "tool_calling" in kinds
+    assert "tool_result" in kinds
+    assert kinds.index("tool_calling") < kinds.index("tool_result") < kinds.index("done")
+
+    # tool_calling payload: the shared run-viewer shape (tool_names + tool_calls)
+    tool_calling = next(json.loads(d) for e, d in events if e == "tool_calling")
+    assert tool_calling["tool_names"] == "web_search"
+    assert tool_calling["tool_calls"][0]["name"] == "web_search"
+    assert tool_calling["tool_calls"][0]["args"] == {"query": "Norwegian tenancy law"}
+
+    # tool_result payload: is_error + content, NO `error` field (D-03-3)
+    tool_result = next(json.loads(d) for e, d in events if e == "tool_result")
+    assert tool_result["tool_name"] == "web_search"
+    assert tool_result["is_error"] is False
+    assert tool_result["content"] == "results about husleieloven"
+    assert "error" not in tool_result
+
+    # done.tier is the real router choice, not hardcoded "frontier"
+    done = next(json.loads(d) for e, d in events if e == "done")
+    assert done["tier"] == "mid"
+
+
+def test_no_tool_turn_done_tier_reflects_router_choice(
+    client: tuple[TestClient, str, str],
+) -> None:
+    """Even a no-tool turn carries the real tier on done (the default scripted
+    loop fires tier='mid')."""
+    import json
+
+    c, uid, persona_id = client
+    conv_id = _new_conversation(c, uid, persona_id)
+    resp = c.post(
+        f"/v1/conversations/{conv_id}/messages", json={"content": "hi"}, headers=_auth(uid)
+    )
+    done = next(json.loads(d) for e, d in _read_sse(resp.text) if e == "done")
+    assert done["tier"] == "mid"  # _ScriptedLoop fires tier('mid'), not "frontier"

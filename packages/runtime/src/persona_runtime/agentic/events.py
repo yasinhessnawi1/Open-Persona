@@ -33,7 +33,7 @@ class RunEvent(BaseModel):
     """One event in a run's lifecycle, serialised to SSE by the API (spec §8).
 
     Attributes:
-        type: The event kind — one of ``started``, ``thinking``,
+        type: The event kind — one of ``started``, ``tier``, ``thinking``,
             ``tool_calling``, ``tool_result``, ``asking_user``,
             ``user_responded``, ``reasoning``, ``completed``, ``cancelled``,
             ``max_steps``, ``error``, ``finished``.
@@ -64,6 +64,16 @@ class RunEvent(BaseModel):
     def started(cls, task: str) -> RunEvent:
         """The run has begun executing ``task``."""
         return cls(type="started", step=-1, data={"task": task}, timestamp=datetime.now(UTC))
+
+    @classmethod
+    def tier(cls, tier: str) -> RunEvent:
+        """The model tier chosen for this turn/step (run-level; ``step=-1``).
+
+        Used by the chat SSE stream (``ConversationLoop.turn``) to surface the
+        router's actual tier choice — and available to the run viewer too. One
+        event vocabulary across both streams.
+        """
+        return cls(type="tier", step=-1, data={"tier": tier}, timestamp=datetime.now(UTC))
 
     @classmethod
     def thinking(cls, step: int) -> RunEvent:

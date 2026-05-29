@@ -40,11 +40,12 @@ from persona.schema.tools import ToolCall
 from persona.skills import render_skill_index
 from persona.tools import format_tool_result
 
+from persona_runtime.agentic.events import RunEvent
 from persona_runtime.logging import TurnLog, estimate_cost_cents
 from persona_runtime.prompt import RetrievedContext
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from persona.backends import ChatBackend, StreamChunk, TokenUsage
     from persona.history import ConversationHistoryManager
@@ -144,6 +145,7 @@ class ConversationLoop:
         self,
         conversation: Conversation,
         user_message: str,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Process one user turn, yielding StreamChunks for the response.
 
@@ -156,6 +158,16 @@ class ConversationLoop:
         Args:
             conversation: The live conversation (mutated on success; D-S05-4).
             user_message: This turn's user message.
+            on_event: Optional async callback for granular turn events
+                (``tool_calling`` / ``tool_result`` as tools dispatch, and a
+                run-level ``tier`` event once the tier is chosen). Mirrors
+                :meth:`AgenticLoop.run`'s ``on_event`` and reuses the SAME
+                :class:`RunEvent` shapes — one event vocabulary covers both the
+                chat and run-viewer SSE streams (the API maps them). Fired in
+                order, interleaved with the yielded text chunks. ``None`` → the
+                events are simply not surfaced (the loop's behaviour is
+                otherwise unchanged). Events use ``step=-1`` (a turn is a single
+                conceptual step, not the run viewer's numbered steps).
 
         Yields:
             :class:`StreamChunk` objects ending with ``is_final=True``.
@@ -167,6 +179,8 @@ class ConversationLoop:
         history, compacted = await self._manage_history(conversation)
         skill_index = render_skill_index(self._scanned_skills)
         tier = self._router.choose(self._persona, user_message, conversation)
+        if on_event is not None:
+            await on_event(RunEvent.tier(tier))
         backend = self._tiers.get(tier)
         max_tokens = _backend_max_tokens(backend)
 
@@ -210,10 +224,16 @@ class ConversationLoop:
                     yield _text_chunk(round_text)
                 if round_usage is not None:
                     usage = round_usage
+                # Surface the round's tool calls (the chat/run-viewer SSE
+                # `tool_calling` event) before dispatching them.
+                if on_event is not None:
+                    await on_event(RunEvent.tool_calling(-1, round_calls))
                 # Dispatch each call; feed results back; intercept use_skill.
                 for call in round_calls:
                     result = await self._toolbox.dispatch(call)
                     tool_call_count += 1
+                    if on_event is not None:
+                        await on_event(RunEvent.tool_result(-1, call.name, result))
                     tool_messages.append(
                         format_tool_result(call, result, provider_name=backend.provider_name)
                     )

@@ -43,7 +43,10 @@ identity:
 
 class _Loop:
     async def turn(
-        self, conversation: Conversation, user_message: str
+        self,
+        conversation: Conversation,
+        user_message: str,
+        on_event: object = None,  # noqa: ARG002 — accepted to match the loop signature
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)
         conversation.messages.append(

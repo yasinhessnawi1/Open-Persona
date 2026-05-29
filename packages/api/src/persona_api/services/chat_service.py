@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
     from persona.backends import StreamChunk
+    from persona_runtime.agentic.events import RunEvent
     from persona_runtime.loop import ConversationLoop
     from sqlalchemy import Connection, Engine
 
@@ -218,6 +219,13 @@ async def stream_chat(
     On the FIRST turn of a conversation (no prior messages), an optional
     ``title_builder`` (the small tier) generates a short title from the first
     user message — best-effort: a failure leaves the default title untouched.
+
+    Granular turn events (``tool_calling`` / ``tool_result`` as tools dispatch,
+    plus the router's ``tier``) are surfaced via the loop's ``on_event``
+    callback and emitted as SSE frames IN ORDER, interleaved with the text
+    chunks, before the terminal ``done`` event. These reuse the SAME
+    :class:`RunEvent` shapes as the run-viewer stream — one event vocabulary
+    covers both (closes the gap spec 09 found).
     """
     # Load the conversation under the RLS scope (its own short transaction).
     with rls_engine.begin() as conn:
@@ -228,11 +236,35 @@ async def stream_chat(
 
     loop = await loop_builder(persona_id)
 
+    # The loop fires on_event synchronously between chunk yields; buffer the
+    # events and flush them (in order) before the next chunk's frame, so the SSE
+    # stream preserves the true interleaving. `tier` is captured for `done`.
+    pending: list[RunEvent] = []
+    tier = "frontier"  # fallback; replaced by the router's real choice via on_event
+
+    async def _on_event(event: RunEvent) -> None:
+        pending.append(event)
+
+    def _drain() -> list[bytes]:
+        nonlocal tier
+        frames: list[bytes] = []
+        for ev in pending:
+            if ev.type == "tier":
+                tier = str(ev.data.get("tier", tier))
+                continue  # tier rides the `done` event, not its own SSE frame
+            frames.append(_sse(ev.type, ev.data))
+        pending.clear()
+        return frames
+
     last_chunk: StreamChunk | None = None
-    async for chunk in loop.turn(conversation, user_message):
+    async for chunk in loop.turn(conversation, user_message, _on_event):
         last_chunk = chunk
+        for frame in _drain():  # tool_calling / tool_result that fired before this chunk
+            yield frame
         if chunk.delta:
             yield _sse("chunk", {"delta": chunk.delta, "is_final": chunk.is_final})
+    for frame in _drain():  # any trailing events after the final chunk
+        yield frame
 
     # ---- persist-after-final (only reached on clean completion) ----
     usage = last_chunk.usage if last_chunk is not None else None
@@ -256,7 +288,7 @@ async def stream_chat(
             if usage is not None
             else {}
         ),
-        "tier": "frontier",
+        "tier": tier,  # the router's real choice for this turn (D-08 gap fix)
         "format_hints": {},  # D-08-3: the API echoes empty; connectors populate (spec 12)
     }
     yield _sse("done", done)
