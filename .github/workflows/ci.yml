@@ -17,7 +17,9 @@ jobs:
       - run: uv sync --all-packages
       - run: uv run ruff check
       - run: uv run ruff format --check
-      - run: uv run mypy packages/core/src --strict
+      # Match the local check matrix exactly: strict on core+runtime, standard on api.
+      - run: uv run mypy packages/core/src packages/runtime/src --strict
+      - run: uv run mypy packages/api/src
 
   test:
     runs-on: ubuntu-latest
@@ -27,14 +29,10 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --all-packages
-      - name: pytest
-        run: |
-          set +e
-          uv run pytest
-          code=$?
-          # exit 5 = no tests collected; acceptable while suites are bootstrapping
-          if [ $code -eq 5 ]; then exit 0; fi
-          exit $code
+      # Default suite (unit + contract). Integration + external are excluded by
+      # addopts in pyproject. We have >1000 tests; "no tests collected" is now a
+      # real failure (the bootstrap shim is gone).
+      - run: uv run pytest
 
   test-integration:
     runs-on: ubuntu-latest
@@ -58,13 +56,55 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --all-packages
+      # The RLS tests need a non-superuser role (FORCE RLS bypasses superusers
+      # and table owners — D-07-5). Provision `persona_app` so the RLS suite
+      # runs instead of skipping.
+      - name: provision persona_app role
+        env:
+          PGPASSWORD: persona
+        run: |
+          psql -h localhost -U persona -d persona -v ON_ERROR_STOP=1 -c "
+            CREATE ROLE persona_app LOGIN PASSWORD 'persona_app' NOSUPERUSER;
+          "
+      # D-07-1: the store is sync psycopg3 — NOT asyncpg. Match the production DSN.
       - name: pytest -m integration
         env:
-          DATABASE_URL: postgresql+asyncpg://persona:persona@localhost:5432/persona
-        run: |
-          set +e
-          uv run pytest -m integration
-          code=$?
-          # exit 5 = no tests collected; acceptable while suites are bootstrapping
-          if [ $code -eq 5 ]; then exit 0; fi
-          exit $code
+          DATABASE_URL: postgresql+psycopg://persona:persona@localhost:5432/persona
+          APP_DATABASE_URL: postgresql+psycopg://persona_app:persona_app@localhost:5432/persona
+        run: uv run pytest -m integration
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: packages/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      # `next build` initialises Clerk at module load; CI placeholders are enough
+      # to type-check + bundle. Real keys are required at runtime (deploy env).
+      - name: pnpm build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_ci_placeholder
+          CLERK_SECRET_KEY: sk_test_ci_placeholder
+          NEXT_PUBLIC_CLERK_JWT_TEMPLATE: persona-api
+          NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
+          NEXT_PUBLIC_CLERK_SIGN_UP_URL: /sign-up
+          NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL: /personas
+          NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL: /personas
+        run: pnpm build
+      - run: pnpm test
+      # Playwright e2e is NOT in CI — it needs the live API on :8000 + a real
+      # Clerk instance + DeepSeek credits + Docker Postgres. It is a MANUAL
+      # pre-tag verification (see LAUNCH_CHECKLIST.md #9).
