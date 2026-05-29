@@ -1,0 +1,37 @@
+# Open Persona — example Caddy reverse-proxy + TLS for the persona-api VPS.
+# The Docker Compose binds the API to 127.0.0.1:8000 (never exposed). Caddy
+# terminates TLS and proxies to it. Copy to /etc/caddy/Caddyfile on the VPS,
+# replace api.example.com with your real subdomain (D-11-3 recommendation:
+# api.openpersona.dev), then `sudo systemctl reload caddy`.
+
+# Replace api.example.com with your real subdomain.
+api.example.com {
+    # Auto Let's Encrypt cert (HTTP-01 challenge). Caddy handles renewal.
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8000 {
+        # Preserve client IP for rate-limit / audit.
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        # SSE chat streams can take 60+ seconds — disable the default timeouts.
+        flush_interval -1
+    }
+
+    # Security headers (defence in depth; the API also sets some).
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # CORS is set in-app via PERSONA_API_CORS_ORIGINS — don't double-handle here.
+        -Server
+    }
+
+    # Logs to /var/log/caddy/api.log (rotated by Caddy).
+    log {
+        output file /var/log/caddy/api.log {
+            roll_size 100mb
+            roll_keep 7
+        }
+        format json
+    }
+}

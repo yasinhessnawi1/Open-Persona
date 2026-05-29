@@ -80,13 +80,24 @@
 - Dockerfile: [packages/api/Dockerfile](packages/api/Dockerfile)
 - Production Compose: [deploy/docker-compose.production.yml](deploy/docker-compose.production.yml)
 - First-boot bootstrap: [deploy/bootstrap.sh](deploy/bootstrap.sh) — idempotent; provisions the `persona_app` non-superuser role, runs `alembic upgrade head`, grants schema/table/sequence privileges + sets default privileges. **Must run once after first `docker compose up -d`.** Without it the API 500s with `relation "personas" does not exist` (caught during Spec-11 pre-flight Gate 1).
+- TLS / reverse proxy: [deploy/Caddyfile.example](deploy/Caddyfile.example) — Compose binds the API to `127.0.0.1:8000` (never directly exposed); Caddy terminates TLS via Let's Encrypt and proxies. SSE-safe (`flush_interval -1`).
 - Env manifest: [deploy/.env.production.example](deploy/.env.production.example) — every variable the system reads, incl. **`PERSONA_API_JWT_AUDIENCE`** (T07 deploy-config fix for the open spec-08 MEDIUM).
 - Recommendation: one small **cloud VPS** (Hetzner CX22 / DigitalOcean $6) running API + Postgres via Docker Compose, **single uvicorn worker** (S08-4). The API is CPU-bound; no GPU needed.
-- **Human action:** provision the VPS, copy the `deploy/` directory, fill `.env.production` from `.env.production.example`, then:
+- **Human action** (the full sequence):
   ```bash
+  # On the VPS (Ubuntu 24 LTS + Docker + Caddy installed):
+  git clone <repo> open-persona && cd open-persona
+  cp deploy/.env.production.example deploy/.env.production
+  # …fill .env.production: POSTGRES_PASSWORD, PERSONA_APP_DB_PASSWORD, the Clerk PEM,
+  # DeepSeek/Anthropic/search keys, PERSONA_API_JWT_AUDIENCE, PERSONA_API_CORS_ORIGINS.
+  cd deploy
   docker compose -f docker-compose.production.yml up -d
-  chmod +x bootstrap.sh && ./bootstrap.sh         # one-shot, idempotent
-  curl -fsS http://127.0.0.1:8000/healthz          # verify
+  ./bootstrap.sh                                            # one-shot, idempotent
+  # TLS: copy Caddyfile.example to /etc/caddy/Caddyfile, replace api.example.com,
+  # set DNS A-record `api.openpersona.dev → <VPS IP>`, then:
+  sudo systemctl reload caddy
+  # Verify:
+  curl -fsS https://api.openpersona.dev/healthz             # {"status":"ok","db":"connected"}
   ```
 
 ### 11. 🟦 `persona-web` deployed (Vercel)
