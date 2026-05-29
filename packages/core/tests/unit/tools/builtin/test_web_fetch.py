@@ -241,9 +241,7 @@ class TestSSRFGuard:
         def _redirect_then_explode(request: httpx.Request) -> httpx.Response:
             calls.append(str(request.url))
             if str(request.url) == "http://1.1.1.1/start":
-                return httpx.Response(
-                    302, headers={"location": "http://10.0.0.1/internal"}
-                )
+                return httpx.Response(302, headers={"location": "http://10.0.0.1/internal"})
             msg = f"SSRF re-check failed — second fetch reached {request.url}"
             raise AssertionError(msg)
 
