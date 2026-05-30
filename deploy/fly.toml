@@ -25,7 +25,11 @@ kill_timeout = "30s"
   PERSONA_API_JWT_ALGORITHMS = "RS256"
   PERSONA_API_JWT_AUDIENCE = "persona-api"
   # JSONL audit + turnlog roots; written to the mounted volume below.
-  PERSONA_AUDIT_ROOT = "/var/lib/persona/audit"
+  # PERSONA_API_ prefix — APIConfig.audit_root field reads via Pydantic Settings
+  # with env_prefix="PERSONA_API_" (config.py:52). Surfaced at launch when the
+  # PERSONA_AUDIT_ROOT typo defaulted audit_root to "./.persona_audit" and the
+  # non-root container user got Permission denied on every persona create.
+  PERSONA_API_AUDIT_ROOT = "/var/lib/persona/audit"
   PERSONA_TURNLOG_PATH = "/var/lib/persona/turnlogs"
 
 [mounts]
