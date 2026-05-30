@@ -1,0 +1,62 @@
+# Open Persona — persona-api Fly.io app config (Spec 11, T10).
+# Companion walkthrough: deploy/FLY_DEPLOY.md
+#
+# Single Machine, single uvicorn worker (S08-4 / D-08-5) — the in-process
+# agentic-run event bus and in-memory rate limiter REQUIRE it. Never autoscale,
+# never autostop.
+
+app = "open-persona-api"                # rename: `flyctl apps create <your-name>` first
+primary_region = "fra"                  # Frankfurt — near Vercel `fra1` (D-11-2)
+kill_signal = "SIGINT"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "../packages/api/Dockerfile"
+  # `flyctl deploy -c deploy/fly.toml` runs from repo root by default — the
+  # Dockerfile's COPY paths assume the repo root as build context.
+
+[deploy]
+  # Migrations are NOT auto-run on startup (spec 07 §7). FLY_DEPLOY.md spells
+  # out the explicit `flyctl ssh console -C "alembic upgrade head"` step.
+  strategy = "rolling"
+
+[env]
+  PERSONA_LOG_LEVEL = "INFO"
+  PERSONA_API_JWT_ALGORITHMS = "RS256"
+  PERSONA_API_JWT_AUDIENCE = "persona-api"
+  # JSONL audit + turnlog roots; written to the mounted volume below.
+  PERSONA_AUDIT_ROOT = "/var/lib/persona/audit"
+  PERSONA_TURNLOG_PATH = "/var/lib/persona/turnlogs"
+
+[mounts]
+  source = "persona_audit"
+  destination = "/var/lib/persona"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # CRITICAL: single Machine. Don't autoscale (in-memory state) or autostop
+  # (cold-start adds 10+s to first request; SSE clients won't recover).
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 100
+    hard_limit = 200
+
+[[http_service.checks]]
+  grace_period = "30s"
+  interval = "30s"
+  method = "GET"
+  path = "/healthz"
+  timeout = "5s"
+
+[[vm]]
+  # bge-small-en-v1.5 (sentence-transformers) loads ~150 MB resident; FastAPI +
+  # Python ~ 150 MB; chat working set ~ 100 MB. 1 GB has headroom for soak +
+  # concurrency. Bump to 2 GB if OOM surfaces.
+  size = "shared-cpu-1x"
+  memory = "1024mb"
