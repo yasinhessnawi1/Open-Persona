@@ -77,28 +77,33 @@
 
 ### 10. 🟦 `persona-api` running on a stable host
 
-- Dockerfile: [packages/api/Dockerfile](packages/api/Dockerfile)
-- Production Compose: [deploy/docker-compose.production.yml](deploy/docker-compose.production.yml)
-- First-boot bootstrap: [deploy/bootstrap.sh](deploy/bootstrap.sh) — idempotent; provisions the `persona_app` non-superuser role, runs `alembic upgrade head`, grants schema/table/sequence privileges + sets default privileges. **Must run once after first `docker compose up -d`.** Without it the API 500s with `relation "personas" does not exist` (caught during Spec-11 pre-flight Gate 1).
-- TLS / reverse proxy: [deploy/Caddyfile.example](deploy/Caddyfile.example) — Compose binds the API to `127.0.0.1:8000` (never directly exposed); Caddy terminates TLS via Let's Encrypt and proxies. SSE-safe (`flush_interval -1`).
-- Env manifest: [deploy/.env.production.example](deploy/.env.production.example) — every variable the system reads, incl. **`PERSONA_API_JWT_AUDIENCE`** (T07 deploy-config fix for the open spec-08 MEDIUM).
-- Recommendation: one small **cloud VPS** (Hetzner CX22 / DigitalOcean $6) running API + Postgres via Docker Compose, **single uvicorn worker** (S08-4). The API is CPU-bound; no GPU needed.
-- **Human action** (the full sequence):
+- Dockerfile: [packages/api/Dockerfile](packages/api/Dockerfile) — Fly-compatible (`0.0.0.0:8000` + `--proxy-headers` + single worker per S08-4).
+
+**Primary path — Fly.io** (recommended; the operator already has an account):
+
+- App config: [deploy/fly.toml](deploy/fly.toml) — single Machine, `auto_stop_machines = "off"`, mounted volume for audit/turnlog JSONL.
+- Walkthrough: [deploy/FLY_DEPLOY.md](deploy/FLY_DEPLOY.md) — the full `flyctl apps create → fly pg create → secrets → deploy → bootstrap → certs add → CORS` sequence with the exact commands.
+- **Human action (short form):**
   ```bash
-  # On the VPS (Ubuntu 24 LTS + Docker + Caddy installed):
-  git clone <repo> open-persona && cd open-persona
-  cp deploy/.env.production.example deploy/.env.production
-  # …fill .env.production: POSTGRES_PASSWORD, PERSONA_APP_DB_PASSWORD, the Clerk PEM,
-  # DeepSeek/Anthropic/search keys, PERSONA_API_JWT_AUDIENCE, PERSONA_API_CORS_ORIGINS.
-  cd deploy
-  docker compose -f docker-compose.production.yml up -d
-  ./bootstrap.sh                                            # one-shot, idempotent
-  # TLS: copy Caddyfile.example to /etc/caddy/Caddyfile, replace api.example.com,
-  # set DNS A-record `api.openpersona.dev → <VPS IP>`, then:
-  sudo systemctl reload caddy
-  # Verify:
-  curl -fsS https://api.openpersona.dev/healthz             # {"status":"ok","db":"connected"}
+  flyctl apps create open-persona-api
+  flyctl volumes create persona_audit --app open-persona-api --region fra --size 1
+  flyctl pg create --name open-persona-db --region fra --vm-size shared-cpu-1x \
+    --initial-cluster-size 1 --volume-size 3 --image-ref flyio/postgres-flex:15
+  flyctl pg attach open-persona-db --app open-persona-api
+  # …patch DATABASE_URL to postgresql+psycopg:// (see FLY_DEPLOY.md §1).
+  flyctl secrets set --app open-persona-api PERSONA_API_KEY=…    # see FLY_DEPLOY.md §2
+  flyctl deploy -c deploy/fly.toml
+  # First-boot bootstrap — psql GRANTs + alembic upgrade head (FLY_DEPLOY.md §4).
+  flyctl certs add --app open-persona-api api.openpersona.dev   # TLS via Fly edge
+  curl -fsS https://api.openpersona.dev/healthz                 # {"status":"ok","db":"connected"}
   ```
+
+**Alternative path — self-managed VPS** (Hetzner/DO + Docker Compose + Caddy):
+
+- Production Compose: [deploy/docker-compose.production.yml](deploy/docker-compose.production.yml)
+- First-boot bootstrap: [deploy/bootstrap.sh](deploy/bootstrap.sh) — idempotent; `persona_app` role + `alembic upgrade head` + schema/table/sequence GRANTs + default privileges. **Must run once after first `docker compose up -d`.** Without it the API 500s with `relation "personas" does not exist` (caught during Spec-11 pre-flight Gate 1).
+- TLS / reverse proxy: [deploy/Caddyfile.example](deploy/Caddyfile.example) — Compose binds the API to `127.0.0.1:8000`; Caddy terminates TLS via Let's Encrypt. SSE-safe (`flush_interval -1`).
+- Env manifest: [deploy/.env.production.example](deploy/.env.production.example) — every variable the system reads, incl. **`PERSONA_API_JWT_AUDIENCE`** (T07 deploy-config fix for the open spec-08 MEDIUM).
 
 ### 11. 🟦 `persona-web` deployed (Vercel)
 
