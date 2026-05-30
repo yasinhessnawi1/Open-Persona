@@ -167,14 +167,37 @@ class TestConfigurationErrors:
         assert "brave" in result.content  # lists supported
 
     @pytest.mark.asyncio
-    async def test_tavily_stub_returns_error(self) -> None:
-        # Tavily is a stub raising NotImplementedError — the @tool envelope
-        # catches it and returns ToolResult(is_error=True).
-        async with _make_mock_http(lambda _req: httpx.Response(200)) as client:
-            tool_inst = make_web_search_tool(provider_name="tavily", api_key="k", http=client)
-            result = await tool_inst.execute(query="x")
-        assert result.is_error is True
-        assert "NotImplementedError" in result.content
+    async def test_tavily_serves_results(self) -> None:
+        # Tavily is now a real provider (spec 11, T07 launch follow-up). The
+        # tool envelope returns ToolResult with the summarised content rows.
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.host == "api.tavily.com"
+            assert request.method == "POST"
+            assert request.headers["Authorization"] == "Bearer tvly-test"
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"title": "T1", "url": "https://x/1", "content": "summarised one"},
+                        {"title": "T2", "url": "https://x/2", "content": "summarised two"},
+                    ],
+                },
+            )
+
+        async with _make_mock_http(handler) as client:
+            tool_inst = make_web_search_tool(
+                provider_name="tavily", api_key="tvly-test", http=client
+            )
+            result = await tool_inst.execute(query="norway tenancy law", max_results=5)
+
+        assert result.is_error is False
+        assert "T1" in result.content
+        assert "https://x/2" in result.content
+        assert result.data is not None
+        assert len(result.data["results"]) == 2
+        assert result.data["results"][0]["title"] == "T1"
+        assert result.data["results"][0]["snippet"] == "summarised one"
+        assert result.data["provider"] == "tavily"
 
     @pytest.mark.asyncio
     async def test_serpapi_stub_returns_error(self) -> None:
@@ -249,11 +272,31 @@ class TestProviderClasses:
             assert isinstance(BraveSearchProvider("k", client), _SearchProvider)
 
     @pytest.mark.asyncio
-    async def test_tavily_stub_raises(self) -> None:
+    async def test_tavily_satisfies_protocol(self) -> None:
+        from persona.tools.builtin._search_providers import _SearchProvider
+
         async with httpx.AsyncClient() as client:
+            assert isinstance(TavilySearchProvider("k", client), _SearchProvider)
+
+    @pytest.mark.asyncio
+    async def test_tavily_clamps_max_results(self) -> None:
+        # Tavily caps at 20 per request; the provider must clamp before sending.
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.content
+            return httpx.Response(200, json={"results": []})
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
             p = TavilySearchProvider("k", client)
-            with pytest.raises(NotImplementedError, match="Tavily"):
-                await p.search("x", 5)
+            await p.search("query", max_results=100)
+        import json
+
+        body = json.loads(captured["body"])
+        assert body["max_results"] == 20  # clamped
+        assert body["query"] == "query"
+        assert body["search_depth"] == "basic"  # not the 2-credit advanced mode
 
     @pytest.mark.asyncio
     async def test_serpapi_stub_raises(self) -> None:
