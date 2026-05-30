@@ -84,19 +84,56 @@ class BraveSearchProvider:
         return results
 
 
-# Section: Tavily stub provider
+# Section: Tavily Search provider
+
+
+_TAVILY_ENDPOINT = "https://api.tavily.com/search"
+_TAVILY_MAX_RESULTS = 20  # API cap per request.
 
 
 class TavilySearchProvider:
-    """Tavily Search stub. Tracked as future work (D-03-9)."""
+    """Tavily Search API client (LLM-tuned web search).
+
+    Free tier: 1000 credits/month, no credit card required at signup.
+    A ``basic`` search costs 1 credit; ``advanced`` costs 2 (we use basic).
+    POST + JSON body with Bearer auth — different shape from Brave, same
+    :class:`_SearchProvider` contract.
+
+    Response shape: ``results[]`` with ``title``, ``url``, ``content``
+    (already-summarised snippet, not raw HTML — that's the point).
+    """
 
     def __init__(self, api_key: str, http: httpx.AsyncClient) -> None:
         self._api_key = api_key
         self._http = http
 
     async def search(self, query: str, max_results: int) -> list[SearchResult]:
-        msg = "Tavily provider not yet wired; tracked as future work (D-03-9)"
-        raise NotImplementedError(msg)
+        body = {
+            "query": query,
+            "max_results": min(max_results, _TAVILY_MAX_RESULTS),
+            "search_depth": "basic",
+            "include_answer": False,
+            "include_raw_content": False,
+            "include_images": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        response = await self._http.post(_TAVILY_ENDPOINT, json=body, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        results: list[SearchResult] = []
+        for row in (data.get("results") or [])[:max_results]:
+            results.append(
+                SearchResult(
+                    title=row.get("title", ""),
+                    url=row.get("url", ""),
+                    snippet=row.get("content", ""),
+                )
+            )
+        return results
 
 
 # Section: SerpAPI stub provider
