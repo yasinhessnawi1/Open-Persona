@@ -1,0 +1,52 @@
+# Docker build context excludes (spec 11, T10 follow-up).
+# Without this, the persona-api build context bloats to ~1 GB because
+# .venv (with torch + sentence-transformers wheels) and node_modules
+# are copied into the daemon. After this file: < 5 MB context, ~5×
+# faster builds.
+
+# Python venv + caches
+.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/coverage*
+**/htmlcov/
+
+# Web (large)
+packages/web/node_modules/
+packages/web/.next/
+packages/web/.turbo/
+packages/web/test-results/
+packages/web/playwright-report/
+
+# Secrets — never bake into the image (set via flyctl secrets instead)
+.env
+.env.*
+!.env.example
+packages/api/.secrets/
+packages/web/.env.local
+deploy/.env.production
+
+# Build/release artifacts
+dist/
+build/
+*.egg-info/
+
+# Git / tooling
+.git/
+.github/
+.idea/
+.vscode/
+**/.DS_Store
+
+# Docs are not needed by the runtime image
+docs/
+CHANGELOG.md
+LAUNCH_CHECKLIST.md
+README.md
+**/*.md
+
+# Tests are not needed by the runtime image
+packages/*/tests/
