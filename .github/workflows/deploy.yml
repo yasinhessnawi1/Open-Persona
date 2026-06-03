@@ -1,0 +1,73 @@
+name: Deploy
+
+# Auto-deploy persona-api to Fly. Fires only when the CI workflow finishes
+# successfully on the `main` branch — never on PRs, never on a red build.
+# Vercel handles persona-web deploys via its own GitHub integration.
+#
+# One-time setup:
+#   1. Generate a deploy-scoped Fly token (90-day expiry, app-scoped):
+#        flyctl tokens create deploy -a open-persona-api -x 2160h
+#   2. GitHub → repo Settings → Secrets and variables → Actions →
+#      "New repository secret" named FLY_API_TOKEN, paste the `FlyV1 …` value.
+#   3. (Optional) Add `workflow_dispatch` runs to manually re-deploy from the
+#      Actions tab without pushing a commit.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+  # Allow manual re-deploy from the Actions tab without a code change.
+  workflow_dispatch:
+
+jobs:
+  deploy-api:
+    # Only deploy when the upstream CI run was a success (or when triggered
+    # manually via workflow_dispatch — github.event.workflow_run is null then).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    concurrency:
+      # Serialise deploys: a slow build can't be overtaken by a faster newer one.
+      group: deploy-api
+      cancel-in-progress: false
+    steps:
+      - name: Checkout the commit CI verified
+        uses: actions/checkout@v4
+        with:
+          # When triggered by workflow_run, default checkout would be the
+          # default branch tip; pin to the exact SHA that just passed CI so a
+          # deploy can never race ahead of its checks.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Remote build — Fly's builders are tuned for this and CI runners don't
+      # need to pay the local Docker disk cost. `.dockerignore` keeps the
+      # build context tiny (~5 MB) so the upload to Fly's builder is fast.
+      - name: flyctl deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl deploy \
+            --remote-only \
+            --config deploy/fly.toml \
+            --app open-persona-api \
+            --strategy rolling \
+            --wait-timeout 600
+
+      - name: Smoke-test /healthz
+        run: |
+          # Give the new machine a moment to settle, then verify the public URL.
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 10 https://api.openpersona.online/healthz | grep -q '"status":"ok"'; then
+              echo "healthz ok"
+              exit 0
+            fi
+            echo "waiting for healthz to flip green ($i/6)…"
+            sleep 10
+          done
+          echo "::error::healthz did not flip green within 60s after deploy"
+          exit 1
