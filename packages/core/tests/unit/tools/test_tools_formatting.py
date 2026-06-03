@@ -3,8 +3,6 @@
 # ruff: noqa: ANN401, ARG001, ARG002, ERA001
 from __future__ import annotations
 
-import json
-
 import pytest
 from persona.schema.tools import ToolCall, ToolResult
 from persona.tools.formatting import format_tool_result
@@ -24,29 +22,29 @@ def _result(*, is_error: bool = False, content: str = "results") -> ToolResult:
 
 
 class TestAnthropicShape:
-    """Anthropic tool_result is encoded as JSON inside a user message."""
+    """Anthropic tool_result uses the same role=tool shape as OpenAI/DeepSeek
+    (spec 11 launch fix). ``_message_to_anthropic`` lifts it into the proper
+    structured ``tool_result`` block list on a user message; we used to JSON-
+    encode the block ourselves which Anthropic doesn't accept as content."""
 
-    def test_role_is_user(self) -> None:
+    def test_role_is_tool(self) -> None:
         msg = format_tool_result(_call(), _result(), provider_name="anthropic")
-        assert msg.role == "user"
+        assert msg.role == "tool"
 
-    def test_content_is_json_block(self) -> None:
+    def test_content_is_raw_result_text(self) -> None:
         msg = format_tool_result(_call(), _result(content="some text"), provider_name="anthropic")
-        block = json.loads(msg.content)
-        assert block["type"] == "tool_result"
-        assert block["tool_use_id"] == "tcid-1"
-        assert block["content"] == "some text"
-        assert "is_error" not in block  # only set when truthy
+        assert msg.content == "some text"
 
-    def test_error_sets_is_error_in_block(self) -> None:
+    def test_error_content_unchanged(self) -> None:
+        # No "Error:" prefix on the Anthropic branch — the metadata flag is the
+        # signal; the structured block carries the raw content unchanged.
         msg = format_tool_result(
             _call(),
             _result(is_error=True, content="Connection refused"),
             provider_name="anthropic",
         )
-        block = json.loads(msg.content)
-        assert block["is_error"] is True
-        assert block["content"] == "Connection refused"
+        assert msg.content == "Connection refused"
+        assert msg.metadata["is_error"] == "True"
 
     def test_metadata_carries_bookkeeping(self) -> None:
         msg = format_tool_result(_call(), _result(), provider_name="anthropic")

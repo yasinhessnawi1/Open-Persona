@@ -143,21 +143,157 @@ class TestToolCallMessageProtocol:
         assert tool_use["name"] == "web_search"
         assert tool_use["input"] == {"query": "mould"}
 
+    def test_anthropic_consecutive_tool_results_are_coalesced(self) -> None:
+        # Production-launch finding: Anthropic 400s with `tool_use ids were
+        # found without tool_result blocks immediately after` when an assistant
+        # message had 2+ tool_use blocks but the matching tool_results landed in
+        # 2+ consecutive user messages. The conversation loop appends one
+        # role=tool ConversationMessage per dispatched call, so the merge has to
+        # happen at the Anthropic-serialiser boundary.
+        from persona.backends.openai_compat import _coalesce_anthropic_tool_results
+
+        assistant_tu = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "searching…"},
+                {"type": "tool_use", "id": "tu_1", "name": "web_search", "input": {"q": "a"}},
+                {"type": "tool_use", "id": "tu_2", "name": "web_search", "input": {"q": "b"}},
+            ],
+        }
+        tr1 = {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "r1"}],
+        }
+        tr2 = {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_2", "content": "r2"}],
+        }
+        text_after = {"role": "user", "content": "thanks"}
+
+        merged = _coalesce_anthropic_tool_results([assistant_tu, tr1, tr2, text_after])
+
+        # The two tool-result user messages collapse into one.
+        assert len(merged) == 3
+        assert merged[0] is assistant_tu  # assistant untouched
+        assert merged[1]["role"] == "user"
+        assert isinstance(merged[1]["content"], list)
+        assert len(merged[1]["content"]) == 2
+        assert {b["tool_use_id"] for b in merged[1]["content"]} == {"tu_1", "tu_2"}
+        # A subsequent string-content user message must NOT be folded in.
+        assert merged[2] is text_after
+
     def test_anthropic_tool_result_carries_the_id(self) -> None:
-        # KNOWN LIMITATION (spec 11, documented in the README): the Anthropic
-        # native tool path is NOT soak-verified — DeepSeek is the demo-primary
-        # (D-11-9), Anthropic the outage backup. format_tool_result(anthropic)
-        # encodes the tool_result block as a user message, so the id is present
-        # but not yet a structured top-level block. The OpenAI/DeepSeek path
-        # (above) is the soak-proven one. Use DeepSeek for tool-heavy demos.
+        # Spec 11 launch fix: format_tool_result(anthropic) now produces
+        # role="tool" + raw content, and _message_to_anthropic lifts it into
+        # a proper structured tool_result block on a user message — matching
+        # Anthropic's native tool protocol so multi-call rounds round-trip
+        # cleanly without 400s. Previously the closeout flagged this as a
+        # Known Limitation; production tools surfaced it on the first live
+        # tool call against Anthropic Sonnet as the frontier tier.
         call = ToolCall(name="web_search", args={}, call_id="tu_9")
         result = ToolResult(tool_name="web_search", content="r", call_id="tu_9")
         out = _message_to_anthropic(format_tool_result(call, result, provider_name="anthropic"))
         assert out["role"] == "user"
-        assert "tu_9" in out["content"]
+        assert isinstance(out["content"], list)
+        assert out["content"][0]["type"] == "tool_result"
+        assert out["content"][0]["tool_use_id"] == "tu_9"
+        assert out["content"][0]["content"] == "r"
 
     def test_unsupported_unknown_provider(self) -> None:
         assert _native_tools_supported("nonsense", "x") is False
+
+    @pytest.mark.asyncio
+    async def test_anthropic_streaming_threads_tool_use_id_and_name_through(self) -> None:
+        # Production-launch finding: Anthropic streaming sends `content_block_start`
+        # carrying the tool_use id + name ONCE, then `content_block_delta`s with
+        # only the block `index` and partial input JSON. The reconstruction must
+        # thread the real id forward into every ToolCallDelta AND emit the name
+        # on the first sighting — otherwise round-2's `_message_to_anthropic`
+        # serialises an empty `tool_use.name` and Anthropic 400s with
+        # "tool_use.name: String should have at least 1 character".
+        from persona.backends.openai_compat import OpenAICompatibleBackend
+        from persona.backends.types import ToolCallDelta
+
+        backend = OpenAICompatibleBackend(_config("anthropic"))
+
+        # Simulate the Anthropic events for a single tool call: start (with id +
+        # name), two arg deltas, message_delta for usage.
+        class _Block:
+            def __init__(self) -> None:
+                self.type = "tool_use"
+                self.id = "toolu_real_xyz"
+                self.name = "web_search"
+
+        class _Delta:
+            def __init__(self, partial: str) -> None:
+                self.type = "input_json_delta"
+                self.partial_json = partial
+
+        class _StartEv:
+            type = "content_block_start"
+            index = 0
+            content_block = _Block()
+
+        class _ArgEv:
+            def __init__(self, partial: str) -> None:
+                self.type = "content_block_delta"
+                self.index = 0
+                self.delta = _Delta(partial)
+
+        class _MockUsage:
+            input_tokens = 10
+            output_tokens = 5
+
+        class _FinalMsg:
+            usage = _MockUsage()
+
+        class _MockStream:
+            def __init__(self, events: list[Any]) -> None:
+                self._events = events
+
+            async def __aenter__(self) -> _MockStream:  # type: ignore[name-defined]
+                return self
+
+            async def __aexit__(self, *_exc: Any) -> None:
+                return None
+
+            def __aiter__(self) -> _MockStream:  # type: ignore[name-defined]
+                return self
+
+            async def __anext__(self) -> Any:
+                if not self._events:
+                    raise StopAsyncIteration
+                return self._events.pop(0)
+
+            async def get_final_message(self) -> _FinalMsg:
+                return _FinalMsg()
+
+        events: list[Any] = [_StartEv(), _ArgEv('{"qu'), _ArgEv('ery":"mould"}')]
+
+        class _Messages:
+            def stream(self, **_k: Any) -> _MockStream:
+                return _MockStream(events)
+
+        class _Client:
+            messages = _Messages()
+
+        backend._anthropic = _Client()  # type: ignore[assignment]
+
+        deltas: list[ToolCallDelta] = []
+        msgs = [ConversationMessage(role="user", content="hi", created_at=datetime.now(UTC))]
+        async for chunk in backend.chat_stream(msgs, tools=None):
+            if chunk.tool_call_delta is not None:
+                deltas.append(chunk.tool_call_delta)
+
+        assert deltas, "no tool_call_delta emitted"
+        # The first delta MUST carry the real id + name (so the runtime loop's
+        # accumulator records `web_search`, not "").
+        assert deltas[0].call_id == "toolu_real_xyz"
+        assert deltas[0].name_delta == "web_search"
+        # All subsequent deltas thread the SAME real id (not "0" / index).
+        assert all(d.call_id == "toolu_real_xyz" for d in deltas)
+        # Concatenated args reconstruct the full JSON the model emitted.
+        assert "".join(d.arguments_delta for d in deltas) == '{"query":"mould"}'
 
 
 # -----------------------------------------------------------------------------
