@@ -9,9 +9,10 @@ conversation history before the next model call.
 Provider shapes (research.md §7):
 
 - **Anthropic**: a ``tool_result`` content block inside a ``user`` message,
-  carrying ``tool_use_id``, ``content`` (string or block array), optional
-  ``is_error: true``. The block is encoded as JSON inside
-  ``ConversationMessage.content`` so the backend's mapper can lift it back.
+  carrying ``tool_use_id``, ``content``, optional ``is_error: true``. We emit
+  ``role="tool"`` with the raw result text and let ``_message_to_anthropic``
+  build the structured block from ``metadata`` — same shape as the OpenAI
+  branch (spec 11 launch fix).
 - **OpenAI / DeepSeek / Groq / Together**: a separate message with
   ``role="tool"``, ``tool_call_id``, ``name``, ``content``. The error flag is
   conveyed by prefixing ``content`` with ``"Error: "``.
@@ -25,7 +26,6 @@ boundary, NOT a domain exception (D-03-6).
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -66,16 +66,15 @@ def format_tool_result(
 
     match provider_name:
         case "anthropic":
-            block: dict[str, object] = {
-                "type": "tool_result",
-                "tool_use_id": tool_call.call_id,
-                "content": result.content,
-            }
-            if result.is_error:
-                block["is_error"] = True
+            # Spec 11 launch fix: emit role="tool" with the raw result text +
+            # metadata, mirroring the OpenAI/DeepSeek path. `_message_to_anthropic`
+            # then lifts it into a proper structured `tool_result` block list on
+            # a user message. Previously we JSON-encoded the block into `content`
+            # (a string) which Anthropic doesn't recognise — broke every native
+            # tool round-trip the moment Astrid/Kai actually used a tool.
             return ConversationMessage(
-                role="user",
-                content=json.dumps(block),
+                role="tool",
+                content=result.content,
                 created_at=now,
                 metadata={
                     "tool_call_id": tool_call.call_id,

@@ -251,7 +251,7 @@ class OpenAICompatibleBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "messages": [_message_to_anthropic(m) for m in msgs],
+            "messages": _coalesce_anthropic_tool_results([_message_to_anthropic(m) for m in msgs]),
             "temperature": temperature,
         }
         if system_text:
@@ -283,7 +283,7 @@ class OpenAICompatibleBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "messages": [_message_to_anthropic(m) for m in msgs],
+            "messages": _coalesce_anthropic_tool_results([_message_to_anthropic(m) for m in msgs]),
             "temperature": temperature,
         }
         if system_text:
@@ -296,9 +296,16 @@ class OpenAICompatibleBackend:
         usage: TokenUsage | None = None
         prompt_tokens = 0
         completion_tokens = 0
-        # Per-tool-call accumulators (call_id -> partial JSON string).
-        tool_call_args: dict[str, str] = {}
-        tool_call_names: dict[str, str] = {}
+        # Anthropic streaming protocol — `content_block_start` carries the
+        # tool_use's real id + name once; subsequent `content_block_delta`
+        # `input_json_delta` events carry only the *block index* and partial
+        # JSON. We must thread the real id forward so the runtime loop's
+        # accumulator keys the call by its real Anthropic id (toolu_…) — not
+        # the block index — otherwise the assistant.tool_calls payload on the
+        # round-2 re-prompt has id="0" + name="" and Anthropic 400s with
+        # `tool_use.name: String should have at least 1 character`.
+        # Spec 11 launch finding — mirrors the OpenAI `id_by_index` fix.
+        id_by_index: dict[int, str] = {}
 
         async with self._anthropic.messages.stream(**kwargs) as stream:
             async for event in stream:
@@ -319,22 +326,36 @@ class OpenAICompatibleBackend:
                             yield StreamChunk(delta=text)
                     elif delta_type == "input_json_delta":
                         partial = getattr(delta, "partial_json", "")
-                        # We don't have call_id on the delta directly; track per-block.
-                        call_id = str(getattr(event, "index", 0))
-                        tool_call_args[call_id] = tool_call_args.get(call_id, "") + partial
+                        idx = getattr(event, "index", 0) or 0
+                        # Resolve the real Anthropic id captured at content_block_start.
+                        # Fall back to a synthesised one only if the provider skipped
+                        # the start event entirely (defensive).
+                        resolved_id = id_by_index.get(idx, f"toolu_idx_{idx}")
                         yield StreamChunk(
                             delta="",
                             tool_call_delta=ToolCallDelta(
-                                call_id=call_id,
+                                call_id=resolved_id,
                                 arguments_delta=partial,
                             ),
                         )
                 elif event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
                     if getattr(block, "type", "") == "tool_use":
-                        call_id = getattr(block, "id", "")
-                        name = getattr(block, "name", "")
-                        tool_call_names[call_id] = name
+                        idx = getattr(event, "index", 0) or 0
+                        real_id = getattr(block, "id", "") or f"toolu_idx_{idx}"
+                        name = getattr(block, "name", "") or ""
+                        id_by_index[idx] = real_id
+                        # Emit the id + name once so the runtime loop's
+                        # accumulator records them on the first sighting; later
+                        # input_json_delta events thread the same id forward.
+                        yield StreamChunk(
+                            delta="",
+                            tool_call_delta=ToolCallDelta(
+                                call_id=real_id,
+                                name_delta=name,
+                                arguments_delta="",
+                            ),
+                        )
                 elif event_type == "message_delta":
                     usage_obj = getattr(event, "usage", None)
                     if usage_obj is not None:
@@ -544,6 +565,42 @@ def _append_shim_instructions(system_text: str, tools: list[ToolSpec]) -> str:
     if not block:
         return system_text
     return f"{system_text}\n\n{block}".strip()
+
+
+def _coalesce_anthropic_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge consecutive user messages whose content is a list of blocks.
+
+    Anthropic's tool-protocol invariant: every ``tool_use`` block in an assistant
+    message MUST have a matching ``tool_result`` block in the **single** user
+    message immediately after — Anthropic 400s with
+    ``messages.N: tool_use ids were found without tool_result blocks immediately
+    after`` if the results are spread across two consecutive user messages.
+
+    The conversation loop appends one ``role="tool"`` ConversationMessage per
+    dispatched call, and :func:`_message_to_anthropic` lifts each into its own
+    user message with a single ``tool_result`` block. For N>=2 simultaneous tool
+    calls we end up with N consecutive user messages on the wire. We coalesce
+    them here at the backend boundary so the loop and the schema stay simple.
+
+    Spec 11 launch finding — only matters for native Anthropic tool calling.
+    """
+    coalesced: list[dict[str, Any]] = []
+    for msg in messages:
+        if (
+            coalesced
+            and coalesced[-1].get("role") == "user"
+            and isinstance(coalesced[-1].get("content"), list)
+            and msg.get("role") == "user"
+            and isinstance(msg.get("content"), list)
+        ):
+            # Both prev and current carry block-list content; merge them.
+            coalesced[-1] = {
+                **coalesced[-1],
+                "content": [*coalesced[-1]["content"], *msg["content"]],
+            }
+        else:
+            coalesced.append(msg)
+    return coalesced
 
 
 def _message_to_anthropic(msg: ConversationMessage) -> dict[str, Any]:
