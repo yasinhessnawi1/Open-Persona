@@ -43,8 +43,8 @@ out/
 .persona_work/
 .persona_audit/
 
-# UV
-uv.lock
+# UV — uv.lock IS committed (reproducible builds; Dockerfile COPYs it
+# into the image; the CI deploy fails without it).
 
 # rsync atomic-write tempfiles
 .*.??????
