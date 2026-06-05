@@ -28,6 +28,66 @@
   --color-tier-frontier: var(--tier-frontier);
   --color-tier-mid: var(--tier-mid);
   --color-tier-small: var(--tier-small);
+
+  /*
+   * Motion tokens (Spec F1 T02). Durations + easings consumed by the design
+   * system; the reduced-motion path (T15) overrides durations to zero under
+   * @media (prefers-reduced-motion: reduce). The values match the scaffold's
+   * existing tw-animate-css feel (fast ~120ms snap, normal ~200ms standard,
+   * slow ~320ms reveal) so the addition is non-disruptive.
+   */
+  --motion-duration-fast: 120ms;
+  --motion-duration-normal: 200ms;
+  --motion-duration-slow: 320ms;
+  --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+
+  /*
+   * Elevation tokens (Spec F1 T02). Semantic shadow tiers; F2's component
+   * primitives consume these instead of bare shadow-* utilities. Matches the
+   * scaffold's existing visual weight (Tailwind shadow-sm / shadow-md /
+   * shadow-lg) so the addition is non-disruptive.
+   */
+  --elevation-0: none;
+  --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --elevation-2:
+    0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --elevation-3:
+    0 10px 15px -3px rgb(0 0 0 / 0.12), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+  /*
+   * Type scale tokens (Spec F1 T02 scaffold; T04 wires utilities + chooses
+   * Fraunces / Geist / Geist Mono roles). Six semantic roles per spec §7.
+   * The 0.65rem caption resolves the 5x text-[0.65rem] magic-number
+   * escape-hatch surfaced in the T01 audit (tier badge, run-status badge,
+   * step-card metadata, run-view metadata, persona detail).
+   */
+  --text-display-size: 2.25rem; /* persona names, big headings */
+  --text-display-line-height: 1.15;
+  --text-heading-size: 1.5rem; /* h2 / section headings */
+  --text-heading-line-height: 1.25;
+  --text-body-size: 0.9375rem; /* conversation / article body */
+  --text-body-line-height: 1.6;
+  --text-ui-size: 0.875rem; /* UI text, buttons, labels */
+  --text-ui-line-height: 1.45;
+  --text-caption-size: 0.65rem; /* badges, metadata, micro-labels */
+  --text-caption-line-height: 1.4;
+  --text-code-size: 0.85rem; /* monospace body */
+  --text-code-line-height: 1.5;
+
+  /*
+   * Persona identity scaffolding (Spec F1 T02 placeholders). The derivation
+   * function in T05 sets these per-component via inline style:
+   *   <div style={{ '--identity-h': '180', '--identity-l': '0.6', '--identity-c': '0.13' }}>
+   *     <span className="text-[oklch(var(--identity-l)_var(--identity-c)_var(--identity-h))]">
+   * Root fallback = vermilion --primary so unwired consumers render the brand
+   * colour rather than nothing. The persona identity-colour palette and
+   * derivation function are the X-F1-2 / D-F1-1 deliverable (T05).
+   */
+  --identity-h: 30;
+  --identity-l: 0.585;
+  --identity-c: 0.196;
+
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -67,7 +127,15 @@
   --popover: oklch(0.997 0.004 75);
   --popover-foreground: oklch(0.24 0.012 55);
   --primary: oklch(0.585 0.196 30);
-  --primary-foreground: oklch(0.99 0.01 80);
+  /*
+   * Lifted from oklch(0.99 0.01 80) → oklch(0.995 0.008 80) during the F1
+   * T14 WCAG pass: the prior value produced 4.48:1 contrast against
+   * vermilion --primary, 0.5% under the WCAG-AA 4.5:1 bar for normal text.
+   * The lift keeps the warm cast (hue 80, chroma 0.008) while clearing the
+   * threshold. Visible only on white-on-vermilion buttons; documented in
+   * DESIGN.md.
+   */
+  --primary-foreground: oklch(0.995 0.008 80);
   --secondary: oklch(0.95 0.012 72);
   --secondary-foreground: oklch(0.3 0.012 55);
   --muted: oklch(0.955 0.01 72);
@@ -78,8 +146,29 @@
   --border: oklch(0.9 0.012 72);
   --input: oklch(0.9 0.012 72);
   --ring: oklch(0.585 0.196 30);
+  /*
+   * Tier temperature scale (Spec F1 T03, X-F1-5). Reads cool → warm → hot
+   * through THREE axes:
+   *   - hue:    232° slate-blue → 73° amber → 30° vermilion (cool → warm → hot)
+   *   - chroma: 0.045 → 0.13 → 0.196 (load-bearing — escalation = firepower)
+   *   - light:  0.6 → 0.7 → 0.585 (NON-monotonic — amber is naturally lighter
+   *             than slate/vermilion; lightness does NOT carry the signal,
+   *             chroma + hue does. Documented so this isn't "fixed" later.)
+   * --tier-frontier == --primary (intentional semantic overload — frontier IS
+   * the heavyweight tier AND the brand vermilion, doubled for reinforcement).
+   */
   --tier-frontier: oklch(0.585 0.196 30);
-  --tier-mid: oklch(0.7 0.13 73);
+  /*
+   * Darkened from oklch(0.7 0.13 73) → oklch(0.6 0.135 70) during the F1 T14
+   * WCAG pass: the prior value produced 2.61:1 contrast against the light
+   * paper background, under the WCAG-AA 3:1 bar for UI/non-text. Lower L,
+   * very slight hue shift to keep the warm amber feel. The cool→hot scale
+   * now reads as same-lightness-different-chroma (small C=0.045, mid C=0.135,
+   * frontier C=0.196) plus same-lightness-different-hue (slate / amber /
+   * vermilion) — chroma carries the firepower signal, as documented above.
+   * Dark mode is left at L=0.74 (already passes contrast against dark base).
+   */
+  --tier-mid: oklch(0.6 0.135 70);
   --tier-small: oklch(0.6 0.045 232);
   --chart-1: oklch(0.585 0.196 30);
   --chart-2: oklch(0.7 0.13 73);
@@ -142,5 +231,97 @@
   }
   html {
     @apply font-sans;
+  }
+}
+
+/*
+ * Reduced-motion path (Spec F1 T15, criterion #11.10).
+ *
+ * When the user has asked for reduced motion via OS-level
+ * `prefers-reduced-motion: reduce`, we:
+ *   1. Collapse the F1 motion-duration tokens to ~0ms, so any consumer using
+ *      `duration-[var(--motion-duration-*)]` becomes instantaneous.
+ *   2. Force ALL animations + transitions to 0.01ms with !important — covers
+ *      the bare Tailwind `animate-pulse`, `transition-*`, and the tw-animate-
+ *      css shadcn-primitive slide/fade/zoom states. 0.01ms (not 0) preserves
+ *      `transitionend` event firing for any logic that relies on it.
+ *   3. Keep FUNCTIONAL state changes intact: streaming text still updates as
+ *      tokens arrive; the timeline still advances. Only the DECORATIVE motion
+ *      (pulse, fade, slide, zoom) is silenced.
+ *
+ * `disableTransitionOnChange` on the theme-provider is the theme-flicker
+ * guard — distinct from this reduced-motion path; both live in their own
+ * scope.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  .dark {
+    --motion-duration-fast: 0.01ms;
+    --motion-duration-normal: 0.01ms;
+    --motion-duration-slow: 0.01ms;
+  }
+  /* The reduced-motion universal override is the standard idiom for honouring
+   * prefers-reduced-motion across third-party CSS (shadcn primitives,
+   * tw-animate-css). It MUST out-specificity component-local animation rules,
+   * so !important is correct here. */
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: see comment above */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: see comment above */
+    animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: see comment above */
+    transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: see comment above */
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * Type scale (Spec F1 T04, X-F1-1 lock). Six semantic roles per spec §7,
+ * consuming the T02 type-scale tokens. The `.type-*` namespace avoids
+ * collision with Tailwind's `text-{sm|base|lg|xl|2xl}` size utilities and
+ * `text-{color}` color utilities. The reference compositions (T07–T12)
+ * consume these directly; F2 promotes them into the rebuilt component layer.
+ *
+ * D-F1-3 = keep Geist (SIL OFL) as UI/body face.
+ * D-F1-4 = keep Geist Mono (SIL OFL) as monospace.
+ * Both already wired in layout.tsx; F1 adds no new typeface dependency.
+ */
+@layer components {
+  .type-display {
+    font-family: var(--font-display);
+    font-size: var(--text-display-size);
+    line-height: var(--text-display-line-height);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .type-heading {
+    font-family: var(--font-display);
+    font-size: var(--text-heading-size);
+    line-height: var(--text-heading-line-height);
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+  .type-body {
+    font-size: var(--text-body-size);
+    line-height: var(--text-body-line-height);
+  }
+  .type-ui {
+    font-size: var(--text-ui-size);
+    line-height: var(--text-ui-line-height);
+  }
+  .type-caption {
+    font-family: var(--font-mono);
+    font-size: var(--text-caption-size);
+    line-height: var(--text-caption-line-height);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .type-code {
+    font-family: var(--font-mono);
+    font-size: var(--text-code-size);
+    line-height: var(--text-code-line-height);
   }
 }
