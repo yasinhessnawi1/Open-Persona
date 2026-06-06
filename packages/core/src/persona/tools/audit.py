@@ -34,7 +34,11 @@ __all__ = [
 ]
 
 
-ToolAuditAction = Literal["write", "connect", "disconnect", "server_unavailable"]
+ToolAuditAction = Literal["write", "connect", "disconnect", "execute", "server_unavailable"]
+# ``execute`` added per D-12-8 (spec 12 code-execution audit). The decision
+# specified additive extension at T03; the Literal was missed at the time
+# and the call sites at ``persona/sandbox/tool.py:329,369`` already pass
+# ``action="execute"`` — surfaced as mypy errors during T09c verification.
 
 
 class ToolAuditEvent(BaseModel):

@@ -1,11 +1,24 @@
 import { notFound } from "next/navigation";
 import { ChatWindow } from "@/components/chat/chat-window";
-import type { ChatMessageView } from "@/components/chat/message-bubble";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import type { ChatMessageView } from "@/components/chat/message-element";
+import { PersonaIdentityHeader } from "@/components/persona/persona-identity-header";
 import { unwrap } from "@/lib/api";
 import { serverApi } from "@/lib/api/server";
-import { parsePersonaYaml, personaInitials } from "@/lib/persona";
+import { parsePersonaYaml } from "@/lib/persona";
 
+/**
+ * T26: rebuilt chat screen. Header swaps the scaffold's <Avatar> +
+ * `bg-primary/10` uniform fallback for the D-F1-5 PersonaIdentityHeader
+ * (avatar in the derived identity colour + 1px identity-coloured underline
+ * beneath the persona name + the optional constraint cue). Chat body
+ * delegates to <ChatWindow>, which now renders <MessageElement> with the
+ * D-F2-15 interleaved tool layout.
+ *
+ * DO NOT TOUCH: the serverApi() conversation + persona fetches, the
+ * notFound() on 404, parsePersonaYaml, the conversation-message → view
+ * mapping, the h-[calc(100svh-3.5rem)] viewport calculation. Audit
+ * §chat.plumbing covers the strangler-fig inventory.
+ */
 export default async function ChatPage({
   params,
 }: {
@@ -27,7 +40,19 @@ export default async function ChatPage({
     ? parsePersonaYaml(personaRes.data.yaml)
     : null;
   const name = persona?.name ?? conv.title ?? "Persona";
+  const role = persona?.role ?? "";
   const constraint = persona?.constraints[0];
+
+  // The persona shape PersonaIdentityHeader + MessageElement consume.
+  // id drives the deterministic identity-colour derivation; avatar_url
+  // overrides the initials-mark when present.
+  const personaForDisplay = {
+    id: conv.persona_id,
+    name,
+    avatar_url: personaRes.data?.avatar_url ?? undefined,
+    role,
+    constraint,
+  };
 
   const initialMessages: ChatMessageView[] = conv.messages.map((m) => ({
     id: m.id,
@@ -37,29 +62,16 @@ export default async function ChatPage({
 
   return (
     <div className="flex h-[calc(100svh-3.5rem)] flex-col">
-      {/* Identity is visible — you always know who you're talking to (spec §4.1). */}
-      <header className="flex items-center gap-3 border-b px-4 py-2.5">
-        <Avatar className="size-9 shrink-0">
-          {personaRes.data?.avatar_url ? (
-            <AvatarImage src={personaRes.data.avatar_url} alt="" />
-          ) : null}
-          <AvatarFallback className="bg-primary/10 font-heading text-sm font-medium text-primary">
-            {personaInitials(name)}
-          </AvatarFallback>
-        </Avatar>
-        <div className="min-w-0">
-          <p className="truncate font-heading font-semibold leading-tight">
-            {name}
-          </p>
-          <p className="truncate text-xs text-muted-foreground">
-            {persona?.role}
-            {constraint ? ` · ${constraint}` : ""}
-          </p>
-        </div>
-      </header>
+      <div className="border-b px-4 py-2.5">
+        <PersonaIdentityHeader
+          persona={personaForDisplay}
+          size="md"
+          showConstraints
+        />
+      </div>
       <ChatWindow
         conversationId={conversationId}
-        personaName={name}
+        persona={personaForDisplay}
         initialMessages={initialMessages}
       />
     </div>

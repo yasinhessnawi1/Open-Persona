@@ -7,6 +7,12 @@ function Card({
   size = "default",
   ...props
 }: React.ComponentProps<"div"> & { size?: "default" | "sm" }) {
+  // F2 T04 retokenise (D-F2-1): kept `ring-1 ring-foreground/10` as the
+  // resting-state edge — deliberate paper-on-paper feel matches F1's editorial
+  // north star (warm paper surfaces, ink text). A drop shadow via
+  // --elevation-1 would read more dashboard-y, drifting toward instrument-pole.
+  // Token consumption is via --foreground (ring colour) + --card (surface) +
+  // --card-foreground (text) — all resolve through F1's @theme.
   return (
     <div
       data-slot="card"

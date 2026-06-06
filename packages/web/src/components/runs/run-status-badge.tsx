@@ -2,7 +2,14 @@ import { useTranslations } from "next-intl";
 import type { RunStatus } from "@/lib/run";
 import { cn } from "@/lib/utils";
 
-// Status reads as a temperature: live=vermilion pulse, done=cool, faults=warm.
+/**
+ * Spec F2 T30 — RunStatusBadge (retokenised).
+ *
+ * Status reads as a temperature: live=vermilion pulse, done=cool, faults=warm.
+ * The semantic palette stays; T30 closes the `text-[0.65rem] tracking-wide`
+ * legacy via F1's `.type-caption` token (resolves through `--text-caption-*`).
+ */
+
 const STATUS_CLASS: Record<RunStatus, string> = {
   running: "border-primary/40 text-primary",
   completed: "border-tier-small/50 text-tier-small",
@@ -16,14 +23,18 @@ export function RunStatusBadge({ status }: { status: RunStatus }) {
   return (
     <span
       title={t("statusLabel")}
+      data-slot="run-status-badge"
       data-status={status}
       className={cn(
-        "inline-flex w-fit items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[0.65rem] tracking-wide uppercase",
+        "type-caption inline-flex w-fit items-center gap-1.5 rounded border px-2 py-0.5 font-mono uppercase",
         STATUS_CLASS[status],
       )}
     >
       {status === "running" ? (
-        <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+        <span
+          aria-hidden="true"
+          className="size-1.5 animate-pulse rounded-full bg-primary"
+        />
       ) : null}
       {t(`status.${status}`)}
     </span>

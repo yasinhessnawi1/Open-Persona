@@ -162,6 +162,8 @@ class ConversationLoop:
         conversation: Conversation,
         user_message: str,
         on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
+        *,
+        turn_has_image: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """Process one user turn, yielding StreamChunks for the response.
 
@@ -184,6 +186,13 @@ class ConversationLoop:
                 events are simply not surfaced (the loop's behaviour is
                 otherwise unchanged). Events use ``step=-1`` (a turn is a single
                 conceptual step, not the run viewer's numbered steps).
+            turn_has_image: Whether the current user message carries any
+                :class:`~persona.schema.content.ImageContent` block. Threaded
+                through to :meth:`Router.choose` so the tier pre-filter can
+                restrict the candidate set to vision-capable tiers (T13-T09).
+                Caller computes this from the raw user message before
+                normalising to ``str``. Defaults to ``False`` for the legacy
+                text-only call sites.
 
         Yields:
             :class:`StreamChunk` objects ending with ``is_final=True``.
@@ -194,7 +203,13 @@ class ConversationLoop:
         context = self._retrieve(persona_id, user_message)
         history, compacted = await self._manage_history(conversation)
         skill_index = render_skill_index(self._scanned_skills)
-        tier = self._router.choose(self._persona, user_message, conversation)
+        tier = self._router.choose(
+            self._persona,
+            user_message,
+            conversation,
+            turn_has_image=turn_has_image,
+            tier_registry=self._tiers,
+        )
         if on_event is not None:
             await on_event(RunEvent.tier(tier))
         backend = self._tiers.get(tier)

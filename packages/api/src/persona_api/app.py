@@ -34,7 +34,17 @@ from persona_api.middleware.rate_limit import (
     RateLimitStore,
 )
 from persona_api.middleware.rls_context import make_rls_engine
-from persona_api.routes import conversations, health, me, personas, runs, tools
+from persona_api.routes import (
+    conversations,
+    documents,
+    health,
+    me,
+    personas,
+    runs,
+    tools,
+    uploads,
+)
+from persona_api.sandbox import HostedSandbox, SandboxPool, SandboxPoolConfig
 from persona_api.services import persona_service
 from persona_api.services.runtime_factory import RuntimeFactory
 from persona_api.services.turn_log_writer import PostgresTurnLogWriter
@@ -45,6 +55,19 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine
 
 __all__ = ["create_app"]
+
+
+def _e2b_api_key_present() -> bool:
+    """Whether ``E2B_API_KEY`` is set in the environment.
+
+    The pool is wired only when E2B is reachable (D-12-12 substrate). Dev
+    environments without an E2B account boot cleanly without a hosted pool;
+    the ``code_execution`` tool surfaces ``SandboxUnavailableError`` to the
+    model (D-12-5 no degraded fallback).
+    """
+    import os
+
+    return bool(os.environ.get("E2B_API_KEY", "").strip())
 
 
 @asynccontextmanager
@@ -77,6 +100,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # first encode, not at startup. Shared (thread-safe read path).
     app.state.embedder = persona_service.default_embedder(config.embedder_model)
     app.state.audit_root = Path(config.audit_root)
+    # Spec 13 D-13-4: workspace root for image uploads + (later) per-persona
+    # tool artefacts. Resolved up front so routes/services can rely on it.
+    app.state.workspace_root = Path(config.workspace_root)
+    app.state.workspace_root.mkdir(parents=True, exist_ok=True)
     # Rate limiter (§6, D-08-5). Postgres-backed when a non-RLS engine is
     # available; in-memory otherwise. The buckets table is NOT under RLS, so the
     # Postgres store uses a plain (non-listener) engine.
@@ -85,6 +112,24 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Single worker (S08-4). Cancelled on shutdown.
     run_registry = RunRegistry(rls_engine) if rls_engine is not None else None
     app.state.run_registry = run_registry
+
+    # Hosted sandbox + pool (spec 12 T08/T09; D-12-12/D-12-17). Built BEFORE
+    # the runtime factory so the factory can compose the ``code_execution``
+    # tool when the pool is present. Gated on E2B_API_KEY — dev environments
+    # without an E2B account boot cleanly; the tool is absent in that case
+    # and the model would surface ``SandboxUnavailableError`` if it tried
+    # (D-12-5 no degraded fallback).
+    sandbox_pool: SandboxPool | None = None
+    if _e2b_api_key_present():
+        pool_cfg = SandboxPoolConfig()
+        sandbox_pool = SandboxPool(
+            sandbox=HostedSandbox(),  # SDK reads E2B_API_KEY from env (D-12-12)
+            max_per_user=pool_cfg.max_per_user,
+            idle_timeout_s=pool_cfg.idle_timeout_s,
+            reap_interval_s=pool_cfg.reap_interval_s,
+        )
+        await sandbox_pool.start()  # spawns the pool-owned background reaper
+    app.state.sandbox_pool = sandbox_pool
 
     # Runtime composition root (T10): the TierRegistry (app-scoped) + the
     # per-request loop builders. Built only when a model backend is configured
@@ -104,12 +149,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # Postgres turn_logs (D-08-7); RLS-scoped via conversations.
                 turn_log_writer=PostgresTurnLogWriter(rls_engine),
                 audit_root=Path(config.audit_root),
+                # Spec 12 T10: pass the hosted sandbox pool (may be None when
+                # E2B_API_KEY is unset; factory absents code_execution in that case).
+                sandbox_pool=sandbox_pool,
             )
             app.state.tier_registry = tier_registry
             app.state.authoring_tier = config.authoring_tier
             app.state.build_conversation_loop = runtime_factory.build_conversation_loop
             app.state.build_agentic_loop = runtime_factory.build_agentic_loop
             app.state.title_builder = runtime_factory.build_title  # auto-title (small tier)
+
     try:
         yield
     finally:
@@ -117,6 +166,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await run_registry.aclose()  # cancel in-flight run tasks (S08-2)
         if runtime_factory is not None:
             await runtime_factory.aclose()  # tier_registry.aclose() + MCP disconnect (D-05-4)
+        if sandbox_pool is not None:
+            # Cancels the reaper, drains sessions, closes substrate
+            # (D-12-12 Gate 4 mid-exec-kill cleanliness inherits).
+            await sandbox_pool.aclose()
         if admin_engine is not None:
             admin_engine.dispose()
         if rls_engine is not None:
@@ -192,3 +245,5 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(me.router)
     app.include_router(health.router)
     app.include_router(tools.router)
+    app.include_router(documents.router)
+    app.include_router(uploads.router)

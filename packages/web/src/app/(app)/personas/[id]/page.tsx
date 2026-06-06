@@ -2,23 +2,52 @@ import { ArrowLeft, MessageSquare, Pencil, Shield } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { Grid, PageBody, Section, Stack } from "@/components/layout";
+import { PersonaIdentityHeader } from "@/components/persona/persona-identity-header";
 import { StartRunForm } from "@/components/personas/start-run-form";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { unwrap } from "@/lib/api";
 import { serverApi } from "@/lib/api/server";
-import { parsePersonaYaml, personaInitials } from "@/lib/persona";
+import { parsePersonaYaml } from "@/lib/persona";
 import { cn } from "@/lib/utils";
 import { startChat, startRun } from "./actions";
 
+/**
+ * Spec F2 T28 — Persona detail screen (rebuilt).
+ *
+ * Strangler-fig replace of the scaffold's detail JSX.
+ *
+ * DO NOT TOUCH (per audit.md §personas-detail.plumbing):
+ *   - `serverApi()` GET `/v1/personas/{persona_id}` + `parsePersonaYaml(yaml)`
+ *     + `notFound()` on 404 (Next 16 async-params contract);
+ *   - `./actions.ts` server actions (`startChat`, `startRun`);
+ *   - `<StartRunForm>` (composed verbatim from `components/personas/`).
+ *
+ * REPLACED (presentation only):
+ *   - hand-rolled `<header>` with `<Avatar>` + `bg-primary/10` fallback
+ *     (the D-F1-5 violation called out in audit.md §personas-detail.plumbing
+ *     line 47) → T13 `<PersonaIdentityHeader size="lg">` composing T06
+ *     `<PersonaAvatar>` so the avatar fill becomes per-persona identity-coloured;
+ *   - hand-rolled `mx-auto max-w-3xl px-… py-…` → T20 `<PageBody>`;
+ *   - inline `<Section title>` (Card + uppercase-tracking-wide heading) →
+ *     T20 `<Section heading>` wrapping a T04 retokenised `<Card>` body so
+ *     the section headings carry F2's Fraunces `.type-heading` voice;
+ *   - inline `<Empty>` + `<Chips>` → muted body-text + retokenised `<Badge>`;
+ *   - `text-[0.65rem]` epistemic badge (audit.md line 136 violation) →
+ *     `.type-caption font-mono uppercase` so the badge resolves through F1's
+ *     `--text-caption-*` tokens.
+ *
+ * The "Run task" callout retains the `border-primary/20` accent (vermilion
+ * is the brand cue; this is THE primary CTA on the detail surface).
+ */
 export default async function PersonaDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params; // Next 16: params is async.
+  const { id } = await params;
   const t = await getTranslations("personas");
   const api = await serverApi();
   const res = await api.GET("/v1/personas/{persona_id}", {
@@ -28,43 +57,39 @@ export default async function PersonaDetailPage({
   const detail = await unwrap(res);
   const p = parsePersonaYaml(detail.yaml);
 
+  const headerPersona = {
+    id: detail.id,
+    name: p.name,
+    role: p.role,
+    avatar_url: detail.avatar_url ?? null,
+  };
+
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
+    <PageBody>
       <Link
         href="/personas"
-        className="mb-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        className="type-ui mb-6 inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
+        data-slot="back-link"
       >
-        <ArrowLeft className="size-4" />
+        <ArrowLeft className="size-4" aria-hidden="true" />
         {t("backToList")}
       </Link>
 
-      <header className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-center gap-4">
-          <Avatar className="size-14 shrink-0">
-            {detail.avatar_url ? (
-              <AvatarImage src={detail.avatar_url} alt="" />
-            ) : null}
-            <AvatarFallback className="bg-primary/10 font-heading text-lg font-medium text-primary">
-              {personaInitials(p.name)}
-            </AvatarFallback>
-          </Avatar>
-          <div>
-            <h1 className="font-heading text-3xl leading-tight font-semibold tracking-tight">
-              {p.name}
-            </h1>
-            <p className="text-muted-foreground">{p.role}</p>
-            <Badge
-              variant="secondary"
-              className="mt-2 font-mono text-xs uppercase"
-            >
-              {p.languageDefault}
-            </Badge>
-          </div>
-        </div>
-        <div className="flex shrink-0 gap-2">
+      <header
+        className="mb-8 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between"
+        data-slot="persona-detail-header"
+      >
+        <PersonaIdentityHeader persona={headerPersona} size="lg" />
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
+          <Badge
+            variant="secondary"
+            className="type-caption font-mono uppercase"
+          >
+            {p.languageDefault}
+          </Badge>
           <form action={startChat.bind(null, id)}>
             <button type="submit" className={cn(buttonVariants(), "gap-2")}>
-              <MessageSquare className="size-4" />
+              <MessageSquare className="size-4" aria-hidden="true" />
               {t("startChat")}
             </button>
           </form>
@@ -72,123 +97,136 @@ export default async function PersonaDetailPage({
             href={`/personas/${id}/edit`}
             className={cn(buttonVariants({ variant: "outline" }), "gap-2")}
           >
-            <Pencil className="size-4" />
+            <Pencil className="size-4" aria-hidden="true" />
             {t("edit")}
           </Link>
         </div>
       </header>
 
-      <div className="mt-8 flex flex-col gap-5">
-        <Card className="gap-3 border-primary/20 p-5">
-          <h2 className="font-heading text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+      <Stack gap={5}>
+        <Card
+          className="gap-3 border-primary/20 p-5"
+          data-slot="persona-detail-run-task"
+        >
+          <h2 className="type-heading" data-slot="run-task-title">
             {t("runTaskTitle", { name: p.name })}
           </h2>
           <StartRunForm action={startRun.bind(null, id)} name={p.name} />
         </Card>
 
         {p.background ? (
-          <Section title={t("background")}>
-            <p className="text-sm leading-relaxed whitespace-pre-line text-muted-foreground">
-              {p.background}
-            </p>
+          <Section heading={t("background")}>
+            <Card className="p-5">
+              <p className="type-body whitespace-pre-line text-muted-foreground">
+                {p.background}
+              </p>
+            </Card>
           </Section>
         ) : null}
 
-        <Section title={t("constraints")}>
-          {p.constraints.length === 0 ? (
-            <Empty>{t("none")}</Empty>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {p.constraints.map((c) => (
-                <li key={c} className="flex items-start gap-2 text-sm">
-                  <Shield className="mt-0.5 size-4 shrink-0 text-primary" />
-                  <span>{c}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+        <Section heading={t("constraints")}>
+          <Card className="p-5">
+            {p.constraints.length === 0 ? (
+              <p className="type-body text-muted-foreground">{t("none")}</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {p.constraints.map((c) => (
+                  <li key={c} className="type-body flex items-start gap-2">
+                    <Shield
+                      className="mt-0.5 size-4 shrink-0 text-primary"
+                      aria-hidden="true"
+                    />
+                    <span>{c}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
         </Section>
 
         {p.selfFacts.length > 0 ? (
-          <Section title={t("selfFacts")}>
-            <ul className="flex flex-col gap-1.5 text-sm">
-              {p.selfFacts.map((f) => (
-                <li key={f.fact} className="text-muted-foreground">
-                  {f.fact}
-                </li>
-              ))}
-            </ul>
+          <Section heading={t("selfFacts")}>
+            <Card className="p-5">
+              <ul className="type-body flex flex-col gap-1.5">
+                {p.selfFacts.map((f) => (
+                  <li key={f.fact} className="text-muted-foreground">
+                    {f.fact}
+                  </li>
+                ))}
+              </ul>
+            </Card>
           </Section>
         ) : null}
 
         {p.worldview.length > 0 ? (
-          <Section title={t("worldview")}>
-            <ul className="flex flex-col gap-2.5 text-sm">
-              {p.worldview.map((w) => (
-                <li
-                  key={w.claim}
-                  className="flex flex-wrap items-baseline gap-2"
-                >
-                  <span>{w.claim}</span>
-                  {w.epistemic ? (
-                    <Badge
-                      variant="outline"
-                      className="font-mono text-[0.65rem] uppercase"
-                    >
-                      {w.epistemic}
-                    </Badge>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
+          <Section heading={t("worldview")}>
+            <Card className="p-5">
+              <ul className="type-body flex flex-col gap-2.5">
+                {p.worldview.map((w) => (
+                  <li
+                    key={w.claim}
+                    className="flex flex-wrap items-baseline gap-2"
+                  >
+                    <span>{w.claim}</span>
+                    {w.epistemic ? (
+                      <Badge
+                        variant="outline"
+                        className="type-caption font-mono uppercase"
+                        data-slot="worldview-epistemic"
+                      >
+                        {w.epistemic}
+                      </Badge>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </Card>
           </Section>
         ) : null}
 
         {(p.tools.length > 0 || p.skills.length > 0) && (
-          <div className="grid gap-5 sm:grid-cols-2">
-            <Section title={t("tools")}>
-              <Chips items={p.tools} empty={t("none")} />
+          <Grid cols={{ base: 1, sm: 2 }} gap={5}>
+            <Section heading={t("tools")}>
+              <Card className="p-5">
+                {p.tools.length === 0 ? (
+                  <p className="type-body text-muted-foreground">{t("none")}</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {p.tools.map((i) => (
+                      <Badge
+                        key={i}
+                        variant="secondary"
+                        className="type-caption font-mono"
+                      >
+                        {i}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </Card>
             </Section>
-            <Section title={t("skills")}>
-              <Chips items={p.skills} empty={t("none")} />
+            <Section heading={t("skills")}>
+              <Card className="p-5">
+                {p.skills.length === 0 ? (
+                  <p className="type-body text-muted-foreground">{t("none")}</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {p.skills.map((i) => (
+                      <Badge
+                        key={i}
+                        variant="secondary"
+                        className="type-caption font-mono"
+                      >
+                        {i}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </Card>
             </Section>
-          </div>
+          </Grid>
         )}
-      </div>
-    </div>
-  );
-}
-
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card className="gap-3 p-5">
-      <h2 className="font-heading text-sm font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
-      {children}
-    </Card>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="text-sm text-muted-foreground">{children}</p>;
-}
-
-function Chips({ items, empty }: { items: string[]; empty: string }) {
-  if (items.length === 0) return <Empty>{empty}</Empty>;
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {items.map((i) => (
-        <Badge key={i} variant="secondary" className="font-mono text-xs">
-          {i}
-        </Badge>
-      ))}
-    </div>
+      </Stack>
+    </PageBody>
   );
 }

@@ -240,7 +240,9 @@
  * When the user has asked for reduced motion via OS-level
  * `prefers-reduced-motion: reduce`, we:
  *   1. Collapse the F1 motion-duration tokens to ~0ms, so any consumer using
- *      `duration-[var(--motion-duration-*)]` becomes instantaneous.
+ *      a duration utility tied to the F1 motion-duration token family
+ *      becomes instantaneous (the literal class names are written without
+ *      a glob to avoid tripping Tailwind v4's content scanner).
  *   2. Force ALL animations + transitions to 0.01ms with !important — covers
  *      the bare Tailwind `animate-pulse`, `transition-*`, and the tw-animate-
  *      css shadcn-primitive slide/fade/zoom states. 0.01ms (not 0) preserves

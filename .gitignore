@@ -52,5 +52,9 @@ out/
 # Docker
 docker-compose.override.yml
 
+# Operational caches / temp workspaces
+.playwright-mcp/
+.tmp_smoke_workspace/
+
 docs/
 CLAUDE.md

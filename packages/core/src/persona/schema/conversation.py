@@ -16,8 +16,12 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 — Pydantic needs runtime access
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from persona.schema.content import (
+    MessageContent,  # noqa: TC001 — Pydantic needs runtime access
+    TextContent,
+)
 from persona.schema.tools import ToolCall  # noqa: TC001 — Pydantic needs runtime access
 
 __all__ = [
@@ -32,10 +36,15 @@ class ConversationMessage(BaseModel):
 
     Attributes:
         role: Speaker role.
-        content: Text of the message. Tool calls and tool results are
-            represented as separate ConversationMessage entries with
-            ``role="tool"`` or ``role="assistant"`` (and structured tool
-            metadata in ``metadata``).
+        content: Text of the message, or a multimodal list of typed
+            content blocks (Spec 13 T03 widening). Tool calls and tool
+            results are represented as separate ConversationMessage
+            entries with ``role="tool"`` or ``role="assistant"`` (and
+            structured tool metadata in ``metadata``). The list form
+            carries :class:`TextContent` and :class:`ImageContent`
+            blocks in caller order; the bytes for any image block live
+            in the persona workspace (Spec 03 / D-13-X-now option c)
+            and are resolved by the backend serialisers at send time.
         created_at: UTC-aware datetime of the message.
         metadata: Arbitrary string-keyed metadata (tool-call ids, tier
             used, latency, etc.).
@@ -50,7 +59,7 @@ class ConversationMessage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     role: Literal["user", "assistant", "system", "tool"]
-    content: str
+    content: str | list[MessageContent]
     created_at: datetime
     metadata: dict[str, str] = Field(default_factory=dict)
     tool_calls: list[ToolCall] = Field(default_factory=list)
@@ -62,6 +71,24 @@ class ConversationMessage(BaseModel):
             msg = "naive datetime not allowed on ConversationMessage.created_at"
             raise ValueError(msg)
         return value
+
+    @model_validator(mode="after")
+    def _reject_single_text_as_list(self) -> ConversationMessage:
+        """Forbid the degenerate single-TextContent-in-list shape (T03).
+
+        The text-only path must remain ``content=str``; lifting it into
+        a one-element list breaks the Phase 1 byte-for-byte snapshot
+        corpus and serves no purpose. Multi-block lists and lists
+        containing at least one ImageContent are allowed.
+        """
+        if (
+            isinstance(self.content, list)
+            and len(self.content) == 1
+            and isinstance(self.content[0], TextContent)
+        ):
+            msg = "single-text-as-list is not allowed; use content=str for text-only messages"
+            raise ValueError(msg)
+        return self
 
 
 class Conversation(BaseModel):

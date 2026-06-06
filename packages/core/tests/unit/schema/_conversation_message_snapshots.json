@@ -1,0 +1,396 @@
+[
+  {
+    "source": "packages/core/tests/unit/test_schema_conversation.py:16",
+    "kwargs": {
+      "role": "user",
+      "content": "hello",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "user",
+      "content": "hello",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/tests/unit/test_schema_conversation.py:20",
+    "kwargs": {
+      "role": "assistant",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "assistant",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/tests/unit/test_schema_conversation.py:21",
+    "kwargs": {
+      "role": "system",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "system",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/tests/unit/test_schema_conversation.py:22",
+    "kwargs": {
+      "role": "tool",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "tool",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/tests/unit/test_schema_conversation.py:36",
+    "kwargs": {
+      "role": "user",
+      "content": "x",
+      "created_at": "2026-06-05T14:00:00+02:00"
+    },
+    "dump": {
+      "role": "user",
+      "content": "x",
+      "created_at": "2026-06-05T14:00:00+02:00",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/tests/unit/backends/test_openai_compat.py:101",
+    "kwargs": {
+      "role": "assistant",
+      "content": "searching\u2026",
+      "created_at": "2026-06-05T12:00:00+00:00",
+      "tool_calls": [
+        {
+          "name": "web_search",
+          "args": {
+            "query": "mould"
+          },
+          "call_id": "call_0"
+        }
+      ]
+    },
+    "dump": {
+      "role": "assistant",
+      "content": "searching\u2026",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": [
+        {
+          "name": "web_search",
+          "args": {
+            "query": "mould"
+          },
+          "call_id": "call_0"
+        }
+      ]
+    }
+  },
+  {
+    "source": "packages/core/tests/unit/backends/test_openai_compat.py:116",
+    "kwargs": {
+      "role": "assistant",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "assistant",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/tests/unit/backends/test_openai_compat.py:131",
+    "kwargs": {
+      "role": "assistant",
+      "content": "searching\u2026",
+      "created_at": "2026-06-05T12:00:00+00:00",
+      "tool_calls": [
+        {
+          "name": "web_search",
+          "args": {
+            "query": "mould"
+          },
+          "call_id": "tu_1"
+        }
+      ]
+    },
+    "dump": {
+      "role": "assistant",
+      "content": "searching\u2026",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": [
+        {
+          "name": "web_search",
+          "args": {
+            "query": "mould"
+          },
+          "call_id": "tu_1"
+        }
+      ]
+    }
+  },
+  {
+    "source": "packages/core/src/persona/tools/formatting.py:75",
+    "kwargs": {
+      "role": "tool",
+      "content": "results",
+      "created_at": "2026-06-05T12:00:00+00:00",
+      "metadata": {
+        "tool_call_id": "call_42",
+        "tool_name": "web_search",
+        "is_error": "False",
+        "provider_format": "anthropic"
+      }
+    },
+    "dump": {
+      "role": "tool",
+      "content": "results",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {
+        "tool_call_id": "call_42",
+        "tool_name": "web_search",
+        "is_error": "False",
+        "provider_format": "anthropic"
+      },
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/src/persona/tools/formatting.py:91",
+    "kwargs": {
+      "role": "tool",
+      "content": "results",
+      "created_at": "2026-06-05T12:00:00+00:00",
+      "metadata": {
+        "tool_call_id": "call_42",
+        "tool_name": "web_search",
+        "is_error": "False",
+        "provider_format": "openai"
+      }
+    },
+    "dump": {
+      "role": "tool",
+      "content": "results",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {
+        "tool_call_id": "call_42",
+        "tool_name": "web_search",
+        "is_error": "False",
+        "provider_format": "openai"
+      },
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/src/persona/tools/formatting.py:104",
+    "kwargs": {
+      "role": "user",
+      "content": "web_search returned: results",
+      "created_at": "2026-06-05T12:00:00+00:00",
+      "metadata": {
+        "tool_call_id": "call_99",
+        "tool_name": "web_search",
+        "is_error": "False",
+        "provider_format": "shim"
+      }
+    },
+    "dump": {
+      "role": "user",
+      "content": "web_search returned: results",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {
+        "tool_call_id": "call_99",
+        "tool_name": "web_search",
+        "is_error": "False",
+        "provider_format": "shim"
+      },
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/core/src/persona/history.py:128",
+    "kwargs": {
+      "role": "system",
+      "content": "Earlier in this conversation: prior summary text",
+      "created_at": "2026-06-05T12:00:00+00:00",
+      "metadata": {
+        "kind": "compacted_summary"
+      }
+    },
+    "dump": {
+      "role": "system",
+      "content": "Earlier in this conversation: prior summary text",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {
+        "kind": "compacted_summary"
+      },
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/runtime/src/persona_runtime/agentic/compactor.py:98",
+    "kwargs": {
+      "role": "system",
+      "content": "Earlier in this run: rolled-up summary",
+      "created_at": "2026-06-05T12:00:00+00:00",
+      "metadata": {
+        "kind": "step_compaction"
+      }
+    },
+    "dump": {
+      "role": "system",
+      "content": "Earlier in this run: rolled-up summary",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {
+        "kind": "step_compaction"
+      },
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/runtime/src/persona_runtime/prompt.py:148",
+    "kwargs": {
+      "role": "system",
+      "content": "You are Astrid.\n\nIdentity:\n- name: Astrid",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "system",
+      "content": "You are Astrid.\n\nIdentity:\n- name: Astrid",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/runtime/src/persona_runtime/prompt.py:149",
+    "kwargs": {
+      "role": "user",
+      "content": "what's the weather?",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "user",
+      "content": "what's the weather?",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/runtime/src/persona_runtime/loop.py:350",
+    "kwargs": {
+      "role": "user",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "user",
+      "content": "hi",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/runtime/src/persona_runtime/loop.py:353",
+    "kwargs": {
+      "role": "assistant",
+      "content": "Hello, I'm Astrid.",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "assistant",
+      "content": "Hello, I'm Astrid.",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/runtime/src/persona_runtime/loop.py:252",
+    "kwargs": {
+      "role": "assistant",
+      "content": "let me look that up",
+      "created_at": "2026-06-05T12:00:00+00:00",
+      "tool_calls": [
+        {
+          "name": "web_search",
+          "args": {
+            "q": "x"
+          },
+          "call_id": "call_1"
+        }
+      ]
+    },
+    "dump": {
+      "role": "assistant",
+      "content": "let me look that up",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": [
+        {
+          "name": "web_search",
+          "args": {
+            "q": "x"
+          },
+          "call_id": "call_1"
+        }
+      ]
+    }
+  },
+  {
+    "source": "packages/runtime/src/persona_runtime/loop.py:301",
+    "kwargs": {
+      "role": "system",
+      "content": "Stop calling tools and answer now.",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "system",
+      "content": "Stop calling tools and answer now.",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  },
+  {
+    "source": "packages/api/src/persona_api/services/chat_service.py:192",
+    "kwargs": {
+      "role": "user",
+      "content": "hi from db",
+      "created_at": "2026-06-05T12:00:00+00:00"
+    },
+    "dump": {
+      "role": "user",
+      "content": "hi from db",
+      "created_at": "2026-06-05T12:00:00Z",
+      "metadata": {},
+      "tool_calls": []
+    }
+  }
+]

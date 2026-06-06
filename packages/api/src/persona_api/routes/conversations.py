@@ -22,7 +22,7 @@ from persona_api.schemas import (
     MessageView,
     PostMessageRequest,
 )
-from persona_api.services import audit_service, chat_service, credits_service
+from persona_api.services import audit_service, chat_service, credits_service, document_service
 
 router = APIRouter(prefix="/v1", tags=["conversations"])
 
@@ -107,10 +107,51 @@ async def delete_conversation(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> None:
-    """Delete a conversation + all its messages (cascade; 404 if not the caller's)."""
+    """Delete a conversation + all its messages + workspace artefacts.
+
+    Cascade reach (T19 + Spec 13 T12 co-landing per D-14-X-cascade-coordination):
+
+    1. DB rows (existing): the ``conversations`` row + its ``messages`` /
+       ``turn_logs`` via FK cascade.
+    2. **Document workspace + DocumentStore chunks** (T19): every doc
+       attached to the conversation, via
+       :func:`document_service.remove_all_for_conversation` — the
+       cascade-helper T13 introduced specifically for this reuse.
+    3. **Image workspace files** (Spec 13 T12): each image referenced by
+       the conversation's messages. Spec 13 owns this branch; the two
+       cascade extensions coexist additively in this same handler per
+       the D-14-X-cascade-coordination locking decision.
+
+    404 if not the caller's conversation (RLS-scoped).
+    """
+    # Pre-fetch persona_id BEFORE the DB delete — chat_service.delete_conversation
+    # tears down the row, so we'd lose this lookup if we deferred it.
+    # get_conversation also does the RLS ownership check (404 if cross-tenant).
+    conv = chat_service.get_conversation(
+        rls_engine=request.app.state.rls_engine, conversation_id=conversation_id
+    )
+    persona_id = str(conv["persona_id"])
+
+    # DB delete (existing cascade to messages + turn_logs).
     chat_service.delete_conversation(
         rls_engine=request.app.state.rls_engine, conversation_id=conversation_id
     )
+
+    # T19 — document workspace + DocumentStore chunks cascade.
+    workspace_root = getattr(request.app.state, "workspace_root", None)
+    build_document_store = getattr(request.app.state, "build_document_store", None)
+    if workspace_root is not None and build_document_store is not None:
+        from pathlib import Path  # noqa: PLC0415 — deliberate local import
+
+        document_service.remove_all_for_conversation(
+            sandbox_root=Path(workspace_root),
+            persona_id=persona_id,
+            conversation_id=conversation_id,
+            document_store=build_document_store(),
+        )
+
+    # (Spec 13 T12 inserts its image-workspace-cascade here when it lands.)
+
     audit_service.record(
         engine=request.app.state.rls_engine,
         user_id=user.id,
@@ -129,7 +170,15 @@ async def post_message(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> StreamingResponse:
-    """Send a message; stream the response as SSE (§5.2, KEYSTONE 1)."""
+    """Send a message; stream the response as SSE (§5.2, KEYSTONE 1).
+
+    Multimodal (spec 13 T20): when ``body.images`` is non-empty the route
+    constructs a multimodal :class:`ConversationMessage` content list
+    (``[TextContent, ImageContent, ...]``) and passes ``turn_has_image=True``
+    through to the runtime so :meth:`Router.choose` restricts to vision-capable
+    tiers. The text-only path (``body.images is None``) is unchanged
+    byte-for-byte — T03/T13 regression invariants hold.
+    """
     # Pre-flight the conversation existence/ownership BEFORE streaming begins, so
     # a missing/cross-tenant conversation returns a clean 404 (RLS-scoped) rather
     # than raising mid-stream after SSE headers are sent ("response already
@@ -139,6 +188,14 @@ async def post_message(
     )
     # Pre-flight credit guard: 402 BEFORE streaming starts (D-11-12 / spec 11 §5).
     credits_service.require_credits(rls_engine=request.app.state.rls_engine, user_id=user.id)
+
+    # The text-only path's ``user_message`` is BYTE-FOR-BYTE unchanged (T03/T13
+    # regression invariant); image-bearing turns thread ``images`` + the
+    # ``turn_has_image`` flag separately so the runtime loop's signature stays
+    # ``user_message: str`` (the loop's prompt + retrieval pipeline operate on
+    # text; images travel as references on the side and are persisted on the
+    # ``messages.images`` JSONB column per D-13-X-now option (c)).
+    turn_has_image = bool(body.images)
     generator = chat_service.stream_chat(
         rls_engine=request.app.state.rls_engine,
         loop_builder=request.app.state.build_conversation_loop,
@@ -148,6 +205,8 @@ async def post_message(
         channel=body.channel,
         credits_per_turn=request.app.state.config.credits_per_turn,
         title_builder=getattr(request.app.state, "title_builder", None),
+        images=list(body.images) if body.images else None,
+        turn_has_image=turn_has_image,
     )
     # The rate-limit dependency's headers don't auto-merge into a route-built
     # StreamingResponse (FastAPI limitation) — copy them from the stashed

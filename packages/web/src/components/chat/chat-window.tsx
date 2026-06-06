@@ -3,20 +3,26 @@
 import { ArrowUp } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
+import type { AvatarPersona } from "@/components/persona/persona-avatar";
 import { buttonVariants } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useChat } from "@/lib/hooks/use-chat";
 import { cn } from "@/lib/utils";
-import type { ChatMessageView } from "./message-bubble";
-import { MessageBubble } from "./message-bubble";
+import { type ChatMessageView, MessageElement } from "./message-element";
 
+/**
+ * T26: chat window swaps the scaffold's <MessageBubble> for <MessageElement>
+ * (T15 + D-F2-15 interleaved layout). The `useChat` plumbing + SSE consumption
+ * + composer textarea + auto-scroll behaviour stay verbatim per the strangler-
+ * fig discipline; only the per-message rendering changes.
+ */
 export function ChatWindow({
   conversationId,
-  personaName,
+  persona,
   initialMessages,
 }: {
   conversationId: string;
-  personaName: string;
+  persona: AvatarPersona;
   initialMessages: ChatMessageView[];
 }) {
   const t = useTranslations("chat");
@@ -48,8 +54,13 @@ export function ChatWindow({
               {t("empty")}
             </p>
           ) : null}
-          {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} />
+          {messages.map((m, i) => (
+            <MessageElement
+              key={m.id}
+              message={m}
+              persona={persona}
+              prevMessage={i > 0 ? messages[i - 1] : undefined}
+            />
           ))}
           {error ? (
             <p className="text-sm text-destructive">{t("error")}</p>
@@ -75,7 +86,7 @@ export function ChatWindow({
                 submit();
               }
             }}
-            placeholder={t("placeholder", { name: personaName })}
+            placeholder={t("placeholder", { name: persona.name })}
             rows={1}
             className="max-h-40 min-h-10 flex-1 resize-none field-sizing-content"
           />

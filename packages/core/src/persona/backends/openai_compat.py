@@ -20,6 +20,7 @@ See ``docs/specs/spec_02/decisions.md`` for the relevant decisions:
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from typing import TYPE_CHECKING, Any, Literal
@@ -37,6 +38,7 @@ from persona.backends.config import DEFAULT_BASE_URLS, BackendConfig
 from persona.backends.errors import (
     AuthenticationError,
     BackendTimeoutError,
+    BackendVisionNotSupportedError,
     ModelNotFoundError,
     ProviderError,
     RateLimitError,
@@ -49,10 +51,12 @@ from persona.backends.types import (
     ToolSpec,
 )
 from persona.logging import get_logger
+from persona.schema.content import ImageContent, TextContent
 from persona.schema.tools import ToolCall
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     from persona.schema.conversation import ConversationMessage
 
@@ -98,6 +102,25 @@ def _native_tools_supported(provider: str, model: str) -> bool:
     return model in capability
 
 
+# D-13-3 vision capability matrix; verify-at-deploy per T19 close-out.
+_VISION_CAPABILITY: dict[str, frozenset[str] | Literal["all"]] = {
+    "anthropic": "all",
+    "openai": frozenset({"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"}),
+    "deepseek": frozenset(),
+    "groq": frozenset(),
+    "together": frozenset(),
+}
+
+
+def _vision_supported(provider: str, model: str) -> bool:
+    """Look up the vision capability for a (provider, model) pair (D-13-3)."""
+    capability = _VISION_CAPABILITY.get(provider, frozenset())
+    if capability == "all":
+        return True
+    assert isinstance(capability, frozenset)
+    return model in capability
+
+
 def _extract_retry_after_s(headers: Any) -> str | None:  # noqa: ANN401 — SDK type
     """Return ``retry-after`` header value as a string, or None (D-02-8)."""
     if headers is None:
@@ -119,13 +142,22 @@ class OpenAICompatibleBackend:
     else). The dispatch is contained — callers see one shape.
     """
 
-    def __init__(self, config: BackendConfig) -> None:
+    def __init__(self, config: BackendConfig, *, workspace_root: Path | None = None) -> None:
         """Construct and validate. Raises :class:`AuthenticationError` on
         missing key (D-02-13 + spec §10 #8).
 
         Args:
             config: Backend configuration. ``provider`` must be one of
                 ``anthropic | openai | deepseek | groq | together``.
+            workspace_root: Optional persona workspace root used by the
+                Spec 13 multimodal serialisers (T05/T06) to resolve
+                :class:`ImageContent` workspace-path refs to bytes. Most
+                callers leave this ``None``; only the persona-api
+                composition root supplies it. When ``None`` and a
+                list-form message carries an :class:`ImageContent`
+                block, :class:`BackendVisionNotSupportedError` is
+                raised at serialisation time so the failure mode is
+                loud rather than a silent text-only round-trip.
         """
         if config.provider not in {
             "anthropic",
@@ -148,6 +180,8 @@ class OpenAICompatibleBackend:
         self._model = config.model
         self._timeout = config.request_timeout_s
         self._supports_native_tools = _native_tools_supported(self._provider, self._model)
+        self._supports_vision = _vision_supported(self._provider, self._model)
+        self._workspace_root = workspace_root
 
         api_key = config.api_key.get_secret_value()
         base_url = config.base_url or DEFAULT_BASE_URLS.get(self._provider)
@@ -168,6 +202,7 @@ class OpenAICompatibleBackend:
             provider=self._provider,
             model=self._model,
             native_tools=self._supports_native_tools,
+            vision=self._supports_vision,
         )
 
     @property
@@ -181,6 +216,10 @@ class OpenAICompatibleBackend:
     @property
     def supports_native_tools(self) -> bool:
         return self._supports_native_tools
+
+    @property
+    def supports_vision(self) -> bool:
+        return self._supports_vision
 
     async def chat(
         self,
@@ -251,7 +290,18 @@ class OpenAICompatibleBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "messages": _coalesce_anthropic_tool_results([_message_to_anthropic(m) for m in msgs]),
+            "messages": _coalesce_anthropic_tool_results(
+                [
+                    _message_to_anthropic(
+                        m,
+                        workspace_root=self._workspace_root,
+                        supports_vision=self._supports_vision,
+                        backend=self._provider,
+                        model=self._model,
+                    )
+                    for m in msgs
+                ]
+            ),
             "temperature": temperature,
         }
         if system_text:
@@ -283,7 +333,18 @@ class OpenAICompatibleBackend:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "messages": _coalesce_anthropic_tool_results([_message_to_anthropic(m) for m in msgs]),
+            "messages": _coalesce_anthropic_tool_results(
+                [
+                    _message_to_anthropic(
+                        m,
+                        workspace_root=self._workspace_root,
+                        supports_vision=self._supports_vision,
+                        backend=self._provider,
+                        model=self._model,
+                    )
+                    for m in msgs
+                ]
+            ),
             "temperature": temperature,
         }
         if system_text:
@@ -394,7 +455,16 @@ class OpenAICompatibleBackend:
     ) -> ChatResponse:
         assert self._openai is not None
         use_native = self._supports_native_tools and bool(tools)
-        msgs = [_message_to_openai(m) for m in messages]
+        msgs = [
+            _message_to_openai(
+                m,
+                workspace_root=self._workspace_root,
+                supports_vision=self._supports_vision,
+                backend=self._provider,
+                model=self._model,
+            )
+            for m in messages
+        ]
         if not use_native and tools:
             msgs = _prepend_shim_to_openai(msgs, tools)
 
@@ -422,7 +492,16 @@ class OpenAICompatibleBackend:
     ) -> AsyncIterator[StreamChunk]:
         assert self._openai is not None
         use_native = self._supports_native_tools and bool(tools)
-        msgs = [_message_to_openai(m) for m in messages]
+        msgs = [
+            _message_to_openai(
+                m,
+                workspace_root=self._workspace_root,
+                supports_vision=self._supports_vision,
+                backend=self._provider,
+                model=self._model,
+            )
+            for m in messages
+        ]
         shim_state: ShimState | None = None
         if not use_native and tools:
             msgs = _prepend_shim_to_openai(msgs, tools)
@@ -554,8 +633,18 @@ class OpenAICompatibleBackend:
 def _split_system(
     messages: list[ConversationMessage],
 ) -> tuple[str, list[ConversationMessage]]:
-    """Pull out system messages (Anthropic wants them as a top-level field)."""
-    system_parts = [m.content for m in messages if m.role == "system"]
+    """Pull out system messages (Anthropic wants them as a top-level field).
+
+    Spec 13 T03 widened ``ConversationMessage.content`` to
+    ``str | list[MessageContent]``. System messages are authored by the
+    runtime as plain str (per the T01 audit's "preserved text-only"
+    classification), so we narrow defensively to str here — any
+    list-form content is refused upstream by the vision dispatcher
+    introduced in T05/T06.
+    """
+    system_parts = [
+        m.content for m in messages if m.role == "system" and isinstance(m.content, str)
+    ]
     rest = [m for m in messages if m.role != "system"]
     return "\n\n".join(system_parts), rest
 
@@ -603,44 +692,202 @@ def _coalesce_anthropic_tool_results(messages: list[dict[str, Any]]) -> list[dic
     return coalesced
 
 
-def _message_to_anthropic(msg: ConversationMessage) -> dict[str, Any]:
+def _message_to_anthropic(
+    msg: ConversationMessage,
+    *,
+    workspace_root: Path | None = None,
+    supports_vision: bool = True,
+    backend: str = "",
+    model: str = "",
+) -> dict[str, Any]:
     """Convert one ``ConversationMessage`` to Anthropic's message shape.
 
     Anthropic accepts ``user`` and ``assistant`` roles only at the message
     level (system goes via the top-level ``system`` field). ``tool``
     messages from spec 01's schema are folded into a user message carrying
     a tool_result block.
+
+    Spec 13 T05 widens ``msg.content`` to ``str | list[MessageContent]``.
+    The str path is byte-for-byte unchanged (the T01 snapshot corpus
+    gates this). For the list path, :class:`TextContent` blocks become
+    ``{"type": "text", "text": ...}`` and :class:`ImageContent` blocks
+    become ``{"type": "image", "source": {"type": "base64",
+    "media_type": ..., "data": ...}}`` with bytes read from
+    ``workspace_root / block.workspace_path`` and base64-encoded (per
+    D-13-2). If ``supports_vision`` is ``False`` or ``workspace_root``
+    is ``None`` and a list contains any :class:`ImageContent`, this
+    raises :class:`BackendVisionNotSupportedError` BEFORE touching the
+    filesystem so the failure mode is loud and synchronous.
     """
     role = msg.role
     if role == "tool":
+        # tool messages are authored by the runtime as plain str; the schema
+        # widening to list never reaches here, but narrow defensively so the
+        # tool_result block carries a str content (matching the existing wire
+        # shape gated by spec 11 launch tests).
+        tool_content = msg.content if isinstance(msg.content, str) else ""
         return {
             "role": "user",
             "content": [
                 {
                     "type": "tool_result",
                     "tool_use_id": msg.metadata.get("tool_call_id", ""),
-                    "content": msg.content,
+                    "content": tool_content,
                 }
             ],
         }
     if role == "assistant" and msg.tool_calls:
         # Anthropic requires the assistant's tool_use blocks to precede the
         # matching tool_result (spec 11 soak finding). An optional leading text
-        # block carries any narration.
+        # block carries any narration. Assistant messages with tool_calls are
+        # authored by the model + lifted by the runtime as text-only str.
         blocks: list[dict[str, Any]] = []
-        if msg.content:
+        if msg.content and isinstance(msg.content, str):
             blocks.append({"type": "text", "text": msg.content})
         blocks.extend(
             {"type": "tool_use", "id": tc.call_id, "name": tc.name, "input": tc.args}
             for tc in msg.tool_calls
         )
         return {"role": "assistant", "content": blocks}
+    if isinstance(msg.content, list):
+        # Multimodal list form (T05). Fail fast if vision is not configured
+        # (supports_vision=False or no workspace_root supplied) before any
+        # filesystem touch.
+        image_count = sum(1 for b in msg.content if isinstance(b, ImageContent))
+        if image_count and not supports_vision:
+            raise BackendVisionNotSupportedError(
+                "backend does not support vision",
+                context={
+                    "backend": backend,
+                    "model": model,
+                    "image_count": str(image_count),
+                },
+            )
+        if image_count and workspace_root is None:
+            raise BackendVisionNotSupportedError(
+                "no workspace_root configured for image resolution",
+                context={
+                    "backend": backend,
+                    "model": model,
+                    "image_count": str(image_count),
+                    "reason": "missing_workspace_root",
+                },
+            )
+        out_blocks: list[dict[str, Any]] = []
+        for block in msg.content:
+            if isinstance(block, TextContent):
+                out_blocks.append({"type": "text", "text": block.text})
+            elif isinstance(block, ImageContent):
+                assert workspace_root is not None  # narrowed by guard above
+                image_bytes = (workspace_root / block.workspace_path).read_bytes()
+                data_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+                out_blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": block.media_type,
+                            "data": data_b64,
+                        },
+                    }
+                )
+        return {"role": role, "content": out_blocks}
     return {"role": role, "content": msg.content}
 
 
-def _message_to_openai(msg: ConversationMessage) -> dict[str, Any]:
-    """Convert one ``ConversationMessage`` to OpenAI's message shape."""
-    base: dict[str, Any] = {"role": msg.role, "content": msg.content}
+def _message_to_openai(
+    msg: ConversationMessage,
+    *,
+    workspace_root: Path | None = None,
+    supports_vision: bool = True,
+    backend: str = "",
+    model: str = "",
+) -> dict[str, Any]:
+    """Convert one ``ConversationMessage`` to OpenAI's message shape.
+
+    Spec 13 T06 widens this serialiser to handle the
+    ``str | list[MessageContent]`` content type introduced by T03. The
+    str path is byte-for-byte unchanged. For the list path, blocks are
+    emitted as an OpenAI multi-part content array (per the OpenAI
+    Vision Chat Completions schema):
+
+    * :class:`TextContent` -> ``{"type": "text", "text": ...}``.
+    * :class:`ImageContent` -> ``{"type": "image_url",
+      "image_url": {"url": "data:<media_type>;base64,<b64>"}}`` per
+      D-13-2 (Anthropic only accepts base64, and the same data-URL
+      payload works for OpenAI's vision models — keeps both wire shapes
+      symmetric and avoids a second persisted form).
+
+    If ``supports_vision`` is ``False`` or ``workspace_root`` is
+    ``None`` and the list carries any :class:`ImageContent`, this
+    raises :class:`BackendVisionNotSupportedError` BEFORE touching the
+    filesystem so the failure mode is loud and synchronous (same guard
+    semantics as :func:`_message_to_anthropic`).
+
+    Tool messages and assistant.tool_calls follow the str path —
+    ``role="tool"`` carries a single str body (the runtime never lifts
+    a tool result into the list form) and ``assistant.tool_calls``
+    flows through the existing OpenAI function-call schema.
+    """
+    if isinstance(msg.content, list):
+        # Multimodal list form (T06). Fail fast if vision is not configured
+        # (supports_vision=False or no workspace_root supplied) before any
+        # filesystem touch.
+        image_count = sum(1 for b in msg.content if isinstance(b, ImageContent))
+        if image_count and not supports_vision:
+            raise BackendVisionNotSupportedError(
+                "backend does not support vision",
+                context={
+                    "backend": backend,
+                    "model": model,
+                    "image_count": str(image_count),
+                },
+            )
+        if image_count and workspace_root is None:
+            raise BackendVisionNotSupportedError(
+                "no workspace_root configured for image resolution",
+                context={
+                    "backend": backend,
+                    "model": model,
+                    "image_count": str(image_count),
+                    "reason": "missing_workspace_root",
+                },
+            )
+        out_parts: list[dict[str, Any]] = []
+        for block in msg.content:
+            if isinstance(block, TextContent):
+                out_parts.append({"type": "text", "text": block.text})
+            elif isinstance(block, ImageContent):
+                assert workspace_root is not None  # narrowed by guard above
+                image_bytes = (workspace_root / block.workspace_path).read_bytes()
+                data_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+                data_url = f"data:{block.media_type};base64,{data_b64}"
+                out_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    }
+                )
+        base: dict[str, Any] = {"role": msg.role, "content": out_parts}
+        # role=tool / assistant.tool_calls paths never carry list-form
+        # content (the runtime authors those as plain str), but plumb
+        # the metadata through defensively so behaviour is consistent
+        # if a future path lifts them.
+        if msg.role == "tool":
+            base["tool_call_id"] = msg.metadata.get("tool_call_id", "")
+        if msg.role == "assistant" and msg.tool_calls:
+            base["tool_calls"] = [
+                {
+                    "id": tc.call_id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
+                }
+                for tc in msg.tool_calls
+            ]
+        return base
+
+    # str path — unchanged from Phase 1.
+    base = {"role": msg.role, "content": msg.content}
     if msg.role == "tool":
         base["tool_call_id"] = msg.metadata.get("tool_call_id", "")
     if msg.role == "assistant" and msg.tool_calls:

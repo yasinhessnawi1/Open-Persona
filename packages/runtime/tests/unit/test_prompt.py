@@ -173,16 +173,23 @@ class TestContextBudgetReduction:
             worldview=[_chunk("WORLDVIEW", meta={"epistemic": "fact"})],
             episodic=[_chunk("EPISODIC")],
         )
+        # T15 widened _reductions to return tuples of
+        # (RetrievedContext, DocumentContext | None). Without documents, the
+        # ladder still has 3 stages with the same RetrievedContext semantics.
         stages = builder._reductions(ctx)
+        assert len(stages) == 3
         # Stage 1: only episodic dropped.
-        assert stages[0].episodic == []
-        assert stages[0].worldview != []
+        assert stages[0][0].episodic == []
+        assert stages[0][0].worldview != []
         # Stage 2: episodic + worldview dropped, self_facts kept.
-        assert stages[1].episodic == []
-        assert stages[1].worldview == []
-        assert stages[1].self_facts != []
+        assert stages[1][0].episodic == []
+        assert stages[1][0].worldview == []
+        assert stages[1][0].self_facts != []
         # Stage 3: all retrieved context cleared.
-        assert stages[2].self_facts == []
+        assert stages[2][0].self_facts == []
+        # DocumentContext slot rides through unchanged.
+        for _, doc_ctx in stages:
+            assert doc_ctx is None
 
 
 class TestAcceptance12ContextWindow:

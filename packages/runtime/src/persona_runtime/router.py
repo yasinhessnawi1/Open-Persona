@@ -12,6 +12,14 @@ Precedence (spec §6):
     3. boilerplate → small
     4. persona-critical → frontier
     5. default → mid
+
+Spec 13 (T09) wraps the rules in a structural pre-filter: every call to
+:meth:`Router.choose` consults :meth:`Router._candidate_tiers` BEFORE any rule
+fires. When the current turn carries image content, the candidate set is
+restricted to vision-capable tiers; the rules then operate over that filtered
+set. A first-turn / persona-critical rule that wants ``frontier`` falls
+through when ``frontier`` is not in candidates (e.g., only ``mid`` is
+vision-capable) so image turns are never dispatched to a text-only backend.
 """
 
 from __future__ import annotations
@@ -19,9 +27,13 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from persona.backends.errors import NoVisionTierConfiguredError
+
 if TYPE_CHECKING:
     from persona.schema.conversation import Conversation
     from persona.schema.persona import Persona
+
+    from persona_runtime.tier import TierRegistry
 
 __all__ = ["Router"]
 
@@ -75,8 +87,26 @@ class Router:
     negligible and it keeps the router free of per-persona state.
     """
 
-    def choose(self, persona: Persona, message: str, conversation: Conversation) -> str:
+    def choose(
+        self,
+        persona: Persona,
+        message: str,
+        conversation: Conversation,
+        *,
+        turn_has_image: bool = False,
+        tier_registry: TierRegistry | None = None,
+    ) -> str:
         """Return the tier name for this turn.
+
+        The first step on EVERY call is :meth:`_candidate_tiers`, which
+        produces the filtered set of tier names the rules may return. When
+        ``turn_has_image`` is ``True`` (and ``tier_registry`` is supplied),
+        the candidate set is restricted to vision-capable tiers; otherwise
+        every configured tier is a candidate. The five rules below then
+        select the first rule whose preferred tier is in the candidate set;
+        the default rule falls back to whatever vision-capable tier is
+        available so image-bearing turns can never reach a text-only
+        backend.
 
         Args:
             persona: The active persona (its ``routing`` override, ``identity``
@@ -84,24 +114,99 @@ class Router:
             message: The user's message for this turn.
             conversation: The live conversation (its ``turn_count`` decides the
                 first-turn rule).
+            turn_has_image: Whether the current user message carries any
+                :class:`~persona.schema.content.ImageContent` block. The
+                ConversationLoop computes this from the user message before
+                routing (T13-T09).
+            tier_registry: The :class:`TierRegistry` used to inspect tier
+                vision capability. When ``None``, no filtering happens (the
+                pre-T13 callers that don't deal with images still work).
 
         Returns:
-            One of ``"frontier"``, ``"mid"``, ``"small"``.
+            One of ``"frontier"``, ``"mid"``, ``"small"`` — a tier name in
+            the candidate set.
+
+        Raises:
+            NoVisionTierConfiguredError: ``turn_has_image`` is ``True`` and
+                no configured tier is vision-capable.
         """
+        candidates = self._candidate_tiers(
+            turn_has_image=turn_has_image, tier_registry=tier_registry
+        )
+
         override = persona.routing.tier_for_generation
-        if override != "auto":
+        if override != "auto" and override in candidates:
             return override
 
-        if conversation.turn_count == 0:
+        if conversation.turn_count == 0 and "frontier" in candidates:
             return "frontier"
 
-        if self._is_boilerplate(message):
+        if self._is_boilerplate(message) and "small" in candidates:
             return "small"
 
-        if self._is_persona_critical(message, persona):
+        if self._is_persona_critical(message, persona) and "frontier" in candidates:
             return "frontier"
 
-        return "mid"
+        if "mid" in candidates:
+            return "mid"
+
+        # No rule's preferred tier is available in the candidate set. Fall
+        # back to the first candidate (preserves the caller's configured
+        # tier order; for the image path this is the first vision-capable
+        # tier).
+        return candidates[0]
+
+    def _candidate_tiers(
+        self,
+        *,
+        turn_has_image: bool,
+        tier_registry: TierRegistry | None,
+    ) -> tuple[str, ...]:
+        """Filtered tier names the rules may return for this turn (T13-T09).
+
+        Called UNCONDITIONALLY at the top of every :meth:`choose` invocation;
+        a future router rule that skips this step must fail the structural
+        test in ``test_router_vision.py``.
+
+        - No registry supplied (legacy / unit-test callers): returns the
+          canonical ordering ``("frontier", "mid", "small")`` so the rules
+          behave as they did before T13-T09.
+        - ``turn_has_image is False``: returns every configured tier name.
+        - ``turn_has_image is True``: returns only the configured tiers
+          whose backends report ``supports_vision = True``. An empty
+          result raises :class:`NoVisionTierConfiguredError` with the
+          structured context shape D-13-X-error-hierarchy specifies.
+
+        Args:
+            turn_has_image: Whether the current user message carries an
+                image block.
+            tier_registry: The registry to inspect for vision capability.
+
+        Returns:
+            The ordered tuple of tier names eligible for this turn. Always
+            non-empty on return (the image-with-no-vision case raises).
+
+        Raises:
+            NoVisionTierConfiguredError: ``turn_has_image`` is ``True`` and
+                no configured tier is vision-capable.
+        """
+        if tier_registry is None:
+            return ("frontier", "mid", "small")
+
+        configured = tier_registry.configured_tier_names
+        if not turn_has_image:
+            return configured
+
+        vision = tuple(name for name in configured if tier_registry.supports_vision_for(name))
+        if not vision:
+            raise NoVisionTierConfiguredError(
+                "no vision-capable tier is configured for this turn",
+                context={
+                    "reason": "no_vision_tier",
+                    "configured_tiers": ",".join(configured),
+                },
+            )
+        return vision
 
     def _is_boilerplate(self, message: str) -> bool:
         """True for acknowledgements, reformat/clarify requests — routine work."""

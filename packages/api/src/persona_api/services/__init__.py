@@ -8,6 +8,7 @@ from persona_api.services import (
     catalog_service,
     chat_service,
     credits_service,
+    image_service,
     persona_service,
     run_service,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "catalog_service",
     "chat_service",
     "credits_service",
+    "image_service",
     "persona_service",
     "run_service",
 ]

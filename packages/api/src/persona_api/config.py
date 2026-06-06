@@ -14,6 +14,8 @@ already use.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -91,6 +93,14 @@ class APIConfig(BaseSettings):
     # Comma-separated; the web dev server is http://localhost:3000 by default.
     # Empty disables CORS (server-to-server only). Read from PERSONA_API_CORS_ORIGINS.
     cors_origins: str = "http://localhost:3000"
+
+    # Spec 13 D-13-4: per-deployment workspace root for uploaded images (and
+    # later per-persona tool artefacts). Each upload lands at
+    # ``<workspace_root>/<owner_id>/<persona_id>/uploads/<digest><ext>`` and is
+    # resolved via ``persona.tools._sandbox.resolve_sandbox_path``. Read from
+    # ``PERSONA_API_WORKSPACE_ROOT``; defaults to a ``.persona_work`` dir under
+    # the process cwd so a clean checkout runs without env setup.
+    workspace_root: Path = Field(default_factory=lambda: Path.cwd() / ".persona_work")
 
     @property
     def effective_app_database_url(self) -> str:

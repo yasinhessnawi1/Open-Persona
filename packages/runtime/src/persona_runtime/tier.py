@@ -75,6 +75,43 @@ class TierRegistry:
         self._tiers = dict(tiers)
         self._cache: dict[str, ChatBackend] = {}
 
+    @property
+    def configured_tier_names(self) -> tuple[str, ...]:
+        """Names of every tier that has a :class:`TierConfig` registered.
+
+        Insertion order is preserved so callers (e.g., the router's vision
+        pre-filter, T13-T09) can produce stable error context strings.
+        """
+        return tuple(self._tiers)
+
+    def supports_vision_for(self, tier_name: str) -> bool:
+        """Whether the backend for ``tier_name`` accepts image content.
+
+        Resolves through the same fallback chain as :meth:`get` (so a
+        request for an unconfigured tier consults the fallback's backend),
+        instantiates the backend lazily, and reads its ``supports_vision``
+        capability. The router (T13-T09) consults this BEFORE any rule
+        fires so that image-bearing turns can never land on a text-only
+        tier.
+
+        Args:
+            tier_name: The tier name to inspect.
+
+        Returns:
+            ``True`` iff the resolved backend's ``supports_vision`` is
+            ``True``; ``False`` if the backend is text-only.
+
+        Raises:
+            TierNotConfiguredError: No tier resolves, even after fallback.
+        """
+        # Defensive ``getattr``: the ChatBackend Protocol declares
+        # ``supports_vision`` (D-13-X-error-hierarchy / T04), but a backend
+        # built before that declaration may not expose it yet. Treat the
+        # missing-attribute case as "not vision-capable" so the router's
+        # pre-filter stays fail-loud on image turns without blowing up on
+        # legacy backends.
+        return bool(getattr(self.get(tier_name), "supports_vision", False))
+
     def get(self, tier_name: str) -> ChatBackend:
         """Return the backend for ``tier_name``, instantiating + caching once.
 

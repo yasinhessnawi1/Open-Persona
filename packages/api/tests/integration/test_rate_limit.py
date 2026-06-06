@@ -47,6 +47,8 @@ class _Loop:
         conversation: Conversation,
         user_message: str,
         on_event: object = None,  # noqa: ARG002 — accepted to match the loop signature
+        *,
+        turn_has_image: bool = False,  # noqa: ARG002 — spec-13 T20 compat
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)
         conversation.messages.append(

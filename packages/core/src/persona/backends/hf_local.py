@@ -38,6 +38,7 @@ from persona.backends._tool_shim import (
 )
 from persona.backends.errors import (
     AuthenticationError,
+    BackendVisionNotSupportedError,
     ModelNotFoundError,
     ProviderError,
 )
@@ -48,6 +49,7 @@ from persona.backends.types import (
     ToolSpec,
 )
 from persona.logging import get_logger
+from persona.schema.content import ImageContent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -124,6 +126,42 @@ class HFLocalBackend:
         # Local HF models always use the shim.
         return False
 
+    @property
+    def supports_vision(self) -> bool:
+        """Always False at v0.1 — HF local is matrix-empty (D-13-3).
+
+        Image-bearing turns raise :class:`BackendVisionNotSupportedError`
+        at :meth:`chat` / :meth:`chat_stream` entry before the lazy
+        weight load fires. The runtime tier-selector pre-filters around
+        this; the in-backend guard is defence in depth.
+        """
+        return False
+
+    def _guard_vision(self, messages: list[ConversationMessage]) -> None:
+        """Fail loud before model load when image content is present.
+
+        Local HF backends do not advertise vision support at v0.1
+        (D-13-3). Any :class:`ImageContent` block raises
+        :class:`BackendVisionNotSupportedError` with the
+        D-13-X-error-hierarchy context shape BEFORE
+        :meth:`_ensure_loaded` fires — so the failure mode is loud and
+        the runtime never pays for a ~25-35 s 9B-at-4bit model load on
+        a routing miss.
+        """
+        image_count = 0
+        for msg in messages:
+            if isinstance(msg.content, list):
+                image_count += sum(1 for b in msg.content if isinstance(b, ImageContent))
+        if image_count:
+            raise BackendVisionNotSupportedError(
+                "hf_local backend has no vision support at v0.1",
+                context={
+                    "backend": "hf_local",
+                    "model": self._model_id,
+                    "image_count": str(image_count),
+                },
+            )
+
     # ------------------------------------------------------------------
     # Lazy load
     # ------------------------------------------------------------------
@@ -181,6 +219,7 @@ class HFLocalBackend:
         max_tokens: int = 4096,
         stop: list[str] | None = None,  # noqa: ARG002 — accepted for protocol parity
     ) -> ChatResponse:
+        self._guard_vision(messages)
         await self._ensure_loaded()
         started = time.perf_counter()
         prompt, prompt_tokens = await asyncio.to_thread(self._render_prompt, messages, tools)
@@ -236,6 +275,7 @@ class HFLocalBackend:
         max_tokens: int = 4096,
         stop: list[str] | None = None,  # noqa: ARG002 — accepted for protocol parity
     ) -> AsyncIterator[StreamChunk]:
+        self._guard_vision(messages)
         await self._ensure_loaded()
         prompt, prompt_tokens = await asyncio.to_thread(self._render_prompt, messages, tools)
         transformers = importlib.import_module("transformers")
@@ -338,28 +378,40 @@ class HFLocalBackend:
         return prompt, prompt_tokens
 
     def _fold_system_for_gemma2(self, messages: list[ConversationMessage]) -> list[dict[str, str]]:
-        """Fold system messages into the first user message for Gemma-2 (D-02-11)."""
+        """Fold system messages into the first user message for Gemma-2 (D-02-11).
+
+        Spec 13 T03 widened ``ConversationMessage.content`` to
+        ``str | list[MessageContent]``. The hf_local backend does not
+        currently advertise vision support, so list-form content here
+        is unreachable from the dispatcher — but narrow defensively to
+        ``str`` via ``repr()`` so the type checker stays happy and a
+        future opt-in path doesn't silently mangle a list payload.
+        """
+
+        def _as_str(content: str | object) -> str:
+            return content if isinstance(content, str) else repr(content)
+
         if _GEMMA2_MODEL_HINT not in self._model_id.lower():
-            return [{"role": m.role, "content": m.content} for m in messages]
+            return [{"role": m.role, "content": _as_str(m.content)} for m in messages]
         system_parts: list[str] = []
         rest: list[ConversationMessage] = []
         for m in messages:
             if m.role == "system":
-                system_parts.append(m.content)
+                system_parts.append(_as_str(m.content))
             else:
                 rest.append(m)
         if not system_parts:
-            return [{"role": m.role, "content": m.content} for m in rest]
+            return [{"role": m.role, "content": _as_str(m.content)} for m in rest]
         system_text = "\n\n".join(system_parts)
         # Prepend to first user message; if none, create one.
         folded: list[dict[str, str]] = []
         injected = False
         for m in rest:
             if m.role == "user" and not injected:
-                folded.append({"role": "user", "content": f"{system_text}\n\n{m.content}"})
+                folded.append({"role": "user", "content": f"{system_text}\n\n{_as_str(m.content)}"})
                 injected = True
             else:
-                folded.append({"role": m.role, "content": m.content})
+                folded.append({"role": m.role, "content": _as_str(m.content)})
         if not injected:
             folded.insert(0, {"role": "user", "content": system_text})
         return folded

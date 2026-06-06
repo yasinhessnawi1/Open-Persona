@@ -7,8 +7,16 @@ import { buttonVariants } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
-// The ask-user moment (spec §4.4): the loop blocks on a question; the user's
-// answer is delivered via POST /runs/:id/respond and the run continues.
+/**
+ * Spec F2 T30 — AskUserPrompt (retokenised).
+ *
+ * The ask-user moment (spec §4.4): the agentic loop blocks on a question; the
+ * answer is delivered via POST /runs/:id/respond and the run resumes.
+ *
+ * Behaviour preserved verbatim (per audit.md §runs.plumbing). T30 closes
+ * `text-sm` → `.type-body` (question copy reads as inline conversation, not
+ * UI chrome) and standardises the icon to `aria-hidden`.
+ */
 export function AskUserPrompt({
   question,
   onAnswer,
@@ -33,8 +41,13 @@ export function AskUserPrompt({
   }
 
   return (
-    <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
-      <p className="mb-2 text-sm font-medium">{question}</p>
+    <div
+      className="rounded-md border border-primary/30 bg-primary/5 p-3"
+      data-slot="ask-user-prompt"
+    >
+      <p className="type-body mb-2 font-medium" data-slot="ask-user-question">
+        {question}
+      </p>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -54,14 +67,14 @@ export function AskUserPrompt({
           placeholder={t("answerPlaceholder")}
           rows={1}
           disabled={pending}
-          className="max-h-40 min-h-10 flex-1 resize-none field-sizing-content bg-background"
+          className="field-sizing-content max-h-40 min-h-10 flex-1 resize-none bg-background"
         />
         <button
           type="submit"
           disabled={pending || !value.trim()}
           className={cn(buttonVariants({ size: "sm" }), "gap-1.5")}
         >
-          <CornerDownLeft className="size-3.5" />
+          <CornerDownLeft className="size-3.5" aria-hidden="true" />
           {t("answer")}
         </button>
       </form>

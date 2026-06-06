@@ -20,9 +20,17 @@ export function ThemeToggle() {
       <DropdownMenuTrigger
         aria-label={t("toggle")}
         className={cn(buttonVariants({ variant: "ghost", size: "icon" }))}
+        data-slot="theme-toggle-trigger"
       >
-        <Sun className="size-[1.2rem] dark:hidden" />
-        <Moon className="hidden size-[1.2rem] dark:block" />
+        {/*
+         * F2 T24: --motion-duration-fast on the icon-swap so the theme
+         * transition reads as a deliberate fade instead of an instant toggle.
+         * The .dark utility class still drives visibility (dark:hidden /
+         * dark:block); the transition smooths the opacity in/out. F1 T15
+         * silences this under prefers-reduced-motion via universal !important.
+         */}
+        <Sun className="size-[1.2rem] transition-opacity duration-[var(--motion-duration-fast)] dark:hidden" />
+        <Moon className="hidden size-[1.2rem] transition-opacity duration-[var(--motion-duration-fast)] dark:block" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onClick={() => setTheme("light")}>

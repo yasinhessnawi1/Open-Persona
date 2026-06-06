@@ -91,6 +91,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
+      # Spec F2 T02 (D-F2-6): no-hard-coded-design-values gate. Forbids inline
+      # colour literals + typography-sizing literals outside the documented
+      # allowlist. See packages/web/scripts/no-literals.sh + DESIGN.md.
+      - run: pnpm check:no-literals
       # `next build` initialises Clerk at module load; CI placeholders are enough
       # to type-check + bundle. Real keys are required at runtime (deploy env).
       - name: pnpm build

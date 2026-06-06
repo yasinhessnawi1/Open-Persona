@@ -51,6 +51,10 @@ class MockChatBackend:
     def supports_native_tools(self) -> bool:
         return False
 
+    @property
+    def supports_vision(self) -> bool:
+        return False
+
     async def chat(
         self,
         messages: list[ConversationMessage],

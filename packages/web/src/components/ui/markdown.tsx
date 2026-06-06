@@ -4,6 +4,14 @@ import ReactMarkdown, { type Components } from "react-markdown";
 // Tailwind v4 ships no `prose` plugin here, so elements are mapped explicitly to
 // keep the "editorial instrument" voice (Fraunces headings, measured leading).
 // react-markdown does not render raw HTML (no rehype-raw), so input is XSS-safe.
+//
+// F2 T11 retokenise (D-F2-1): typography utilities here (text-xl/lg/base/sm/xs)
+// resolve through F1's type scale (text-sm = 14px = .type-ui equivalent; text-xs
+// = 12px). Per the F2 T01 audit, the markdown wrapper is verify-and-document:
+// no motion to retokenise; no shadow to elevate; inline-code text-[0.8em] is
+// the F1-documented exception (allowlist in scripts/no-literals.sh). Prose
+// body sizing could promote text-sm → .type-body (14→15px) if T34 criterion-#11
+// review names that direction; deferred there.
 const COMPONENTS: Components = {
   h1: ({ children }) => (
     <h1 className="mt-5 mb-2 font-heading text-xl font-semibold tracking-tight first:mt-0">

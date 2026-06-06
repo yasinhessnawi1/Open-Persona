@@ -30,6 +30,10 @@ class _GoodBackend:
     def supports_native_tools(self) -> bool:
         return False
 
+    @property
+    def supports_vision(self) -> bool:
+        return False
+
     async def chat(
         self,
         messages: list[ConversationMessage],  # noqa: ARG002
@@ -76,6 +80,10 @@ class _MissingStreamBackend:
 
     @property
     def supports_native_tools(self) -> bool:
+        return False
+
+    @property
+    def supports_vision(self) -> bool:
         return False
 
     async def chat(

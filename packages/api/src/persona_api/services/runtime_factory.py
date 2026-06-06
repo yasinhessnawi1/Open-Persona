@@ -37,6 +37,7 @@ from persona_runtime.router import Router
 from sqlalchemy import select
 
 from persona_api.db.models import personas as personas_t
+from persona_api.sandbox import make_pool_code_execution_tool
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,6 +48,8 @@ if TYPE_CHECKING:
     from persona_runtime.logging import TurnLogWriter
     from persona_runtime.tier import TierRegistry
     from sqlalchemy import Engine
+
+    from persona_api.sandbox.pool import SandboxPool
 
 __all__ = ["RuntimeFactory"]
 
@@ -68,6 +71,7 @@ class RuntimeFactory:
         turn_log_writer: TurnLogWriter,
         audit_root: Path,
         core_config: PersonaCoreConfig | None = None,
+        sandbox_pool: SandboxPool | None = None,
     ) -> None:
         self._engine = rls_engine
         self._embedder = embedder
@@ -75,6 +79,11 @@ class RuntimeFactory:
         self._turn_log_writer = turn_log_writer
         self._audit_root = audit_root
         self._core_config = core_config or PersonaCoreConfig()
+        # Spec 12 T10 — hosted sandbox pool. None when E2B_API_KEY is unset
+        # (dev environments without an account boot cleanly); the
+        # ``code_execution`` tool is absent from the toolbox in that case
+        # and surfaces ``SandboxUnavailableError`` if the model still calls it.
+        self._sandbox_pool = sandbox_pool
         # MCP clients accumulated across requests, closed on shutdown.
         self._mcp_clients: list[MCPClient] = []
 
@@ -109,11 +118,27 @@ class RuntimeFactory:
         }
 
     async def _build_toolbox(self, persona: Persona, scanned_skills: list[object]) -> object:
-        """Build the toolbox (+ use_skill when the persona has skills). MCP
-        clients are tracked for shutdown."""
-        extra = [make_use_skill_tool(scanned_skills)] if scanned_skills else None  # type: ignore[arg-type]
+        """Build the toolbox (+ use_skill when the persona has skills + code_execution
+        when the sandbox pool is configured). MCP clients are tracked for shutdown.
+        """
+        extra: list[object] = []
+        if scanned_skills:
+            extra.append(make_use_skill_tool(scanned_skills))  # type: ignore[arg-type]
+        if self._sandbox_pool is not None:
+            # Spec 12 T10: API-composed code_execution wires
+            # (a) lazy-eager pool acquire via pre_execute_hook (D-12-17), and
+            # (b) D-12-3 flat per-execution credits deduction on outcome=="ok".
+            extra.append(
+                make_pool_code_execution_tool(
+                    pool=self._sandbox_pool,
+                    rls_engine=self._engine,
+                    persona_id=persona.persona_id,
+                )
+            )
         toolbox, mcp_clients = await build_default_toolbox(
-            self._core_config, persona, extra_tools=extra
+            self._core_config,
+            persona,
+            extra_tools=extra or None,  # type: ignore[arg-type]
         )
         self._mcp_clients.extend(mcp_clients)
         return toolbox

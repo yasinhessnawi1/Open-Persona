@@ -9,6 +9,22 @@ import { LOCALE_COOKIE } from "@/i18n/config";
 import { TIER_BADGE_SETTING, useBoolSetting } from "@/lib/hooks/use-setting";
 import { cn } from "@/lib/utils";
 
+/**
+ * Spec F2 T31 — PreferencesCard (retokenised).
+ *
+ * DO NOT TOUCH (per audit.md §settings.plumbing):
+ *   - `useTheme` + `useBoolSetting(TIER_BADGE_SETTING, true)` + `LOCALE_COOKIE`;
+ *   - the `mounted` SSR-gate (no hydration warning);
+ *   - the inline `<Switch>` thumb `left-[1.125rem]` positional pixel (the
+ *     audit notes it as switch-thumb positional, not a design value).
+ *
+ * REPLACED:
+ *   - section h2 `font-heading text-sm tracking-wide uppercase` →
+ *     `.type-caption font-mono uppercase`;
+ *   - Row label `text-sm font-medium` → `.type-body font-medium`;
+ *   - Row hint `text-xs text-muted-foreground` → `.type-caption text-muted-foreground`;
+ *   - Theme/language toggle buttons `text-xs` → `.type-caption`.
+ */
 const THEMES = [
   { value: "light", icon: Sun },
   { value: "dark", icon: Moon },
@@ -23,14 +39,12 @@ export function PreferencesCard() {
     TIER_BADGE_SETTING,
     true,
   );
-  // next-themes resolves the active theme only on the client; gate the active
-  // state on mount so SSR and first client render agree (no hydration warning).
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   return (
-    <Card className="gap-4 p-5">
-      <h2 className="font-heading text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+    <Card className="gap-4 p-5" data-slot="settings-preferences">
+      <h2 className="type-caption font-mono text-muted-foreground uppercase">
         {t("preferences")}
       </h2>
 
@@ -45,13 +59,14 @@ export function PreferencesCard() {
                 onClick={() => setTheme(value)}
                 aria-pressed={active}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs",
+                  "type-caption inline-flex items-center gap-1.5 rounded px-2.5 py-1",
                   active
                     ? "bg-secondary text-secondary-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
+                data-slot="settings-theme-option"
               >
-                <Icon className="size-3.5" />
+                <Icon className="size-3.5" aria-hidden="true" />
                 {tTheme(value)}
               </button>
             );
@@ -79,7 +94,7 @@ function LanguageToggle({ mounted }: { mounted: boolean }) {
   const current =
     mounted && document.cookie.includes(`${LOCALE_COOKIE}=xx`) ? "xx" : "en";
   const choose = (value: "en" | "xx") => {
-    // biome-ignore lint/suspicious/noDocumentCookie: document.cookie is the portable write (cookieStore is Chromium-only)
+    // biome-ignore lint/suspicious/noDocumentCookie: portable write (cookieStore is Chromium-only)
     document.cookie = `${LOCALE_COOKIE}=${value}; path=/; max-age=31536000`;
     window.location.reload();
   };
@@ -96,11 +111,12 @@ function LanguageToggle({ mounted }: { mounted: boolean }) {
           onClick={() => choose(value)}
           aria-pressed={current === value}
           className={cn(
-            "rounded px-2.5 py-1 text-xs",
+            "type-caption rounded px-2.5 py-1",
             current === value
               ? "bg-secondary text-secondary-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
+          data-slot="settings-language-option"
         >
           {label}
         </button>
@@ -121,8 +137,8 @@ function Row({
   return (
     <div className="flex items-center justify-between gap-4">
       <div className="min-w-0">
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+        <p className="type-body font-medium">{label}</p>
+        <p className="type-caption text-muted-foreground">{hint}</p>
       </div>
       {children}
     </div>
@@ -149,6 +165,7 @@ function Switch({
         "relative h-6 w-10 shrink-0 rounded-full border transition-colors",
         checked ? "bg-primary" : "bg-muted",
       )}
+      data-slot="settings-switch"
     >
       <span
         className={cn(

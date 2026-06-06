@@ -29,6 +29,16 @@ dev = [
     "pytest-cov>=5.0,<7",
     "pre-commit>=3.7,<5",
     "types-PyYAML>=6,<7",
+    # Spec 14 parser libraries — needed for Phase 5 test runs even though
+    # D-14-X-documents-extra is "deferred v0.2" (the lazy-import +
+    # MissingDependencyError discipline is the structural defence at the
+    # import-graph level; these are direct test-environment deps so
+    # pytest can exercise the actual parsers, not just simulated-missing
+    # paths).
+    "pypdf>=6.0,<7",
+    "pypdfium2>=5.0,<6",
+    "python-docx>=1.1,<2",
+    "openpyxl>=3.1,<4",
 ]
 
 [tool.ruff]
@@ -53,6 +63,12 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.11"
+# Workspace siblings (persona-core, persona-runtime, persona-api) are uv-editable
+# installs; mypy needs the src paths explicitly to resolve `persona.*`,
+# `persona_runtime.*`, and `persona_api.*` imports across workspace boundaries.
+# Setting this here means every `uv run mypy <pkg>` invocation picks it up
+# without per-call MYPYPATH gymnastics (closes LF-12-3).
+mypy_path = "packages/core/src:packages/runtime/src:packages/api/src"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -69,6 +85,38 @@ ignore_missing_imports = true
 # rather than depend on the partial third-party types-python-jose stubs.
 [[tool.mypy.overrides]]
 module = ["jose.*"]
+ignore_missing_imports = true
+
+# e2b-code-interpreter SDK (persona-api, spec 12 T08 hosted substrate per
+# D-12-12) ships no py.typed marker. The hosted backend lazy-imports the SDK at
+# the call site to keep the module importable without the SDK installed
+# (graceful SandboxUnavailableError vs. ImportError at module load); the
+# TYPE_CHECKING import pulls the ``Sandbox`` symbol for type-narrowing only.
+[[tool.mypy.overrides]]
+module = ["e2b_code_interpreter.*"]
+ignore_missing_imports = true
+
+# openpyxl (persona-core [documents] extra, spec 14 T09) ships no py.typed
+# marker. ``types-openpyxl`` exists but lags the runtime; mirror the docker /
+# pgvector / jose / e2b approach rather than chase a partial stub.
+[[tool.mypy.overrides]]
+module = ["openpyxl.*"]
+ignore_missing_imports = true
+
+# docker SDK (persona-core [sandbox] extra, spec 12 LocalDockerSandbox) ships
+# no py.typed marker; ``types-docker`` lags the runtime and is partial. The
+# LocalDockerSandbox lazy-imports docker at construction so the module stays
+# importable without the SDK installed; TYPE_CHECKING narrowing pulls the
+# container/client types for the substrate-class boundary.
+[[tool.mypy.overrides]]
+module = ["docker", "docker.*"]
+ignore_missing_imports = true
+
+# pypdfium2 (persona-core [documents] extra, spec 14 T21 rasterisation for the
+# scanned-PDF → vision handoff) ships an embedded PDFium binding without a
+# py.typed marker; surface is small (PdfDocument, render_to_pil) and stable.
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

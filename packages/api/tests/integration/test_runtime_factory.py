@@ -56,6 +56,10 @@ class _ScriptedBackend:
     def supports_native_tools(self) -> bool:
         return True
 
+    @property
+    def supports_vision(self) -> bool:
+        return False
+
     async def chat(self, messages: list[ConversationMessage], **_: object) -> object:  # noqa: ARG002
         raise NotImplementedError
 

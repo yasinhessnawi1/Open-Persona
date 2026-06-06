@@ -13,6 +13,7 @@ inconsistent streaming-with-tools shape (issue #12557).
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ from persona.backends.config import DEFAULT_BASE_URLS, BackendConfig
 from persona.backends.errors import (
     AuthenticationError,
     BackendTimeoutError,
+    BackendVisionNotSupportedError,
     ModelNotFoundError,
     ProviderError,
     RateLimitError,
@@ -41,10 +43,12 @@ from persona.backends.types import (
     ToolSpec,
 )
 from persona.logging import get_logger
+from persona.schema.content import ImageContent, TextContent
 from persona.schema.tools import ToolCall
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     from persona.schema.conversation import ConversationMessage
 
@@ -67,7 +71,31 @@ class OllamaBackend:
         config: BackendConfig,
         *,
         use_native_tools: bool = False,
+        use_vision: bool = False,
+        workspace_root: Path | None = None,
     ) -> None:
+        """Construct.
+
+        Args:
+            config: Backend configuration; ``provider`` must be ``ollama``.
+            use_native_tools: Opt into Ollama's native tool-calling
+                surface (D-02-9). Default ``False`` uses the prompt-based
+                shim.
+            use_vision: Opt into Ollama's native vision surface (the
+                ``images`` field on user messages). Default ``False`` is
+                fail-loud — any :class:`ImageContent` block in the
+                message prefix raises :class:`BackendVisionNotSupportedError`
+                at ``chat`` / ``chat_stream`` entry before any HTTP
+                round-trip. Mirrors the ``use_native_tools`` opt-in
+                shape (D-02-9 / D-13-3 / D-13-X-error-hierarchy).
+            workspace_root: Required when ``use_vision=True`` and a
+                multimodal turn carries :class:`ImageContent` — used to
+                resolve workspace-path refs to bytes (D-13-2). When
+                ``None`` and an image is present, the same
+                :class:`BackendVisionNotSupportedError` is raised so
+                the missing-workspace failure mode is loud rather than
+                a silent text-only drop.
+        """
         if config.provider != "ollama":
             raise ProviderError(
                 f"OllamaBackend got provider={config.provider!r}",
@@ -78,6 +106,8 @@ class OllamaBackend:
         self._timeout = config.request_timeout_s
         self._base_url = (config.base_url or DEFAULT_BASE_URLS["ollama"]).rstrip("/")
         self._use_native_tools = use_native_tools
+        self._use_vision = use_vision
+        self._workspace_root = workspace_root
         self._client: httpx.AsyncClient | None = None
         # Ollama behind a proxy may require an Authorization header.
         api_key = config.api_key.get_secret_value() if config.api_key else None
@@ -90,6 +120,7 @@ class OllamaBackend:
             model=self._model,
             base_url=self._base_url,
             use_native_tools=self._use_native_tools,
+            use_vision=self._use_vision,
         )
 
     @property
@@ -103,6 +134,10 @@ class OllamaBackend:
     @property
     def supports_native_tools(self) -> bool:
         return self._use_native_tools
+
+    @property
+    def supports_vision(self) -> bool:
+        return self._use_vision
 
     async def aclose(self) -> None:
         """Close the underlying ``httpx`` client. Idempotent."""
@@ -128,6 +163,30 @@ class OllamaBackend:
             )
         return self._client
 
+    def _guard_vision(self, messages: list[ConversationMessage]) -> None:
+        """Fail loud at backend entry when vision is required but unavailable.
+
+        Scans the message prefix for :class:`ImageContent` blocks. When
+        the count is non-zero and ``self.supports_vision is False``,
+        raises :class:`BackendVisionNotSupportedError` with the
+        D-13-X-error-hierarchy context shape BEFORE any HTTP round-trip
+        begins. Called from both :meth:`chat` and :meth:`chat_stream`
+        as the first line of work.
+        """
+        image_count = 0
+        for msg in messages:
+            if isinstance(msg.content, list):
+                image_count += sum(1 for b in msg.content if isinstance(b, ImageContent))
+        if image_count and not self._use_vision:
+            raise BackendVisionNotSupportedError(
+                "ollama backend not opted into vision",
+                context={
+                    "backend": "ollama",
+                    "model": self._model,
+                    "image_count": str(image_count),
+                },
+            )
+
     async def chat(
         self,
         messages: list[ConversationMessage],
@@ -138,6 +197,7 @@ class OllamaBackend:
         stop: list[str] | None = None,
     ) -> ChatResponse:
         """Single-shot chat. See ``ChatBackend.chat`` for contract."""
+        self._guard_vision(messages)
         body = self._build_body(messages, tools, temperature, max_tokens, stop, stream=False)
         started = time.perf_counter()
         try:
@@ -159,6 +219,7 @@ class OllamaBackend:
         stop: list[str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Streaming chat. See ``ChatBackend.chat_stream`` for contract."""
+        self._guard_vision(messages)
         body = self._build_body(messages, tools, temperature, max_tokens, stop, stream=True)
         shim_state: ShimState | None = (
             ShimState() if (tools and not self._use_native_tools) else None
@@ -192,6 +253,10 @@ class OllamaBackend:
         stream: bool,
     ) -> dict[str, Any]:
         ollama_messages = [self._convert_message(m) for m in messages]
+        # In the vision-enabled path the list-form user messages already
+        # carry their ``images`` field. The shim-instruction block below
+        # only mutates the system message text, so the multimodal user
+        # entry passes through untouched.
         use_native = self._use_native_tools and bool(tools)
         if tools and not use_native:
             block = render_tool_instructions(tools)
@@ -221,9 +286,51 @@ class OllamaBackend:
             body["tools"] = [_tool_spec_to_ollama(t) for t in tools]
         return body
 
-    @staticmethod
-    def _convert_message(msg: ConversationMessage) -> dict[str, Any]:
-        out: dict[str, Any] = {"role": msg.role, "content": msg.content}
+    def _convert_message(self, msg: ConversationMessage) -> dict[str, Any]:
+        """Translate one ``ConversationMessage`` to Ollama's message shape.
+
+        For ``str`` content (the default path) this is a pass-through.
+        For list-form content (Spec 13 T03 widening), the text blocks
+        are concatenated into ``content`` and any :class:`ImageContent`
+        blocks are resolved from ``workspace_root`` and base64-encoded
+        into the ``images`` field on the user message (Ollama's native
+        vision wire shape). When the message carries an image and
+        ``workspace_root`` is unset, raise
+        :class:`BackendVisionNotSupportedError` so the missing-workspace
+        failure mode stays loud (mirrors the openai_compat T05/T06
+        guard).
+        """
+        if isinstance(msg.content, list):
+            image_count = sum(1 for b in msg.content if isinstance(b, ImageContent))
+            if image_count and self._workspace_root is None:
+                raise BackendVisionNotSupportedError(
+                    "no workspace_root configured for image resolution",
+                    context={
+                        "backend": "ollama",
+                        "model": self._model,
+                        "image_count": str(image_count),
+                        "reason": "missing_workspace_root",
+                    },
+                )
+            text_parts: list[str] = []
+            images_b64: list[str] = []
+            for block in msg.content:
+                if isinstance(block, TextContent):
+                    text_parts.append(block.text)
+                elif isinstance(block, ImageContent):
+                    assert self._workspace_root is not None  # narrowed above
+                    image_bytes = (self._workspace_root / block.workspace_path).read_bytes()
+                    images_b64.append(base64.standard_b64encode(image_bytes).decode("ascii"))
+            out: dict[str, Any] = {
+                "role": msg.role,
+                "content": "\n\n".join(text_parts),
+            }
+            if images_b64:
+                out["images"] = images_b64
+            if msg.role == "tool":
+                out["tool_call_id"] = msg.metadata.get("call_id", "")
+            return out
+        out = {"role": msg.role, "content": msg.content}
         if msg.role == "tool":
             out["tool_call_id"] = msg.metadata.get("call_id", "")
         return out

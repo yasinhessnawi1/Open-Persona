@@ -2,7 +2,7 @@
 
 import { useAuth } from "@clerk/nextjs";
 import { useCallback, useState } from "react";
-import type { ChatMessageView } from "@/components/chat/message-bubble";
+import type { ChatMessageView } from "@/components/chat/message-element";
 import { ApiError, createApiClient, unwrap } from "@/lib/api/client";
 import { consumeSSE } from "@/lib/sse";
 import { parseChatEvent } from "@/lib/sse-types";
@@ -60,6 +60,10 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
           role: "assistant",
           content: "",
           tools: [],
+          // F2 D-F2-15: events[] preserves stream order so MessageElement
+          // can render text + tool cards interleaved. content + tools stay
+          // populated for back-compat (markdown final render, copy-paste).
+          events: [],
           streaming: true,
         },
       ]);
@@ -84,7 +88,14 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
           const ev = parseChatEvent(raw);
           if (!ev) continue;
           if (ev.event === "chunk") {
-            patch((a) => ({ ...a, content: a.content + ev.data.delta }));
+            patch((a) => ({
+              ...a,
+              content: a.content + ev.data.delta,
+              events: [
+                ...(a.events ?? []),
+                { kind: "text", delta: ev.data.delta } as const,
+              ],
+            }));
           } else if (ev.event === "tool_calling") {
             patch((a) => ({
               ...a,
@@ -95,6 +106,18 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
                   args: c.args,
                   pending: true,
                 })),
+              ],
+              events: [
+                ...(a.events ?? []),
+                ...ev.data.tool_calls.map(
+                  (c) =>
+                    ({
+                      kind: "tool_call",
+                      callId: c.call_id,
+                      toolName: c.name,
+                      args: c.args,
+                    }) as const,
+                ),
               ],
             }));
           } else if (ev.event === "tool_result") {
@@ -114,7 +137,19 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
                   break;
                 }
               }
-              return { ...a, tools };
+              return {
+                ...a,
+                tools,
+                events: [
+                  ...(a.events ?? []),
+                  {
+                    kind: "tool_result",
+                    toolName: ev.data.tool_name,
+                    content: ev.data.content,
+                    isError: ev.data.is_error,
+                  } as const,
+                ],
+              };
             });
           } else if (ev.event === "done") {
             patch((a) => ({ ...a, tier: ev.data.tier }));

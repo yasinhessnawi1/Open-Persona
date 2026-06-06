@@ -51,6 +51,8 @@ class _Loop:
         conversation: Conversation,
         user_message: str,
         on_event: object = None,  # noqa: ARG002 — accepted to match the loop signature
+        *,
+        turn_has_image: bool = False,  # noqa: ARG002 — spec-13 T20 compat
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)
         conversation.messages.append(
@@ -202,6 +204,50 @@ def test_user_b_list_endpoints_exclude_user_a_resources(app_client: TestClient) 
     assert all(p["id"] != ids["persona_id"] for p in b_personas)
     b_convs = app_client.get("/v1/conversations", headers=_h("user_B")).json()
     assert all(cv["id"] != ids["conversation_id"] for cv in b_convs)
+
+
+_TINY_PNG_BYTES: bytes = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
+    "0000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae"
+    "426082"
+)
+
+
+def test_user_b_cannot_post_upload_to_user_a_persona(app_client: TestClient) -> None:
+    """Spec 13 T11: cross-tenant POST to /personas/{id}/uploads → 404.
+
+    Extends the spec-08 sweep so the upload-route pair (POST + GET) is
+    covered by the RLS adversarial proof. T14 inherits this assertion.
+    """
+    ids = _seed_a(app_client)
+    resp = app_client.post(
+        f"/v1/personas/{ids['persona_id']}/uploads",
+        files={"file": ("a.png", _TINY_PNG_BYTES, "image/png")},
+        headers=_h("user_B"),
+    )
+    # B references A's persona id → RLS-scoped pre-flight 404s (no upload).
+    assert resp.status_code == 404
+
+
+def test_user_b_cannot_get_user_a_uploads(app_client: TestClient) -> None:
+    """Spec 13 T11: cross-tenant GET to /personas/{id}/uploads/{ref} → 404.
+
+    Even with a probe ref pattern, B's request is rejected by the pre-flight
+    RLS check before any workspace I/O. Existence-disclosure-safe per
+    D-13: B cannot distinguish "no such persona" from "no such ref".
+    """
+    ids = _seed_a(app_client)
+    # User A first uploads so a ref exists in the workspace.
+    up = app_client.post(
+        f"/v1/personas/{ids['persona_id']}/uploads",
+        files={"file": ("a.png", _TINY_PNG_BYTES, "image/png")},
+        headers=_h("user_A"),
+    )
+    assert up.status_code == 201, up.text
+    ref = up.json()["workspace_path"]
+    # B GETs A's ref → 404 (pre-flight RLS persona check fires).
+    resp = app_client.get(f"/v1/personas/{ids['persona_id']}/uploads/{ref}", headers=_h("user_B"))
+    assert resp.status_code == 404
 
 
 def test_runtime_store_path_is_tenant_scoped(app_client: TestClient) -> None:

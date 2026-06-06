@@ -68,6 +68,21 @@ class ChatBackend(Protocol):
         property exists for observability and capability dashboards.
         """
 
+    @property
+    def supports_vision(self) -> bool:
+        """True iff this backend can accept :class:`ImageContent` blocks.
+
+        True iff the configured ``(provider, model)`` combination is in
+        :data:`persona.backends.openai_compat._VISION_CAPABILITY` (for
+        the OpenAI-compatible backend family) or the backend was opted
+        in via its construction kwarg (``OllamaBackend(use_vision=True)``
+        per D-02-9-style opt-in). False means image-bearing turns raise
+        :class:`BackendVisionNotSupportedError` at the backend boundary
+        before any provider/HTTP work happens
+        (D-13-3 / D-13-X-error-hierarchy). The router consults this
+        property to pre-filter tier candidates for vision turns.
+        """
+
     async def chat(
         self,
         messages: list[ConversationMessage],

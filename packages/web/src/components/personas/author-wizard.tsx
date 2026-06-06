@@ -3,9 +3,10 @@
 import { Sparkles, Wand2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
+import { Stack } from "@/components/layout";
+import { SkeletonLine } from "@/components/patterns/loading";
 import { buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { AuthoringDraft } from "@/lib/api";
 import { ApiError } from "@/lib/api/client";
@@ -17,10 +18,37 @@ import { PersonaEditor } from "./persona-editor";
 
 type Phase = "describe" | "loading" | "review";
 
-// Matches the server-side cap (D-10-5); the UI hides the questions after this,
-// the server (POST /author/refine) backstops it.
+/**
+ * Server-side cap (D-10-5). UI hides the questions after this; server backstops.
+ * Preserved verbatim per audit.md §authoring.plumbing.
+ */
 const MAX_REFINE_ROUNDS = 3;
 
+/**
+ * Spec F2 T29 — AuthorWizard (rebuilt presentation).
+ *
+ * DO NOT TOUCH (per audit.md §authoring.plumbing):
+ *   - `useAuthor()` hook (D-09-11 seam, two-endpoint flow D-10-2);
+ *   - `MAX_REFINE_ROUNDS = 3` (UI cap mirrors server backstop D-10-5);
+ *   - `createPersona` action;
+ *   - `applyDraft` / `generate` / `answerQuestion` state machine;
+ *   - `ApiError.isRateLimited` check + `tRateLimited` copy (D-11-14);
+ *   - `<PersonaEditor>` (form ⇄ Monaco sync D-09-9 + Monaco lazy-load D-09-8) —
+ *     composed verbatim; T29 does not rewrite its internals.
+ *
+ * REPLACED (presentation only):
+ *   - byline `font-mono text-xs tracking-wide uppercase` → `.type-caption font-mono uppercase`
+ *     (resolves through F1's `--text-caption-*` tokens);
+ *   - heading `font-heading text-2xl/3xl font-semibold tracking-tight` →
+ *     `.type-heading` / `.type-display` (Fraunces lives in the token now);
+ *   - body `text-sm text-muted-foreground` → `.type-body` / `.type-ui`;
+ *   - shadcn `<Skeleton>` in `<AuthorLoading>` → T21 `<SkeletonLine>`
+ *     (token-resolved animation-duration via F1 `--motion-duration-*`);
+ *   - hand-rolled outer `<div className="flex flex-col gap-6">` → T20 `<Stack>`;
+ *   - inline error `text-sm text-destructive` → `.type-ui text-destructive` with
+ *     `role="alert"` for the assertive announcement; the full T22 `<ErrorState>`
+ *     is reserved for surface-level error panels, not single-line form errors.
+ */
 export function AuthorWizard({
   tools,
   skills,
@@ -36,7 +64,6 @@ export function AuthorWizard({
   const [doc, setDoc] = useState<PersonaDoc | null>(null);
   const [round, setRound] = useState(0);
   const [refining, setRefining] = useState(false);
-  // bumped on each refine so PersonaEditor re-mounts with the regenerated draft
   const [editorKey, setEditorKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,7 +73,6 @@ export function AuthorWizard({
       setDraft(next);
       return true;
     } catch {
-      // best-effort YAML from a retry-exhausted draft didn't parse (rare)
       setError(t("authorError"));
       return false;
     }
@@ -100,16 +126,20 @@ export function AuthorWizard({
 
   if (phase === "review" && draft && doc) {
     return (
-      <div className="flex flex-col gap-6">
+      <Stack gap={6} data-slot="author-wizard-review">
         <header>
-          <p className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
+          <p className="type-caption font-mono text-muted-foreground uppercase">
             {t("reviewByline")}
           </p>
-          <h1 className="mt-1 font-heading text-2xl font-semibold tracking-tight">
+          <h1 className="type-heading mt-1" data-slot="author-wizard-title">
             {t("reviewTitle")}
           </h1>
         </header>
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+        {error ? (
+          <p className="type-ui text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
         <PersonaEditor
           key={editorKey}
           initialDoc={doc}
@@ -125,7 +155,7 @@ export function AuthorWizard({
             onAnswer: (q, a, yaml) => void answerQuestion(q, a, yaml),
           }}
         />
-      </div>
+      </Stack>
     );
   }
 
@@ -136,15 +166,17 @@ export function AuthorWizard({
   const examples = [t("example1"), t("example2"), t("example3")];
 
   return (
-    <div className="flex flex-col gap-6">
+    <Stack gap={6} data-slot="author-wizard-describe">
       <header>
-        <p className="font-mono text-xs tracking-wide text-muted-foreground uppercase">
+        <p className="type-caption font-mono text-muted-foreground uppercase">
           {t("describeByline")}
         </p>
-        <h1 className="mt-1 font-heading text-3xl font-semibold tracking-tight">
+        <h1 className="type-display mt-1" data-slot="author-wizard-title">
           {t("describeTitle")}
         </h1>
-        <p className="mt-2 text-muted-foreground">{t("describeHint")}</p>
+        <p className="type-body mt-2 text-muted-foreground">
+          {t("describeHint")}
+        </p>
       </header>
 
       <Textarea
@@ -153,28 +185,41 @@ export function AuthorWizard({
         rows={5}
         placeholder={t("describePlaceholder")}
         className="resize-none"
+        data-slot="author-wizard-description"
       />
 
-      <div className="flex flex-col gap-2">
-        <span className="text-xs font-medium text-muted-foreground">
+      <Stack gap={2}>
+        <span className="type-ui font-medium text-muted-foreground">
           {t("examplesTitle")}
         </span>
-        <div className="flex flex-col gap-1.5">
+        <Stack gap={2}>
           {examples.map((ex) => (
             <button
               key={ex}
               type="button"
               onClick={() => setDescription(ex)}
-              className="flex items-start gap-2 rounded-md border px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:border-primary/30 hover:text-foreground"
+              className="type-body flex items-start gap-2 rounded-md border px-3 py-2 text-left text-muted-foreground transition-colors hover:border-primary/30 hover:text-foreground"
+              data-slot="author-wizard-example"
             >
-              <Sparkles className="mt-0.5 size-3.5 shrink-0 text-primary" />
+              <Sparkles
+                className="mt-0.5 size-3.5 shrink-0 text-primary"
+                aria-hidden="true"
+              />
               {ex}
             </button>
           ))}
-        </div>
-      </div>
+        </Stack>
+      </Stack>
 
-      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      {error ? (
+        <p
+          className="type-ui text-destructive"
+          role="alert"
+          data-slot="author-wizard-error"
+        >
+          {error}
+        </p>
+      ) : null}
 
       <div className="flex justify-end">
         <button
@@ -182,18 +227,26 @@ export function AuthorWizard({
           onClick={() => void generate()}
           disabled={!description.trim()}
           className={cn(buttonVariants(), "gap-2")}
+          data-slot="author-wizard-generate"
         >
-          <Wand2 className="size-4" />
+          <Wand2 className="size-4" aria-hidden="true" />
           {t("generate")}
         </button>
       </div>
-    </div>
+    </Stack>
   );
 }
 
-// A designed 10–30s loading state (spec §8 risk): the frontier call is slow, so
-// this reads as deliberate work — cycling status + a skeleton of the persona
-// taking shape — not a blank spinner.
+/**
+ * Designed 10–30s loading state (spec §8 risk): the frontier call is slow, so
+ * the surface reads as deliberate work — cycling status + persona-taking-shape
+ * skeleton — not a blank spinner.
+ *
+ * Preserved behaviour (per audit.md §authoring.plumbing): the 3-step cycling
+ * `setInterval` at 2800ms. T29 rebuild swaps shadcn `<Skeleton>` for T21
+ * `<SkeletonLine>` (motion resolves through F1 `--motion-duration-*` tokens),
+ * retokenises typography, and wraps in T20 `<Stack>`.
+ */
 function AuthorLoading() {
   const t = useTranslations("author");
   const steps = [t("loadingStep1"), t("loadingStep2"), t("loadingStep3")];
@@ -205,25 +258,34 @@ function AuthorLoading() {
   }, []);
 
   return (
-    <div className="flex flex-col gap-6">
+    <Stack gap={6} data-slot="author-wizard-loading">
       <header className="flex items-center gap-3">
-        <Wand2 className="size-5 animate-pulse text-primary" />
+        <Wand2
+          className="size-5 animate-pulse text-primary"
+          aria-hidden="true"
+        />
         <div>
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">
+          <h1 className="type-heading" data-slot="author-wizard-loading-title">
             {t("loadingTitle")}
           </h1>
-          <p className="text-sm text-muted-foreground">{steps[i]}</p>
+          <p
+            className="type-ui mt-1 text-muted-foreground"
+            data-slot="author-wizard-loading-step"
+            aria-live="polite"
+          >
+            {steps[i]}
+          </p>
         </div>
       </header>
-      <div className="flex flex-col gap-4">
+      <Stack gap={4}>
         {[0, 1, 2].map((row) => (
           <Card key={row} className="gap-3 p-5">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="h-4 w-3/4" />
-            <Skeleton className="h-4 w-1/2" />
+            <SkeletonLine className="w-24" />
+            <SkeletonLine className="w-3/4" />
+            <SkeletonLine className="w-1/2" />
           </Card>
         ))}
-      </div>
-    </div>
+      </Stack>
+    </Stack>
   );
 }

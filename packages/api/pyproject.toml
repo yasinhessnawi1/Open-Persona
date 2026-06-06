@@ -10,6 +10,20 @@ dependencies = [
     "uvicorn[standard]>=0.30,<1",
     "alembic>=1.13,<2",
     "python-jose[cryptography]>=3.3,<4",
+    # Spec 13 T10b — Pillow for image downscale + EXIF strip.
+    # ``persona-api``-only per D-13-X-pillow (HPND license; ``persona-core``
+    # stays Apache-2.0 clean). Used by services/image_service::_maybe_downscale.
+    "pillow>=11,<12",
+]
+
+[project.optional-dependencies]
+hosted = [
+    # Spec 12 T08/T09 — HostedSandbox wraps the E2B Code Interpreter SDK
+    # (D-12-12 substrate). Pinned range; SDK is lazy-imported at use-site so
+    # the api package stays importable without the extra installed (dev
+    # environments without an E2B account boot cleanly per `_lifespan`'s
+    # `_e2b_api_key_present()` gate).
+    "e2b-code-interpreter>=1.0,<2",
 ]
 
 [build-system]

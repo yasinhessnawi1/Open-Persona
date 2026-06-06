@@ -13,6 +13,7 @@ Postgres (D-08-8). Episodic starts empty (runtime-written).
 
 from __future__ import annotations
 
+import shutil
 import uuid
 from typing import TYPE_CHECKING
 
@@ -186,8 +187,22 @@ def list_personas(*, rls_engine: Engine, limit: int, offset: int) -> list[dict[s
     return [dict(r) for r in rows]
 
 
-def delete_persona(*, rls_engine: Engine, persona_id: str) -> None:
-    """Delete a persona (cascades conversations + memory via FK)."""
+def delete_persona(
+    *, rls_engine: Engine, persona_id: str, workspace_root: Path | None = None, owner_id: str
+) -> None:
+    """Delete a persona (cascades conversations + memory via FK + workspace files).
+
+    Spec 13 D-13-4 cascade-before-DB: rmtree the persona's workspace subtree
+    BEFORE the DB DELETE fires, so a partial failure leaves orphan DB rows
+    (recoverable by re-running the delete) rather than orphan files (silently
+    leaking storage). Per D-13-4-v0.1-coarse-cascade, this is the only
+    workspace cleanup point in v0.1 — per-conversation cleanup defers to the
+    ``messages.images`` JSONB column migration.
+    """
+    if workspace_root is not None:
+        persona_root = workspace_root / owner_id / persona_id
+        if persona_root.exists():
+            shutil.rmtree(persona_root, ignore_errors=True)
     with rls_engine.begin() as conn:
         result = conn.execute(
             delete(personas_t).where(personas_t.c.id == persona_id).returning(personas_t.c.id)

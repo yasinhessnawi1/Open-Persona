@@ -142,6 +142,13 @@ messages = Table(
     # UI sends no channel. The API stores it opaquely and never branches on
     # `platform` — all connector logic is the future spec 12's.
     Column("channel", JSONB),
+    # Spec 13 D-13-X-now option (c) / migration 004: per-message image refs as
+    # JSONB. Each entry is ``{"workspace_path": str, "media_type": str}``. The
+    # row holds REFERENCES only — image bytes live exactly once under the Spec
+    # 03 workspace (D-13-4). Nullable: text-only messages and every assistant
+    # message persist with images = NULL (byte-for-byte unchanged for the
+    # text-only path).
+    Column("images", JSONB),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     CheckConstraint("role IN ('system', 'user', 'assistant', 'tool')", name="messages_role_check"),
     Index("idx_messages_conversation", "conversation_id"),

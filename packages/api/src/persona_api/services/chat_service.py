@@ -33,6 +33,11 @@ from persona_api.db.models import conversations as conversations_t
 from persona_api.db.models import messages as messages_t
 from persona_api.db.models import personas as personas_t
 from persona_api.errors import ConversationNotFoundError
+from persona_api.sandbox import (
+    SandboxRequestContext,
+    reset_sandbox_request_context,
+    set_sandbox_request_context,
+)
 from persona_api.services import credits_service  # sibling module (no back-import)
 
 if TYPE_CHECKING:
@@ -44,6 +49,7 @@ if TYPE_CHECKING:
     from sqlalchemy import Connection, Engine
 
     from persona_api.schemas import ChannelContext
+    from persona_api.schemas import ImageRef as ImageRefSchema
 
     # The runtime factory (T10) builds a ConversationLoop for a persona under the
     # current request's RLS scope, given the persona_id.
@@ -207,6 +213,8 @@ async def stream_chat(
     channel: ChannelContext | None,
     credits_per_turn: int = 1,
     title_builder: Callable[[str], Awaitable[str]] | None = None,
+    images: list[ImageRefSchema] | None = None,
+    turn_has_image: bool = False,
 ) -> AsyncIterator[bytes]:
     """Drive ConversationLoop.turn and stream SSE; persist after the final yield.
 
@@ -234,64 +242,84 @@ async def stream_chat(
     persona_id = conversation.persona_id
     is_first_turn = prior_msg_count == 0
 
-    loop = await loop_builder(persona_id)
+    # Spec 12 T10: bind the per-request sandbox context for ``code_execution``.
+    # The runtime factory reads the contextvar inside the tool factory closures
+    # so we don't thread (owner_id, conversation_id) through every loop-builder
+    # signature. The contextvar stays bound for the entire stream (including
+    # loop.turn dispatches, where code_execution actually fires) and is reset
+    # in the finally regardless of completion / cancellation.
+    _sandbox_ctx_token = set_sandbox_request_context(
+        SandboxRequestContext(owner_id=owner_id, conversation_id=conversation_id)
+    )
+    try:
+        loop = await loop_builder(persona_id)
 
-    # The loop fires on_event synchronously between chunk yields; buffer the
-    # events and flush them (in order) before the next chunk's frame, so the SSE
-    # stream preserves the true interleaving. `tier` is captured for `done`.
-    pending: list[RunEvent] = []
-    tier = "frontier"  # fallback; replaced by the router's real choice via on_event
+        # The loop fires on_event synchronously between chunk yields; buffer the
+        # events and flush them (in order) before the next chunk's frame, so the SSE
+        # stream preserves the true interleaving. `tier` is captured for `done`.
+        pending: list[RunEvent] = []
+        tier = "frontier"  # fallback; replaced by the router's real choice via on_event
 
-    async def _on_event(event: RunEvent) -> None:
-        pending.append(event)
+        async def _on_event(event: RunEvent) -> None:
+            pending.append(event)
 
-    def _drain() -> list[bytes]:
-        nonlocal tier
-        frames: list[bytes] = []
-        for ev in pending:
-            if ev.type == "tier":
-                tier = str(ev.data.get("tier", tier))
-                continue  # tier rides the `done` event, not its own SSE frame
-            frames.append(_sse(ev.type, ev.data))
-        pending.clear()
-        return frames
+        def _drain() -> list[bytes]:
+            nonlocal tier
+            frames: list[bytes] = []
+            for ev in pending:
+                if ev.type == "tier":
+                    tier = str(ev.data.get("tier", tier))
+                    continue  # tier rides the `done` event, not its own SSE frame
+                frames.append(_sse(ev.type, ev.data))
+            pending.clear()
+            return frames
 
-    last_chunk: StreamChunk | None = None
-    async for chunk in loop.turn(conversation, user_message, _on_event):
-        last_chunk = chunk
-        for frame in _drain():  # tool_calling / tool_result that fired before this chunk
+        last_chunk: StreamChunk | None = None
+        # ``turn_has_image`` rides as a keyword so the runtime loop's
+        # T13-T09 vision pre-filter (Router._candidate_tiers) restricts the
+        # candidate tier set to vision-capable backends when image refs are
+        # present. The scripted test loops accept ``**_kwargs`` so this is
+        # compatible with both the real loop and the spec-08 scripted loops.
+        async for chunk in loop.turn(
+            conversation, user_message, _on_event, turn_has_image=turn_has_image
+        ):
+            last_chunk = chunk
+            for frame in _drain():  # tool_calling / tool_result that fired before this chunk
+                yield frame
+            if chunk.delta:
+                yield _sse("chunk", {"delta": chunk.delta, "is_final": chunk.is_final})
+        for frame in _drain():  # any trailing events after the final chunk
             yield frame
-        if chunk.delta:
-            yield _sse("chunk", {"delta": chunk.delta, "is_final": chunk.is_final})
-    for frame in _drain():  # any trailing events after the final chunk
-        yield frame
 
-    # ---- persist-after-final (only reached on clean completion) ----
-    usage = last_chunk.usage if last_chunk is not None else None
-    _persist_turn(
-        rls_engine=rls_engine,
-        conversation=conversation,
-        prior_msg_count=prior_msg_count,
-        channel=channel,
-    )
-    # Auto-title the conversation from its first user message (best-effort, small
-    # tier). Failure leaves the default title — never breaks the turn.
-    if is_first_turn and title_builder is not None:
-        await _maybe_set_title(rls_engine, conversation_id, user_message, title_builder)
-    # Deduct credits per successful turn (after the stream completes — D-08-6).
-    credits_service.deduct(
-        rls_engine=rls_engine, user_id=owner_id, amount=credits_per_turn, reason="chat_turn"
-    )
-    done: dict[str, object] = {
-        "usage": (
-            {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens}
-            if usage is not None
-            else {}
-        ),
-        "tier": tier,  # the router's real choice for this turn (D-08 gap fix)
-        "format_hints": {},  # D-08-3: the API echoes empty; connectors populate (spec 12)
-    }
-    yield _sse("done", done)
+        # ---- persist-after-final (only reached on clean completion) ----
+        usage = last_chunk.usage if last_chunk is not None else None
+        _persist_turn(
+            rls_engine=rls_engine,
+            conversation=conversation,
+            prior_msg_count=prior_msg_count,
+            channel=channel,
+            images=images,
+        )
+        # Auto-title the conversation from its first user message (best-effort, small
+        # tier). Failure leaves the default title — never breaks the turn.
+        if is_first_turn and title_builder is not None:
+            await _maybe_set_title(rls_engine, conversation_id, user_message, title_builder)
+        # Deduct credits per successful turn (after the stream completes — D-08-6).
+        credits_service.deduct(
+            rls_engine=rls_engine, user_id=owner_id, amount=credits_per_turn, reason="chat_turn"
+        )
+        done: dict[str, object] = {
+            "usage": (
+                {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens}
+                if usage is not None
+                else {}
+            ),
+            "tier": tier,  # the router's real choice for this turn (D-08 gap fix)
+            "format_hints": {},  # D-08-3: the API echoes empty; connectors populate (spec 12)
+        }
+        yield _sse("done", done)
+    finally:
+        reset_sandbox_request_context(_sandbox_ctx_token)
 
 
 def _persist_turn(
@@ -300,26 +328,40 @@ def _persist_turn(
     conversation: Conversation,
     prior_msg_count: int,
     channel: ChannelContext | None,
+    images: list[ImageRefSchema] | None = None,
 ) -> None:
     """Insert the new messages + update compaction state (one RLS-scoped txn).
 
     The loop appended the user message + assistant response to ``conversation``
     in place (D-S05-4). We persist only the messages beyond ``prior_msg_count``,
-    tagging the FIRST new (user) message with the ``channel`` passthrough.
+    tagging the FIRST new (user) message with the ``channel`` passthrough and —
+    if the inbound POST carried image refs (spec 13 T20, D-13-X-now option c) —
+    the ``images`` JSONB column as ``[{"workspace_path", "media_type"}, ...]``
+    in caller order (criterion #11).
     """
     new_messages = conversation.messages[prior_msg_count:]
     channel_json = channel.model_dump() if channel is not None else None
+    images_json: list[dict[str, str]] | None = (
+        [{"workspace_path": img.workspace_path, "media_type": img.media_type} for img in images]
+        if images
+        else None
+    )
     now = datetime.now(UTC)
     with rls_engine.begin() as conn:
         for i, msg in enumerate(new_messages):
+            is_first_user_msg = i == 0 and msg.role == "user"
             conn.execute(
                 insert(messages_t).values(
                     id=f"msg_{uuid.uuid4().hex}",
                     conversation_id=conversation.conversation_id,
                     role=msg.role,
-                    content=msg.content,
+                    content=_persisted_content(msg.content),
                     # Only the user message carries the inbound channel context.
-                    channel=channel_json if (i == 0 and msg.role == "user") else None,
+                    channel=channel_json if is_first_user_msg else None,
+                    # Only the first user message carries the inbound image refs
+                    # (assistant + tool messages persist images=NULL — the response
+                    # itself never carries inbound image refs).
+                    images=images_json if is_first_user_msg else None,
                 )
             )
         conn.execute(
@@ -331,6 +373,30 @@ def _persist_turn(
                 updated_at=now,
             )
         )
+
+
+def _persisted_content(content: object) -> str:
+    """Reduce a ``ConversationMessage.content`` to the TEXT column shape.
+
+    The DB ``messages.content`` column is ``TEXT``. The runtime widened
+    :class:`ConversationMessage.content` to ``str | list[MessageContent]``
+    (Spec 13 T03), but at the API persistence boundary we collapse the
+    list form back to the text body — image refs are persisted on the
+    sibling ``images`` JSONB column (D-13-X-now option c). For a list
+    payload we concatenate the :class:`TextContent` blocks (in order)
+    and ignore image blocks; for a bare ``str`` we pass through.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # Lazy import: the dominant call path (text-only) never touches this
+        # branch, so we avoid the import cost at module load.
+        from persona.schema.content import TextContent  # noqa: PLC0415
+
+        return "".join(block.text for block in content if isinstance(block, TextContent))
+    # Defensive fallback — should never fire under ConversationMessage's
+    # ``extra="forbid"`` validation contract.
+    return str(content)
 
 
 async def _maybe_set_title(

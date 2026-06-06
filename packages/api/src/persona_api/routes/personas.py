@@ -235,7 +235,12 @@ async def delete_persona(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> None:
     """Delete a persona + all its conversations and memory (cascade)."""
-    persona_service.delete_persona(rls_engine=request.app.state.rls_engine, persona_id=persona_id)
+    persona_service.delete_persona(
+        rls_engine=request.app.state.rls_engine,
+        persona_id=persona_id,
+        workspace_root=getattr(request.app.state, "workspace_root", None),
+        owner_id=user.id,
+    )
     audit_service.record(
         engine=request.app.state.rls_engine,
         user_id=user.id,

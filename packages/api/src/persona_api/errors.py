@@ -24,6 +24,10 @@ from persona.errors import (
     ToolNotAllowedError,
 )
 from persona.logging import get_logger
+from persona.sandbox.errors import (
+    SandboxQuotaExceededError,
+    SandboxUnavailableError,
+)
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
@@ -142,6 +146,61 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content=_body("rate_limit_exceeded", exc.message or "rate limit exceeded", exc.context),
             headers=headers,
+        )
+
+    @app.exception_handler(SandboxQuotaExceededError)
+    async def _sandbox_quota_429(_: Request, exc: SandboxQuotaExceededError) -> JSONResponse:
+        """Per-user sandbox cap exhausted (spec 12 T09c, D-12-17 quota path).
+
+        Distinct from :class:`RateLimitExceededError` (general per-endpoint
+        rate limit): the sandbox cap is a per-tenant concurrent-session policy
+        (D-12-17; bounds SCP-12-1 multi-tenant attack surface). A 429 with
+        ``Retry-After`` lets the client back off; the structured ``context``
+        body (``user_id``, ``current_count``, ``cap``) surfaces the cap state
+        for client-side messaging.
+
+        ``Retry-After: 60`` is a coarse hint — quota frees whenever one of the
+        user's existing sessions is released or reaped (D-12-17 idle_timeout
+        default 300s; reap cadence 60s). The 60s value matches the reaper
+        cadence so the next reap-window is the worst-case wait for a slot
+        freed by idle reap; sessions released sooner via ``pool.release()``
+        free the slot immediately.
+        """
+        _log.info(
+            "sandbox quota rejection user={user} count={count} cap={cap}",
+            user=exc.context.get("user_id", "?"),
+            count=exc.context.get("current_count", "?"),
+            cap=exc.context.get("cap", "?"),
+        )
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content=_body(
+                "sandbox_quota_exceeded",
+                exc.message or "sandbox quota exceeded for this user",
+                exc.context,
+            ),
+            headers={"Retry-After": "60"},
+        )
+
+    @app.exception_handler(SandboxUnavailableError)
+    async def _sandbox_unavailable_503(_: Request, exc: SandboxUnavailableError) -> JSONResponse:
+        """Substrate unreachable (spec 12 T09c, D-12-5 no-degraded-fallback path).
+
+        Distinct from quota-exceeded (above): substrate-unavailability is an
+        infrastructure outage (E2B API down; pool closed; SDK missing), not
+        a per-tenant policy decision. Per D-12-5 there is no degraded fallback
+        — the client retries later. ``Retry-After: 30`` is a brief back-off
+        hint; the substrate-status dashboard is the authoritative recovery
+        signal.
+        """
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_body(
+                "sandbox_unavailable",
+                exc.message or "sandbox substrate is unavailable",
+                exc.context,
+            ),
+            headers={"Retry-After": "30"},
         )
 
     @app.exception_handler(RefinementLimitError)

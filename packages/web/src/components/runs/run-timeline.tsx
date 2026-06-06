@@ -4,6 +4,14 @@ import { useTranslations } from "next-intl";
 import type { RunView } from "@/lib/run";
 import { StepCard } from "./step-card";
 
+/**
+ * Spec F2 T30 — RunTimeline (retokenised).
+ *
+ * Vertical timeline of `<StepCard>`s with a left-rail connector + a running
+ * tail indicator while the agent is working between steps. Behaviour
+ * preserved verbatim (per audit.md §runs.plumbing); presentation closed:
+ * `text-sm` → `.type-ui` for the "working" / "no steps" labels.
+ */
 export function RunTimeline({
   view,
   onAnswer,
@@ -18,14 +26,21 @@ export function RunTimeline({
     : undefined;
 
   if (view.steps.length === 0 && !running) {
-    return <p className="text-sm text-muted-foreground">{t("noSteps")}</p>;
+    return (
+      <p
+        className="type-ui text-muted-foreground"
+        data-slot="run-timeline-empty"
+      >
+        {t("noSteps")}
+      </p>
+    );
   }
 
   return (
-    <div className="relative">
+    <div className="relative" data-slot="run-timeline">
       {view.steps.length > 0 ? (
         <span
-          aria-hidden
+          aria-hidden="true"
           className="absolute top-3 bottom-3 left-[14px] w-px bg-border"
         />
       ) : null}
@@ -40,8 +55,15 @@ export function RunTimeline({
         ))}
       </ol>
       {running && awaitingStep === undefined ? (
-        <div className="mt-3 flex items-center gap-2 pl-8 text-sm text-muted-foreground">
-          <span className="size-2 animate-pulse rounded-full bg-primary" />
+        <div
+          className="type-ui mt-3 flex items-center gap-2 pl-8 text-muted-foreground"
+          data-slot="run-timeline-working"
+          aria-live="polite"
+        >
+          <span
+            aria-hidden="true"
+            className="size-2 animate-pulse rounded-full bg-primary"
+          />
           {t("working")}
         </div>
       ) : null}
