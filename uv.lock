@@ -859,6 +859,20 @@ wheels = [
 ]
 
 [[package]]
+name = "docker"
+version = "7.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "requests" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/9b/4a2ea29aeba62471211598dac5d96825bb49348fa07e906ea930394a83ce/docker-7.1.0.tar.gz", hash = "sha256:ad8c70e6e3f8926cb8a92619b832b4ea5299e2831c14284663184e200546fa6c", size = 117834 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/26/57c6fb270950d476074c087527a558ccb6f4436657314bfb6cdf484114c4/docker-7.1.0-py3-none-any.whl", hash = "sha256:c96b93b7f0a746f9e77d325bcfb87422a3d8bd4f03136ae8a85b37f1898d5fc0", size = 147774 },
+]
+
+[[package]]
 name = "docstring-parser"
 version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2757,6 +2771,9 @@ postgres = [
     { name = "psycopg", extra = ["binary"] },
     { name = "sqlalchemy" },
 ]
+sandbox = [
+    { name = "docker" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2764,6 +2781,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.30,<1" },
     { name = "bitsandbytes", marker = "extra == 'local'", specifier = ">=0.43,<1" },
     { name = "chromadb", specifier = ">=1.0,<2" },
+    { name = "docker", marker = "extra == 'sandbox'", specifier = ">=7,<8" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "loguru", specifier = ">=0.7,<1" },
     { name = "mcp", specifier = ">=1.0,<2" },
@@ -2781,7 +2799,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'local'", specifier = ">=4.42,<5" },
     { name = "typer", specifier = ">=0.12,<1" },
 ]
-provides-extras = ["local", "postgres"]
+provides-extras = ["local", "postgres", "sandbox"]
 
 [[package]]
 name = "persona-runtime"
@@ -2810,6 +2828,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "docker" },
+    { name = "e2b-code-interpreter" },
     { name = "mypy" },
     { name = "openpyxl" },
     { name = "pre-commit" },
@@ -2832,6 +2852,8 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "docker", specifier = ">=7,<8" },
+    { name = "e2b-code-interpreter", specifier = ">=1.0,<2" },
     { name = "mypy", specifier = ">=1.10,<2" },
     { name = "openpyxl", specifier = ">=3.1,<4" },
     { name = "pre-commit", specifier = ">=3.7,<5" },

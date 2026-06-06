@@ -32,6 +32,14 @@ postgres = [
     "sqlalchemy>=2.0,<3",
     "pgvector>=0.3,<1",
 ]
+# Spec 12 T05 LocalDockerSandbox — docker SDK pulled here, NOT in the base
+# install (D-12-5 + spec-12 kickoff: "users who only use the hosted sandbox
+# via the API don't need it"). The module lazy-imports docker so it stays
+# importable on a minimal `pip install persona-core` and raises
+# SandboxUnavailableError at construction when the SDK is absent.
+sandbox = [
+    "docker>=7,<8",
+]
 
 [project.scripts]
 persona = "persona.cli.main:app"

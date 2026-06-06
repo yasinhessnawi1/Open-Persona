@@ -61,12 +61,47 @@ from datetime import UTC, datetime  # noqa: TC003 — runtime use below
 from pathlib import Path  # noqa: TC003 — runtime use in _make_workspace_dirs
 from typing import TYPE_CHECKING, Any, cast
 
-import docker
-from docker.errors import APIError, DockerException, ImageNotFound, NotFound
-from docker.types import LogConfig, Ulimit
+# Docker SDK is the [sandbox] extra (D-12-5 + spec 12 kickoff: "LocalDockerSandbox
+# lazy-imports docker at construction so the module stays importable without the
+# SDK installed"). Wrap imports so `import persona.sandbox.local_docker` works on
+# a minimal install; LocalDockerSandbox raises SandboxUnavailableError at
+# construction when the SDK is absent, and `is_docker_available()` returns False.
+try:
+    import docker
+    from docker.errors import APIError, DockerException, ImageNotFound, NotFound
+
+    _DOCKER_SDK_AVAILABLE = True
+except ImportError:
+    _DOCKER_SDK_AVAILABLE = False
+    docker = None  # type: ignore[assignment, unused-ignore]
+
+    # Sentinel exception classes. These are NEVER raised — `_resolve_client()`
+    # raises `SandboxUnavailableError` before any code path that would catch
+    # them runs — but they're imported at module level so `except APIError`
+    # clauses scattered through the module remain syntactically valid.
+    # N818 (Error suffix) suppressed per class — these names mirror the
+    # upstream ``docker.errors`` API exactly so that ``except APIError`` /
+    # ``except DockerException`` / etc. clauses elsewhere in the module
+    # resolve to the real class when [sandbox] is installed and to these
+    # sentinels otherwise. Renaming would break the runtime import on the
+    # try branch.
+    class APIError(Exception):  # type: ignore[no-redef, unused-ignore]  # noqa: N818
+        """Sentinel — real ``docker.errors.APIError`` when [sandbox] is installed."""
+
+    class DockerException(Exception):  # type: ignore[no-redef, unused-ignore]  # noqa: N818
+        """Sentinel — real ``docker.errors.DockerException`` when [sandbox] is installed."""
+
+    class ImageNotFound(Exception):  # type: ignore[no-redef, unused-ignore]  # noqa: N818
+        """Sentinel — real ``docker.errors.ImageNotFound`` when [sandbox] is installed."""
+
+    class NotFound(Exception):  # type: ignore[no-redef, unused-ignore]  # noqa: N818
+        """Sentinel — real ``docker.errors.NotFound`` when [sandbox] is installed."""
+
 
 if TYPE_CHECKING:
     from docker.models.containers import Container
+    from docker.types import LogConfig as _DockerLogConfig
+    from docker.types import Ulimit as _DockerUlimit
 
 from persona.logging import get_logger
 from persona.sandbox.errors import (
@@ -156,18 +191,46 @@ _BASE_CONTAINER_KWARGS: dict[str, Any] = {
 #: Log driver config — R-12-2 log-bomb defence. Cap per-container log size at
 #: 10 MiB; the Python side enforces the additional stdout cap from
 #: ``ResourceLimits.max_stdout_bytes`` (T05b) when reading container logs.
-_LOG_CONFIG = LogConfig(
-    type="json-file",
-    config={"max-size": "10m", "max-file": "1"},
-)
+#:
+#: Lazy via :func:`_log_config` because :class:`docker.types.LogConfig` is in
+#: the [sandbox] extra and the module must import without it. First call after
+#: the SDK is available constructs once and caches.
+_LOG_CONFIG_CACHE: _DockerLogConfig | None = None
+
+
+def _log_config() -> _DockerLogConfig:
+    """Return the cached R-12-2 LogConfig (lazy — requires [sandbox] extra)."""
+    global _LOG_CONFIG_CACHE
+    if _LOG_CONFIG_CACHE is None:
+        from docker.types import LogConfig
+
+        _LOG_CONFIG_CACHE = LogConfig(
+            type="json-file",
+            config={"max-size": "10m", "max-file": "1"},
+        )
+    return _LOG_CONFIG_CACHE
+
 
 #: R-12-2 ulimits — fd / process exhaustion caps. ``RLIMIT_NPROC`` is
 #: per-real-UID (kickoff trip-up notes this for the concurrent-sandbox
 #: hosted case; local CLI is single-sandbox-at-a-time, so this is moot here).
-_ULIMITS = [
-    Ulimit(name="nofile", soft=128, hard=128),
-    Ulimit(name="nproc", soft=128, hard=128),
-]
+#:
+#: Lazy via :func:`_ulimits` for the same reason as :func:`_log_config`.
+_ULIMITS_CACHE: list[_DockerUlimit] | None = None
+
+
+def _ulimits() -> list[_DockerUlimit]:
+    """Return the cached R-12-2 Ulimits (lazy — requires [sandbox] extra)."""
+    global _ULIMITS_CACHE
+    if _ULIMITS_CACHE is None:
+        from docker.types import Ulimit
+
+        _ULIMITS_CACHE = [
+            Ulimit(name="nofile", soft=128, hard=128),
+            Ulimit(name="nproc", soft=128, hard=128),
+        ]
+    return _ULIMITS_CACHE
+
 
 #: ANSI escape sequence pattern — stripped from stderr so traceback color
 #: codes don't pollute the model's view. Matches CSI sequences (the common
@@ -417,9 +480,21 @@ class LocalDockerSandbox:
     def _resolve_client(self) -> docker.DockerClient:
         """Lazy-resolve the docker client. Maps daemon-unreachable to
         :class:`SandboxUnavailableError` (D-12-5: no degraded fallback;
-        the tool surfaces the error to the model)."""
+        the tool surfaces the error to the model). Also raises when the
+        ``[sandbox]`` extra isn't installed (module imported but SDK absent).
+
+        Injected ``docker_client`` (used by unit tests to bypass the SDK)
+        wins over the SDK-availability check so mocked tests stay green on
+        minimal installs.
+        """
         if self._docker_client is not None:
             return self._docker_client
+        if not _DOCKER_SDK_AVAILABLE:
+            raise SandboxUnavailableError(
+                "docker SDK not installed. Install persona-core[sandbox] to "
+                "enable LocalDockerSandbox (D-12-5: no degraded fallback).",
+                context={"reason": "sdk_missing"},
+            )
         try:
             client = docker.from_env()
             # Ping forces a daemon round-trip so we fail fast on "no Docker".
@@ -592,8 +667,8 @@ class LocalDockerSandbox:
         kwargs["memswap_limit"] = f"{limits.memory_mb}m"  # no swap
         kwargs["nano_cpus"] = int(limits.cpu_cores * 1_000_000_000)
         kwargs["pids_limit"] = max(_BASE_CONTAINER_KWARGS["pids_limit"], 16)
-        kwargs["ulimits"] = list(_ULIMITS)
-        kwargs["log_config"] = _LOG_CONFIG
+        kwargs["ulimits"] = list(_ulimits())
+        kwargs["log_config"] = _log_config()
         # Background mode so we can wait() with a timeout.
         kwargs["detach"] = True
         # Stdout/err captured via container.logs(...) after wait().
@@ -825,8 +900,8 @@ class LocalDockerSandbox:
         kwargs["mem_limit"] = f"{limits.memory_mb}m"
         kwargs["memswap_limit"] = f"{limits.memory_mb}m"
         kwargs["nano_cpus"] = int(limits.cpu_cores * 1_000_000_000)
-        kwargs["ulimits"] = list(_ULIMITS)
-        kwargs["log_config"] = _LOG_CONFIG
+        kwargs["ulimits"] = list(_ulimits())
+        kwargs["log_config"] = _log_config()
         kwargs["detach"] = True
         if self._platform is not None:
             kwargs["platform"] = self._platform
@@ -971,12 +1046,14 @@ def _utcnow() -> datetime:  # pragma: no cover — test seam (avoids new Date in
 
 # Re-export for the T05a tests + the conftest skip-if-no-docker check.
 def is_docker_available() -> bool:
-    """True if the Docker daemon is reachable. Used by the T04 conftest
-    to skip the security-suite parametrisations when Docker isn't running.
+    """True if the docker SDK is installed AND the daemon is reachable.
 
-    Catches every :class:`DockerException` to make the check truly
-    "is the daemon there" — not "is the SDK importable" (the import already
-    happened by the time we get here)."""
+    Used by the T04 conftest to skip the security-suite parametrisations
+    when Docker isn't running OR when the ``[sandbox]`` extra isn't
+    installed (CI without docker, dev machines with the daemon stopped).
+    """
+    if not _DOCKER_SDK_AVAILABLE:
+        return False
     try:
         client = docker.from_env()
         client.ping()
