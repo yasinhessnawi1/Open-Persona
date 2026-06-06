@@ -79,13 +79,27 @@ class _ScriptedBackend:
 
 
 class _ScriptedRegistry:
-    """A TierRegistry stand-in returning the scripted backend for any tier."""
+    """A TierRegistry stand-in returning the scripted backend for any tier.
+
+    Implements the TierRegistry surface the Router calls (Spec 13 T09 added
+    ``configured_tier_names`` + ``supports_vision_for`` for the vision-tier
+    pre-filter). The scripted backend's ``supports_vision`` is False, so the
+    stub mirrors that — image-bearing turns would correctly raise
+    NoVisionTierConfiguredError if they reached this test path.
+    """
 
     def __init__(self) -> None:
         self._b = _ScriptedBackend()
 
     def get(self, _tier_name: str) -> _ScriptedBackend:
         return self._b
+
+    @property
+    def configured_tier_names(self) -> tuple[str, ...]:
+        return ("frontier", "mid", "small")
+
+    def supports_vision_for(self, _tier_name: str) -> bool:
+        return self._b.supports_vision
 
     async def aclose(self) -> None:
         pass
