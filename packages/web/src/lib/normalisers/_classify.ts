@@ -26,7 +26,6 @@ import type { ProducedFileRef, ToolResultData } from "@/lib/sse-types";
  * Extending the table is the additive path when a new capability tool
  * lands; the dispatcher + renderer stay closed.
  */
-// biome-ignore lint/style/useNamingConvention: closed type alias for the working-state operation enum
 export type CapabilityOperation = "image_gen" | "code_exec" | "doc_gen";
 
 export function operationFor(toolName: string): CapabilityOperation | null {

@@ -9,7 +9,7 @@ import {
   Presentation,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { type ReactNode, useState } from "react";
+import { type ComponentType, type ReactNode, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -43,19 +43,30 @@ const TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE;
  * `image_service.fetch:300` serves them correctly.
  */
 
-const MEDIA_TYPE_ICONS: Array<[RegExp, ReactNode]> = [
-  [/^application\/pdf/, <FileType className="size-4 shrink-0" aria-hidden />],
-  [/wordprocessingml/, <FileText className="size-4 shrink-0" aria-hidden />],
-  [
-    /spreadsheetml/,
-    <FileSpreadsheet className="size-4 shrink-0" aria-hidden />,
-  ],
-  [/presentationml/, <Presentation className="size-4 shrink-0" aria-hidden />],
+/**
+ * Pattern → icon component (NOT pre-instantiated JSX). Storing component
+ * refs keeps the table allocation-free at module load and dodges the
+ * "JSX in array iterable needs a key" lint that fires when biome sees
+ * JSX elements stored in an array literal — only the matching icon is
+ * actually instantiated, so keys are irrelevant here.
+ */
+type LucideIcon = ComponentType<{
+  className?: string;
+  "aria-hidden"?: boolean;
+}>;
+
+const MEDIA_TYPE_ICONS: Array<[RegExp, LucideIcon]> = [
+  [/^application\/pdf/, FileType],
+  [/wordprocessingml/, FileText],
+  [/spreadsheetml/, FileSpreadsheet],
+  [/presentationml/, Presentation],
 ];
 
 function iconForMediaType(mediaType: string): ReactNode {
-  for (const [pattern, icon] of MEDIA_TYPE_ICONS) {
-    if (pattern.test(mediaType)) return icon;
+  for (const [pattern, Icon] of MEDIA_TYPE_ICONS) {
+    if (pattern.test(mediaType)) {
+      return <Icon className="size-4 shrink-0" aria-hidden />;
+    }
   }
   return <FileText className="size-4 shrink-0" aria-hidden />;
 }
