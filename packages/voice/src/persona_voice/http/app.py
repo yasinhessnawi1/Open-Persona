@@ -1,0 +1,184 @@
+"""persona-voice HTTP app — the ``POST /v1/voice/token`` endpoint (spec V1 T04).
+
+The endpoint is the **only** HTTP route the voice service exposes at v0.1.
+LiveKit Server handles all WebRTC signaling, peer connections, and media
+transport internally (D-V1-1 branch (A) + D-V1-3); persona-voice's job is to
+mint a Room access token after verifying:
+
+1. The caller's IdP JWT is valid (via the extracted ``make_jwt_verifier``).
+2. The caller owns the requested persona (ownership check — defense-in-depth
+   on top of the session-bound RLS engine T06 adds).
+
+A passing call returns ``{token, room_name, livekit_url}`` — the client uses
+these to join the LiveKit Room directly. Failures fail-closed: missing or
+invalid JWT → 401; persona not visible to the caller → 404 (RLS-shape, never
+leaks whether the persona exists for another tenant).
+
+Ownership check is intentionally minimal at v0.1: a single ``SELECT`` against
+``personas WHERE id = :pid AND owner_id = :uid``. The RLS-scoped engine T06
+ships for the audio loop is a different concern (per-session lifecycle vs.
+per-request). When persona-voice grows additional HTTP routes (post-V1), the
+two patterns may consolidate.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+# NOTE: `Request`, `Awaitable`, `Callable` are RUNTIME imports (NOT under
+# TYPE_CHECKING) because FastAPI resolves dependency / route signatures via
+# ``get_type_hints`` at startup — with ``from __future__ import annotations``
+# every annotation is a string, so every name in a dependency's signature must
+# be importable at runtime or FastAPI mis-reads the params (e.g. treating
+# ``request: Request`` as a query parameter). Same pattern as
+# persona-api ``auth/deps.py``.
+from collections.abc import Awaitable, Callable
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from persona.auth.jwt_verifier import AuthenticatedUser, make_jwt_verifier
+from persona.errors import AuthenticationError
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import create_engine, text
+
+from persona_voice.config import VoiceConfig
+from persona_voice.tokens.issuer import RoomAccessToken, mint_room_access_token
+
+__all__ = ["build_app", "get_voice_config"]
+
+
+class TokenRequest(BaseModel):
+    """Body for ``POST /v1/voice/token``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    persona_id: str
+    conversation_id: str
+
+
+class TokenResponse(BaseModel):
+    """Result returned to the client."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    token: str
+    room_name: str
+    livekit_url: str
+
+
+def get_voice_config(request: Request) -> VoiceConfig:
+    """Provide the active :class:`VoiceConfig` (overridable in tests)."""
+    cfg = getattr(request.app.state, "voice_config", None)
+    if cfg is None:
+        msg = "voice_config not configured on app.state"
+        raise RuntimeError(msg)
+    assert isinstance(cfg, VoiceConfig)
+    return cfg
+
+
+def _bearer_token(request: Request) -> str:
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        raise AuthenticationError("missing or malformed Authorization header")
+    token = header.removeprefix("Bearer ").strip()
+    if not token:
+        raise AuthenticationError("empty bearer token")
+    return token
+
+
+def get_verify_token(request: Request) -> Callable[[str], Awaitable[AuthenticatedUser]]:
+    """Active token verifier — overridable on ``app.state.verify_token`` for tests."""
+    verifier = getattr(request.app.state, "verify_token", None)
+    if verifier is not None:
+        return verifier  # type: ignore[no-any-return]
+    cfg = get_voice_config(request)
+    return make_jwt_verifier(cfg)
+
+
+async def get_current_user(
+    request: Request,
+    verify: Callable[[str], Awaitable[AuthenticatedUser]] = Depends(get_verify_token),
+) -> AuthenticatedUser:
+    """Authenticate the request; return the user or raise ``AuthenticationError``."""
+    return await verify(_bearer_token(request))
+
+
+def _check_persona_ownership(
+    request: Request,
+    *,
+    persona_id: str,
+    user_id: str,
+) -> None:
+    """Verify the user owns ``persona_id`` against the personas table.
+
+    Raises ``HTTPException(404)`` if the persona is not visible to the user —
+    the same shape persona-api uses to avoid leaking persona existence across
+    tenants. In tests the app state can expose an ``owns_persona`` override
+    so the DB hop is skipped entirely.
+    """
+    override = getattr(request.app.state, "owns_persona", None)
+    if override is not None:
+        if not override(persona_id=persona_id, user_id=user_id):
+            raise HTTPException(status_code=404, detail="persona not found")
+        return
+    engine = getattr(request.app.state, "ownership_engine", None)
+    if engine is None:
+        msg = "ownership_engine not configured on app.state"
+        raise RuntimeError(msg)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT 1 FROM personas WHERE id = :pid AND owner_id = :uid"),
+            {"pid": persona_id, "uid": user_id},
+        ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="persona not found")
+
+
+def build_app(config: VoiceConfig) -> FastAPI:
+    """Build the persona-voice FastAPI app.
+
+    The app holds the active :class:`VoiceConfig` on ``app.state.voice_config``.
+    Production callers also attach an ``ownership_engine`` (a SQLAlchemy
+    Engine bound to the ``persona_app`` RLS-scoped role) before serving
+    requests. Tests can override ``owns_persona`` instead to skip the DB hop.
+    """
+    app = FastAPI(title="persona-voice", version="0.1.0")
+    app.state.voice_config = config
+    if config.database_url:
+        app.state.ownership_engine = create_engine(config.database_url, pool_size=1)
+
+    @app.exception_handler(AuthenticationError)
+    async def _auth_error_handler(_req: Request, exc: AuthenticationError) -> object:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=401,
+            content={"error": "authentication_error", "detail": str(exc)},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @app.post("/v1/voice/token", response_model=TokenResponse)
+    async def issue_voice_token(
+        body: TokenRequest,
+        request: Request,
+        user: AuthenticatedUser = Depends(get_current_user),
+    ) -> TokenResponse:
+        _check_persona_ownership(request, persona_id=body.persona_id, user_id=user.id)
+        cfg = get_voice_config(request)
+        session_id = uuid.uuid4().hex
+        token: RoomAccessToken = mint_room_access_token(
+            api_key=cfg.livekit_api_key.get_secret_value(),
+            api_secret=cfg.livekit_api_secret.get_secret_value(),
+            livekit_url=cfg.livekit_url,
+            session_id=session_id,
+            user_id=user.id,
+            persona_id=body.persona_id,
+            conversation_id=body.conversation_id,
+            ttl_s=cfg.livekit_token_ttl_s,
+        )
+        return TokenResponse(
+            token=token.token,
+            room_name=token.room_name,
+            livekit_url=token.livekit_url,
+        )
+
+    return app

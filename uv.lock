@@ -13,6 +13,7 @@ members = [
     "persona-api",
     "persona-core",
     "persona-runtime",
+    "persona-voice",
     "persona-workspace",
 ]
 
@@ -1694,6 +1695,54 @@ wheels = [
 ]
 
 [[package]]
+name = "livekit"
+version = "1.1.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiofiles" },
+    { name = "numpy" },
+    { name = "protobuf" },
+    { name = "types-protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/53/11/a8f7af0d9a0a1e705c98a16942f8ec70865a8a08280e3ad53a3026388d36/livekit-1.1.10.tar.gz", hash = "sha256:202101c49a1fbc1d771d5dfb884c77f42c01dafc411d12224b992fac78a843cb", size = 355789 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d0/b0/51b2dc800ff2201da35ea87be1e25d370f4973e214e96ddf09563cd977a8/livekit-1.1.10-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:495b23988673bf6571fd0faaf621416e973fa1d302b1acccd479e0461cac924d", size = 10103039 },
+    { url = "https://files.pythonhosted.org/packages/f3/7b/d7e1af04915402f55d6aa2d063273d053f9da0799ea9ec0a691fc96003cf/livekit-1.1.10-py3-none-macosx_11_0_arm64.whl", hash = "sha256:7bd85dda5c8b11458b3447cbb02630af7bb267d424c65c89d2e6d736905147d1", size = 8933264 },
+    { url = "https://files.pythonhosted.org/packages/86/78/5ee7513df2ef124e5f75659bbe477253dd214a3089003e34644a37f80462/livekit-1.1.10-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:b05299fa0a4c98d8d57f0013367adad70a84dd5fc9c46e4a7f3df5352c81b6c1", size = 9938610 },
+    { url = "https://files.pythonhosted.org/packages/86/86/16364e82b7363ad43e6651e46dfccf88f18fe46897c2123fe4badbf1f067/livekit-1.1.10-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:29f58fe30dc181c45b0a9c929beaacacde0b2253fa6e597547508d5269e9012b", size = 11321977 },
+    { url = "https://files.pythonhosted.org/packages/80/ca/f50036fffbff113f8de6bd05194dc6df0a5f2028f058dcf69073f774a464/livekit-1.1.10-py3-none-win_amd64.whl", hash = "sha256:13ac0c8498e0e5bc41292526966fd6ad86baa66e1915778b128cf7e953b107fc", size = 10675561 },
+]
+
+[[package]]
+name = "livekit-api"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "livekit-protocol" },
+    { name = "protobuf" },
+    { name = "pyjwt" },
+    { name = "types-protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b5/0a/ad3cce124e608c056d6390244ec4dd18c8a4b5f055693a95831da2119af7/livekit_api-1.1.0.tar.gz", hash = "sha256:f94c000534d3a9b506e6aed2f35eb88db1b23bdea33bb322f0144c4e9f73934e", size = 16649 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/b9/8d8515e3e0e629ab07d399cf858b8fc7e0a02bbf6384a6592b285264b4b9/livekit_api-1.1.0-py3-none-any.whl", hash = "sha256:bfc1c2c65392eb3f580a2c28108269f0e79873f053578a677eee7bb1de8aa8fb", size = 19620 },
+]
+
+[[package]]
+name = "livekit-protocol"
+version = "1.1.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "protobuf" },
+    { name = "types-protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/65/ed/09cf0419967e1f46b5b84447d29dff58473b13308fafa44456d431d53883/livekit_protocol-1.1.13.tar.gz", hash = "sha256:38eff0dc23ff9d6b7d9d10220b74735a0ec784a4a5196ef02c10c6052f8f7f6c", size = 101474 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/52/66/d16928af7f7641a4edda734c69cdf1af07b6c5f378d72691580ecf4fe6bd/livekit_protocol-1.1.13-py3-none-any.whl", hash = "sha256:8827860835ae576cd66948f5721c5949a285fe72856ebf67af8e42e368a994e7", size = 125127 },
+]
+
+[[package]]
 name = "loguru"
 version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2841,6 +2890,7 @@ dependencies = [
     { name = "openai" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "python-jose", extra = ["cryptography"] },
     { name = "pyyaml" },
     { name = "regex" },
     { name = "sentence-transformers" },
@@ -2885,6 +2935,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "pydantic-settings", specifier = ">=2.3,<3" },
     { name = "pypdf", marker = "extra == 'test'", specifier = ">=6.0,<7" },
+    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3,<4" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "regex", specifier = ">=2024.0,<2027" },
     { name = "sentence-transformers", specifier = ">=3.0,<4" },
@@ -2913,6 +2964,23 @@ requires-dist = [
 ]
 
 [[package]]
+name = "persona-voice"
+version = "0.1.0"
+source = { editable = "packages/voice" }
+dependencies = [
+    { name = "livekit" },
+    { name = "livekit-api" },
+    { name = "persona-core", extra = ["postgres"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "livekit", specifier = ">=1.1,<2" },
+    { name = "livekit-api", specifier = ">=1.1,<2" },
+    { name = "persona-core", extras = ["postgres"], editable = "packages/core" },
+]
+
+[[package]]
 name = "persona-workspace"
 version = "0.1.0"
 source = { virtual = "." }
@@ -2920,6 +2988,7 @@ dependencies = [
     { name = "persona-api" },
     { name = "persona-core", extra = ["postgres"] },
     { name = "persona-runtime" },
+    { name = "persona-voice" },
 ]
 
 [package.dev-dependencies]
@@ -2945,6 +3014,7 @@ requires-dist = [
     { name = "persona-api", editable = "packages/api" },
     { name = "persona-core", extras = ["postgres"], editable = "packages/core" },
     { name = "persona-runtime", editable = "packages/runtime" },
+    { name = "persona-voice", editable = "packages/voice" },
 ]
 
 [package.metadata.requires-dev]
@@ -4770,6 +4840,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/67/a5/756f2e6bc81a7dd79aa3c625dd01b74cabc4516628cace2caaec09ca6ff2/typer-0.26.2.tar.gz", hash = "sha256:9b4f19e08fcc9427a822d1ef467b1fe76737a2f65c7926bdeba2337d73569b68", size = 198991 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/a5/6ffd702beda8798b2b82ff70805ed4a66d963557e43a5d1823ab456251a4/typer-0.26.2-py3-none-any.whl", hash = "sha256:39beff72ffbb31978a5b545f677d57edb97c6f980f433b38556deb0af25f094d", size = 123123 },
+]
+
+[[package]]
+name = "types-protobuf"
+version = "7.34.1.20260518"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/29/59/e2b13b499d15e6720150c4b1a8d91e31fcacf716b432397475b3151ff7e4/types_protobuf-7.34.1.20260518.tar.gz", hash = "sha256:28cfaded25889cb83ebfb63cfb0a43628f0b6f3785767bec17287dc6468795f2", size = 68936 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/1f/ec5caf72c2e3b688ca3927e0979a04ddad19e1afc4bf1c199bd743e0f419/types_protobuf-7.34.1.20260518-py3-none-any.whl", hash = "sha256:a0a5337413347166439c0e07cbc26c6164d091401c6f01b1dfd8cdb966c4dd8f", size = 85992 },
 ]
 
 [[package]]

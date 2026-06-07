@@ -10,15 +10,17 @@ dependencies = [
     "persona-core[postgres]",
     "persona-runtime",
     "persona-api",
+    "persona-voice",
 ]
 
 [tool.uv.workspace]
-members = ["packages/core", "packages/runtime", "packages/api"]
+members = ["packages/core", "packages/runtime", "packages/api", "packages/voice"]
 
 [tool.uv.sources]
 persona-core = { workspace = true }
 persona-runtime = { workspace = true }
 persona-api = { workspace = true }
+persona-voice = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -75,6 +77,18 @@ ignore = ["COM812"]
 # runtime imports — the type-checking rules' "move into TYPE_CHECKING" would
 # break dependency resolution (the request param gets mis-read as a query param).
 "packages/api/**" = ["B008", "TC001", "TC002", "TC003"]
+# persona-voice (spec V1 T04) — same FastAPI signature-resolution rules:
+# `Request` and `Callable`/`Awaitable` must be RUNTIME imports because
+# FastAPI resolves dependency signatures via get_type_hints at startup.
+# `Depends(...)` in argument defaults is the framework idiom (B008).
+"packages/voice/**" = ["B008", "TC001", "TC002", "TC003"]
+# persona-voice integration tests (spec V1 T08/T11/T12) — pytest fixtures are
+# injected as test arguments for their side-effects (skip-on-unreachable for
+# LiveKit Server + Postgres; auto-cleanup tenant_pair); ruff's ARG001 would
+# require either `_` prefix renaming (loses pytest fixture discoverability)
+# or `@pytest.mark.usefixtures` (doesn't apply when the test consumes the
+# fixture's return value). The ARG001 is intentional, not a leftover.
+"packages/voice/tests/integration/**" = ["B008", "TC001", "TC002", "TC003", "ARG001"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -87,7 +101,7 @@ python_version = "3.11"
 # `persona_runtime.*`, and `persona_api.*` imports across workspace boundaries.
 # Setting this here means every `uv run mypy <pkg>` invocation picks it up
 # without per-call MYPYPATH gymnastics (closes LF-12-3).
-mypy_path = "packages/core/src:packages/runtime/src:packages/api/src"
+mypy_path = "packages/core/src:packages/runtime/src:packages/api/src:packages/voice/src"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -147,8 +161,19 @@ ignore_missing_imports = true
 module = ["regex", "regex.*"]
 ignore_missing_imports = true
 
+# livekit (persona-voice [packages/voice], spec V1 T02) — D-V1-1 branch (A)
+# LiveKit OSS substrate. The PyPI `livekit` package (Room/Participant/Track SDK)
+# and `livekit-api` package (AccessToken issuance, import path `livekit.api`)
+# are both Apache-2.0 per D-V1-X-livekit-sdk-license-stack. py.typed status is
+# inconsistent across LiveKit SDK versions; mirror the docker/pgvector/jose/
+# e2b/openpyxl/pypdfium2/regex discipline rather than depend on partial third-
+# party stubs.
+[[tool.mypy.overrides]]
+module = ["livekit", "livekit.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
-testpaths = ["packages/core/tests", "packages/runtime/tests", "packages/api/tests"]
+testpaths = ["packages/core/tests", "packages/runtime/tests", "packages/api/tests", "packages/voice/tests"]
 markers = [
     "integration: marks tests that require external services (Docker, real DB)",
     "external: marks tests that call real external APIs (Anthropic, OpenAI)",

@@ -26,6 +26,7 @@ _WORKSPACE_SRC_DIRS = [
     _REPO_ROOT / "packages" / "core" / "src",
     _REPO_ROOT / "packages" / "runtime" / "src",
     _REPO_ROOT / "packages" / "api" / "src",
+    _REPO_ROOT / "packages" / "voice" / "src",  # spec V1 T02 (D-V1-X-package-layout)
 ]
 
 for _src in _WORKSPACE_SRC_DIRS:

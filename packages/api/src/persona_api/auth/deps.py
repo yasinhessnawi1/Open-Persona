@@ -1,17 +1,22 @@
-"""Authentication seam + the RLS-scoped current-user dependency (spec 08, T05).
+"""FastAPI auth glue: the injectable verify_token seam + the RLS current-user dep.
 
-The API does not implement signup/login/sessions — a third-party provider
-(Clerk or Supabase; S08-1 deferred, D-08-4) issues JWTs. The API validates the
-token on every request, extracts the user id, and — critically — sets it on the
-:data:`persona_api.middleware.rls_context.current_user_id` ``ContextVar`` so the
-RLS pool listener scopes every connection (D-08-1).
+The provider-agnostic JWT verification surface (``AuthenticatedUser``,
+``JwtVerifierConfig``, ``make_jwt_verifier``) was relocated to persona-core at
+spec V1 T03 (D-V1-X-jwt-verifier-extraction) so persona-voice can consume it
+without taking a persona-api dependency. This module re-exports those names
+for back-compat with the existing persona-api callers and keeps the FastAPI-
+specific glue (``_bearer_token`` header parsing, ``get_verify_token``
+dependency, ``get_current_user`` request-scoped contextvar binding) here —
+those depend on FastAPI's ``Request`` / ``Depends`` and the RLS
+:data:`persona_api.middleware.rls_context.current_user_id` contextvar, both of
+which are framework concerns that don't belong in persona-core.
 
-The verification is an **injectable seam** (``verify_token``): the default uses
-``python-jose`` (HS256 for the test fake-JWT path, RS256 for the real JWKS path;
-fail-closed on expired/tampered/wrong-audience — verified research §4). Tests
-override the ``verify_token`` dependency with a fake verifier so no provider is
-called (acceptance #14). Deferring the provider keeps the seam provider-agnostic
-(both issue JWTs).
+The verifier is an **injectable seam**: the default uses ``python-jose`` (HS256
+for the test fake-JWT path, RS256 for the real JWKS path; fails closed on
+expired/tampered/wrong-audience — verified research §4). Tests override the
+``verify_token`` dependency with a fake verifier so no provider is called
+(acceptance #14). Deferring the provider (S08-1) keeps the seam
+provider-agnostic — both Clerk and Supabase issue JWTs.
 """
 
 from __future__ import annotations
@@ -22,38 +27,28 @@ from __future__ import annotations
 # annotation is a string, so every name in a dependency's signature must be
 # importable at runtime or FastAPI mis-reads the params as query params.
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING
 
 from fastapi import Depends, Request
-from jose import JWTError, jwt
-from pydantic import BaseModel, ConfigDict
+
+# The provider-agnostic verification surface lives in persona-core
+# (D-V1-X-jwt-verifier-extraction). Re-exported here for back-compat with the
+# existing persona-api import sites (`from persona_api.auth import ...`).
+from persona.auth.jwt_verifier import (
+    AuthenticatedUser,
+    JwtVerifierConfig,
+    make_jwt_verifier,
+)
 
 from persona_api.errors import AuthenticationError
 from persona_api.middleware.rls_context import current_user_id
 
-if TYPE_CHECKING:
-    from persona_api.config import APIConfig
-
 __all__ = [
     "AuthenticatedUser",
+    "JwtVerifierConfig",
     "get_current_user",
     "get_verify_token",
     "make_jwt_verifier",
 ]
-
-
-class AuthenticatedUser(BaseModel):
-    """The authenticated principal extracted from a verified token."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: str
-    email: str | None = None
-
-
-# A verifier is `Callable[[str], Awaitable[AuthenticatedUser]]` — takes the raw
-# bearer token, returns the authenticated user, or raises AuthenticationError.
-# Async so a real provider can do a network JWKS fetch; the default does no I/O.
 
 
 def _bearer_token(request: Request) -> str:
@@ -65,89 +60,6 @@ def _bearer_token(request: Request) -> str:
     if not token:
         raise AuthenticationError("empty bearer token")
     return token
-
-
-# Algorithm families. The key MUST be bound to the family per the token's own
-# `alg` header, NEVER chosen independently of it — otherwise an attacker who has
-# the (public) RSA/EC key can forge an HS256 token signed with that key as the
-# HMAC secret (the classic JWT algorithm-confusion attack). Security-reviewer
-# HIGH finding (spec 08 T05): bind key↔alg, and reject a public key paired with
-# an HMAC alg (and vice versa) at construction (fail-fast).
-_SYMMETRIC_ALGS = frozenset({"HS256", "HS384", "HS512"})
-_ASYMMETRIC_ALGS = frozenset(
-    {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"}
-)
-
-
-def make_jwt_verifier(config: APIConfig) -> Callable[[str], Awaitable[AuthenticatedUser]]:
-    """Build the default ``python-jose`` JWT verifier from config (D-08-4).
-
-    HMAC algorithms verify against the symmetric ``jwt_secret``; RSA/EC
-    algorithms verify against the asymmetric ``jwt_public_key``. The key is
-    selected **per the verified token's own algorithm family** — never
-    independently — so a public key can never be used as an HMAC secret
-    (algorithm-confusion attack). A configured algorithm whose key is missing is
-    rejected at construction (fail-fast). Fails closed on any
-    signature/expiry/audience failure. The ``sub`` claim is the user id.
-    """
-    secret = config.jwt_secret.get_secret_value() if config.jwt_secret else None
-    public_key = config.jwt_public_key.get_secret_value() if config.jwt_public_key else None
-    algorithms = config.jwt_algorithms_list
-    audience = config.jwt_audience or None
-
-    # Partition configured algorithms by family and pair each with its key.
-    sym_algs = [a for a in algorithms if a in _SYMMETRIC_ALGS]
-    asym_algs = [a for a in algorithms if a in _ASYMMETRIC_ALGS]
-    unknown = [a for a in algorithms if a not in _SYMMETRIC_ALGS and a not in _ASYMMETRIC_ALGS]
-    if unknown:
-        msg = f"unsupported JWT algorithm(s): {unknown}"
-        raise ValueError(msg)
-    if sym_algs and not secret:
-        msg = f"HMAC algorithm(s) {sym_algs} configured but PERSONA_API_JWT_SECRET is unset"
-        raise ValueError(msg)
-    if asym_algs and not public_key:
-        msg = (
-            f"asymmetric algorithm(s) {asym_algs} configured but "
-            "PERSONA_API_JWT_PUBLIC_KEY is unset"
-        )
-        raise ValueError(msg)
-    if not sym_algs and not asym_algs:
-        msg = "no usable JWT algorithm/key pair configured"
-        raise ValueError(msg)
-
-    async def _verify(token: str) -> AuthenticatedUser:
-        # Read the token's claimed alg from the (unverified) header, pick the
-        # matching family's key, and verify ONLY against that family's algs.
-        try:
-            header_alg = jwt.get_unverified_header(token).get("alg")
-        except JWTError as exc:
-            raise AuthenticationError(
-                "malformed token header", context={"reason": str(exc)}
-            ) from exc
-        if header_alg in _SYMMETRIC_ALGS and header_alg in sym_algs:
-            key, allowed = secret, sym_algs
-        elif header_alg in _ASYMMETRIC_ALGS and header_alg in asym_algs:
-            key, allowed = public_key, asym_algs
-        else:
-            raise AuthenticationError(
-                "token algorithm not allowed", context={"alg": str(header_alg)}
-            )
-        try:
-            claims = jwt.decode(
-                token,
-                key,
-                algorithms=allowed,
-                audience=audience,
-                options={"verify_aud": audience is not None},
-            )
-        except JWTError as exc:
-            raise AuthenticationError("invalid token", context={"reason": str(exc)}) from exc
-        sub = claims.get("sub")
-        if not sub:
-            raise AuthenticationError("token missing 'sub' claim")
-        return AuthenticatedUser(id=str(sub), email=claims.get("email"))
-
-    return _verify
 
 
 def get_verify_token(request: Request) -> Callable[[str], Awaitable[AuthenticatedUser]]:

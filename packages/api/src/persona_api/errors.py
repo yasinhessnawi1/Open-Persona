@@ -48,8 +48,12 @@ __all__ = [
 ]
 
 
-class AuthenticationError(PersonaError):
-    """Raised when a request has no valid bearer token (→ 401)."""
+# AuthenticationError was relocated to ``persona.errors`` at spec V1 T03
+# (D-V1-X-jwt-verifier-extraction) so persona-voice can raise it from the
+# extracted ``persona.auth.jwt_verifier.make_jwt_verifier`` without taking a
+# persona-api dependency. Re-exported here for back-compat with the existing
+# persona-api import sites (``from persona_api.errors import AuthenticationError``).
+from persona.errors import AuthenticationError  # noqa: E402, F401
 
 
 class CreditsExhaustedError(PersonaError):

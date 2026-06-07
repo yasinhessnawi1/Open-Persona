@@ -1,0 +1,34 @@
+[project]
+name = "persona-voice"
+version = "0.1.0"
+description = "Real-time voice service for Persona — WebRTC transport via LiveKit OSS Server"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = [
+    # persona-core direct store access (D-V1-4) + the extracted JWT verifier
+    # surface (D-V1-X-jwt-verifier-extraction lands at T03 inside persona-core).
+    "persona-core[postgres]",
+    # LiveKit OSS substrate per D-V1-1 (branch (A) lock 2026-06-07). The PyPI
+    # name is `livekit` (NOT `livekit-rtc` — decisions.md / tasks.md used the
+    # historical alias). v1.1.10 is the Python Room / Participant / Track SDK;
+    # Apache-2.0 per D-V1-X-livekit-sdk-license-stack. Transitive surface:
+    # protobuf + types-protobuf + aiofiles + numpy — all permissive.
+    "livekit>=1.1,<2",
+    # LiveKit server-side AccessToken issuance per D-V1-3 — T04's
+    # `POST /v1/voice/token` endpoint signs LiveKit JWTs with the API secret.
+    # PyPI name is `livekit-api` (NOT `livekit-server-sdk-python`); v1.1.0.
+    "livekit-api>=1.1,<2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/persona_voice"]
+include = [
+    "src/persona_voice/py.typed",
+]
+
+[tool.uv.sources]
+persona-core = { workspace = true }
