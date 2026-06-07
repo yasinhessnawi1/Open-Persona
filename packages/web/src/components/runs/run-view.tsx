@@ -91,7 +91,11 @@ export function RunView({
         ) : null}
       </div>
 
-      <RunTimeline view={view} onAnswer={respond} />
+      <RunTimeline
+        view={view}
+        onAnswer={respond}
+        personaId={initial.persona_id}
+      />
 
       {runLevelError ? (
         <p

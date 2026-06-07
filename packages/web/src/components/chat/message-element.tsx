@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 /**
  * Spec F2 T15 + T26 — MessageElement.
@@ -46,11 +46,17 @@ import { type ReactNode, useMemo } from "react";
 import type { AvatarPersona } from "@/components/persona/persona-avatar";
 import { PersonaAvatar } from "@/components/persona/persona-avatar";
 import { Markdown } from "@/components/ui/markdown";
+import type { OutputContent } from "@/lib/api/output-content";
+import { operationFor, projectToolResult } from "@/lib/normalisers/_classify";
 import {
   derivePersonaIdentityColor,
   personaIdentityStyle,
 } from "@/lib/persona-identity";
+import type { ProducedFileRef } from "@/lib/sse-types";
 import { cn } from "@/lib/utils";
+import { AuthedImage } from "./authed-image";
+import { OutputDispatcher } from "./output/dispatcher";
+import { ImageLightbox } from "./output/image-lightbox";
 import { StreamingTextRenderer } from "./streaming-text-renderer";
 import { TierBadge } from "./tier-badge";
 import { ToolCallCard, type ToolEntry } from "./tool-call-card";
@@ -73,12 +79,25 @@ export type MessageEvent =
       toolName: string;
       content: string;
       isError: boolean;
+      /**
+       * F4 T02b + T10 (D-F4-X-event-kind-for-produced-files): structured
+       * produced_files surfaced from the runtime via use-chat. Optional —
+       * absent on pre-amendment frames and on tools that don't produce
+       * files (web_search, file_*). Consumed by the F4 OutputDispatcher
+       * in InterleavedContent below.
+       */
+      producedFiles?: ProducedFileRef[];
     };
 
 /**
  * The message shape <MessageElement> consumes. `events[]` is the
  * D-F2-15 ordered log; `content` + `tools[]` are kept as derived/legacy
  * fields so older consumers continue to work.
+ *
+ * F3 (T06) — `images?: ImageRef[]` is optional and additive. When present
+ * on a user-role message, MessageElement (T10) renders the attached
+ * images inline above the text via `<AuthedImage>` (Bearer-fetched blob
+ * URLs per D-F3-X-image-serve-auth). Absent → text-only path unchanged.
  */
 export interface MessageElementView {
   id: string;
@@ -89,6 +108,8 @@ export interface MessageElementView {
   /** D-F2-15: ordered event log. When present, MessageElement renders interleaved. */
   events?: MessageEvent[];
   streaming?: boolean;
+  /** F3 (T06): workspace references to attached images on this message. */
+  images?: { workspace_path: string; media_type: string }[];
 }
 
 /**
@@ -120,7 +141,9 @@ export function MessageElement({
   className,
 }: MessageElementProps) {
   if (message.role === "user") {
-    return <UserMessage message={message} className={className} />;
+    return (
+      <UserMessage message={message} persona={persona} className={className} />
+    );
   }
   return (
     <PersonaMessage
@@ -134,19 +157,45 @@ export function MessageElement({
 
 function UserMessage({
   message,
+  persona,
   className,
 }: {
   message: MessageElementView;
+  persona: AvatarPersona;
   className?: string;
 }) {
+  // F3 (T10) — attached images render INSIDE the bubble, above the text,
+  // via AuthedImage (Bearer-fetched blob URLs per D-F3-X-image-serve-auth).
+  // Empty/absent `images` → text-only path renders byte-for-byte unchanged.
+  const hasImages = message.images && message.images.length > 0;
+
   return (
     <div
       className={cn("flex justify-end", className)}
       data-slot="message-element"
       data-role="user"
     >
-      <div className="type-body max-w-[80%] rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 whitespace-pre-wrap text-secondary-foreground">
-        {message.content}
+      <div className="type-body flex max-w-[80%] flex-col gap-2 rounded-2xl rounded-br-sm bg-secondary px-4 py-2.5 text-secondary-foreground">
+        {hasImages ? (
+          <div
+            className="flex flex-wrap gap-2"
+            data-slot="message-images"
+            data-count={message.images?.length}
+          >
+            {message.images?.map((img) => (
+              <AuthedImage
+                key={img.workspace_path}
+                personaId={persona.id}
+                workspacePath={img.workspace_path}
+                mediaType={img.media_type}
+                alt={img.workspace_path.split("/").pop() ?? "attached image"}
+              />
+            ))}
+          </div>
+        ) : null}
+        {message.content ? (
+          <span className="whitespace-pre-wrap">{message.content}</span>
+        ) : null}
       </div>
     </div>
   );
@@ -176,6 +225,11 @@ function PersonaMessage({
 
   const hasEvents = message.events && message.events.length > 0;
 
+  // F4 T12: per-message lightbox state. Tracks the workspace_path the
+  // user clicked "view larger" on; closes via ESC / backdrop / close
+  // button (D-F4-2 lightbox affordances).
+  const [lightboxPath, setLightboxPath] = useState<string | null>(null);
+
   return (
     <div
       style={personaIdentityStyle(persona)}
@@ -201,6 +255,8 @@ function PersonaMessage({
             streaming={!!message.streaming}
             thinkingLabel={thinkingLabel}
             personaName={persona.name}
+            personaId={persona.id}
+            onViewLarger={setLightboxPath}
           />
         ) : message.streaming && !message.content ? (
           // Streaming, no events array, no content yet → thinking.
@@ -219,6 +275,21 @@ function PersonaMessage({
           <TierBadge tier={message.tier} />
         ) : null}
       </div>
+
+      {/* F4 T12: lightbox renders at message level so it portals out of
+          the scroller. media_type is unknown here (the OutputContent has
+          it but the workspace_path is the only id flowing through) —
+          AuthedImage handles bytes via the GET surface regardless. */}
+      {lightboxPath !== null ? (
+        <ImageLightbox
+          open={true}
+          personaId={persona.id}
+          workspacePath={lightboxPath}
+          mediaType="image/png"
+          alt={lightboxPath.split("/").pop() ?? "image"}
+          onClose={() => setLightboxPath(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -277,11 +348,17 @@ function InterleavedContent({
   streaming,
   thinkingLabel,
   personaName,
+  personaId,
+  onViewLarger,
 }: {
   events: readonly MessageEvent[];
   streaming: boolean;
   thinkingLabel: string;
   personaName: string;
+  /** F4 T10: passed through to OutputDispatcher for Bearer-auth byte loading. */
+  personaId: string;
+  /** F4 T12: view-larger click handler — opens the message-level lightbox. */
+  onViewLarger?: (workspacePath: string) => void;
 }) {
   const t = useTranslations("chat");
 
@@ -381,6 +458,24 @@ function InterleavedContent({
           pending: !result,
         };
         out.push(<ToolCallCard key={`tool-${ev.callId || i}`} entry={entry} />);
+        // F4 T10: project the tool_call+tool_result pair onto OutputContent[]
+        // and emit them inline alongside the tool card. Recognized capability
+        // tools (image_gen / code_exec / doc_gen) get rich rendering — chart
+        // images, download chips, result blocks. Pending tools surface a
+        // shared <WorkingState> via the dispatcher. Unrecognized tools
+        // (web_search, file_*) contribute nothing — they already surface via
+        // the ToolCallCard.
+        const outputs = projectToolEvents(ev.toolName, result);
+        for (const o of outputs) {
+          out.push(
+            <OutputDispatcher
+              key={`out-${ev.callId || i}-${o.kind}-${out.length}`}
+              personaId={personaId}
+              output={o}
+              onViewLarger={onViewLarger}
+            />,
+          );
+        }
         pending = result ? null : ev.toolName;
         lastKind = "tool_call";
         continue;
@@ -397,7 +492,7 @@ function InterleavedContent({
     flushText(`text-${textIdx++}`, isLive);
 
     return { items: out, pendingToolName: pending };
-  }, [events, streaming]);
+  }, [events, streaming, personaId, onViewLarger]);
 
   // Activity indicator state machine:
   //   - empty + streaming  → thinking
@@ -433,6 +528,37 @@ function InterleavedContent({
       ) : null}
     </div>
   );
+}
+
+/**
+ * F4 T10 — project a (tool_call, tool_result?) MessageEvent pair onto
+ * `OutputContent[]` for the inline OutputDispatcher. Mirrors the chat
+ * normaliser's per-event behaviour but works against the InterleavedContent
+ * pair-matched shape (callId-keyed via FIFO matching by toolName).
+ *
+ *   - Recognized capability tool + result → projectToolResult on a
+ *     synthesised ToolResultData (forwarding the structured producedFiles
+ *     surfaced by the T02b runtime amendment + use-chat T10 forwarding).
+ *   - Recognized capability tool + pending → [{kind: "working", ...}] so
+ *     the shared `<WorkingState>` renders inline (D-F4-5).
+ *   - Unrecognized tool → [] (ToolCallCard already surfaces it; F4's
+ *     output channel is for rich outputs only).
+ */
+function projectToolEvents(
+  toolName: string,
+  result: Extract<MessageEvent, { kind: "tool_result" }> | null,
+): OutputContent[] {
+  const op = operationFor(toolName);
+  if (op === null) return [];
+  if (result === null) {
+    return [{ kind: "working", operation: op, label: toolName }];
+  }
+  return projectToolResult({
+    tool_name: toolName,
+    is_error: result.isError,
+    content: result.content,
+    produced_files: result.producedFiles,
+  });
 }
 
 /**

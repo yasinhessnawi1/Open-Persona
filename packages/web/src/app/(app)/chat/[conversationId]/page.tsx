@@ -73,6 +73,14 @@ export default async function ChatPage({
         conversationId={conversationId}
         persona={personaForDisplay}
         initialMessages={initialMessages}
+        // F3 (T19) — D-F3-X-capabilities-prop-drill-shape: prop drill from
+        // PersonaDetail → ChatWindow → ComposerAttachControl. NOT context,
+        // NOT a global store. `capabilities` may be undefined when the
+        // runtime isn't wired (test paths / pre-T02 deployments); the
+        // composer treats that as "vision unknown" and falls open by
+        // default (server stays authoritative — Spec 13 fail-loud refuses
+        // image turns on text-only deployments per T15's (c) safety net).
+        capabilities={personaRes.data?.capabilities ?? null}
       />
     </div>
   );

@@ -195,6 +195,64 @@
     "toolError": "Tool error",
     "error": "Something went wrong while streaming. The conversation was reloaded.",
     "empty": "Send a message to start.",
-    "tierLabel": "Model tier: {tier}"
+    "tierLabel": "Model tier: {tier}",
+    "composer": {
+      "attach": {
+        "label": "Attach file",
+        "imageDisabled": "Image attachments aren't available on this deployment.",
+        "openConversationFirst": "Open a conversation to attach documents.",
+        "feedback": {
+          "imageAttached": "Image attached to this message",
+          "documentAttached": "{filename} added to this conversation"
+        },
+        "remove": "Remove attachment",
+        "retry": "Retry upload",
+        "sendBlocked": "{count, plural, one {# image failed to upload} other {# images failed to upload}} — retry or remove"
+      },
+      "validation": {
+        "empty_file": "{filename} is empty",
+        "oversize": "{filename} exceeds the 20.0 MB upload limit",
+        "per_message_image_cap": "You can attach at most {cap} images per message",
+        "unsupported_format": "{filename} isn't a supported format"
+      },
+      "upload": {
+        "uploading": "Uploading {filename}…",
+        "uploaded": "{filename}",
+        "failed": "Upload failed: {reason}"
+      },
+      "documents": {
+        "panelTitle": "Documents in this conversation",
+        "panelEmpty": "No documents attached yet",
+        "scannedCue": "Read as scanned pages",
+        "removeConfirmation": "Remove {filename}?"
+      }
+    },
+    "output": {
+      "inlineVisual": {
+        "viewLarger": "View larger image of {alt}"
+      },
+      "downloadChip": {
+        "download": "Download {filename}",
+        "downloading": "Downloading {filename}…",
+        "failed": "Download failed: {reason}"
+      },
+      "resultBlock": {
+        "showCode": "Show code",
+        "hideCode": "Hide code",
+        "showFull": "Show {count, plural, one {# more line} other {# more lines}}",
+        "showLess": "Show less",
+        "upstreamTruncated": "Output was truncated upstream."
+      },
+      "workingState": {
+        "imageGen": "Generating image…",
+        "codeExec": "Running code…",
+        "docGen": "Producing document…"
+      },
+      "lightbox": {
+        "close": "Close lightbox",
+        "download": "Download image",
+        "title": "Image viewer"
+      }
+    }
   }
 }

@@ -161,7 +161,22 @@ export interface paths {
     post?: never;
     /**
      * Delete Conversation
-     * @description Delete a conversation + all its messages (cascade; 404 if not the caller's).
+     * @description Delete a conversation + all its messages + workspace artefacts.
+     *
+     *     Cascade reach (T19 + Spec 13 T12 co-landing per D-14-X-cascade-coordination):
+     *
+     *     1. DB rows (existing): the ``conversations`` row + its ``messages`` /
+     *        ``turn_logs`` via FK cascade.
+     *     2. **Document workspace + DocumentStore chunks** (T19): every doc
+     *        attached to the conversation, via
+     *        :func:`document_service.remove_all_for_conversation` — the
+     *        cascade-helper T13 introduced specifically for this reuse.
+     *     3. **Image workspace files** (Spec 13 T12): each image referenced by
+     *        the conversation's messages. Spec 13 owns this branch; the two
+     *        cascade extensions coexist additively in this same handler per
+     *        the D-14-X-cascade-coordination locking decision.
+     *
+     *     404 if not the caller's conversation (RLS-scoped).
      */
     delete: operations["delete_conversation_v1_conversations__conversation_id__delete"];
     options?: never;
@@ -181,6 +196,13 @@ export interface paths {
     /**
      * Post Message
      * @description Send a message; stream the response as SSE (§5.2, KEYSTONE 1).
+     *
+     *     Multimodal (spec 13 T20): when ``body.images`` is non-empty the route
+     *     constructs a multimodal :class:`ConversationMessage` content list
+     *     (``[TextContent, ImageContent, ...]``) and passes ``turn_has_image=True``
+     *     through to the runtime so :meth:`Router.choose` restricts to vision-capable
+     *     tiers. The text-only path (``body.images is None``) is unchanged
+     *     byte-for-byte — T03/T13 regression invariants hold.
      */
     post: operations["post_message_v1_conversations__conversation_id__messages_post"];
     delete?: never;
@@ -299,6 +321,9 @@ export interface paths {
     /**
      * Get Credits
      * @description The caller's current credit balance (stub counter; §5.5).
+     *
+     *     ``low_balance`` is surfaced inline so the web app shows the under-limit
+     *     warning without a second round-trip (D-11-12).
      */
     get: operations["get_credits_v1_me_credits_get"];
     put?: never;
@@ -389,6 +414,110 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/conversations/{conversation_id}/documents": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Documents
+     * @description List documents attached to a conversation (RLS-scoped; 404 if not the caller's).
+     */
+    get: operations["list_documents_v1_conversations__conversation_id__documents_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/conversations/{conversation_id}/documents/{doc_ref}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Delete Document
+     * @description Remove a document from a conversation (workspace files + chunks).
+     *
+     *     Idempotent — removing a non-existent ``doc_ref`` is a no-op (204).
+     */
+    delete: operations["delete_document_v1_conversations__conversation_id__documents__doc_ref__delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/personas/{persona_id}/uploads": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Create Upload
+     * @description Validate + store an upload under the caller's persona.
+     *
+     *     Dispatches by content-type per CSA-2 + D-14-X-uploads-coordination:
+     *
+     *     - ``image/*`` (PNG / JPEG / WebP / GIF) → :func:`image_service.upload`
+     *       (Spec 13). Returns ``{"workspace_path", "media_type", "size_bytes"}``.
+     *     - **Document MIME types** (PDF / DOCX / XLSX / CSV / TXT / MD / code)
+     *       → :func:`document_service.upload` (Spec 14). Requires a
+     *       ``conversation_id`` form field (documents are conversation-scoped per
+     *       Dominant Concern #1; the conversation existence + ownership are
+     *       verified via :func:`chat_service.get_conversation`). Returns the
+     *       :class:`document_service.DocumentRef` as JSON.
+     *     - Anything else → 415 Unsupported Media Type.
+     *
+     *     Cross-tenant persona id → 404 (persona pre-flight); cross-tenant
+     *     conversation_id → 404 (chat_service.get_conversation under RLS).
+     *     Validation errors → 422 with structured body. Scanned PDFs raise
+     *     :exc:`VisionHandoffRequiredError` → 422 ``"vision_handoff_required"``
+     *     (T13 / T21 interim contract — Spec 13 fail-loud at Spec 14's interim
+     *     state).
+     */
+    post: operations["create_upload_v1_personas__persona_id__uploads_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/personas/{persona_id}/uploads/{ref}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Upload
+     * @description Read an uploaded image by its workspace-relative ref.
+     *
+     *     Cross-tenant access returns 404 by design (existence-disclosure-safe).
+     *     Path-traversal attempts (``..``) reject as 404 via the sandbox resolver.
+     */
+    get: operations["get_upload_v1_personas__persona_id__uploads__ref__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -419,6 +548,13 @@ export interface components {
       prompt_version: string;
       /** Errors */
       errors?: string[] | null;
+    };
+    /** Body_create_upload_v1_personas__persona_id__uploads_post */
+    Body_create_upload_v1_personas__persona_id__uploads_post: {
+      /** File */
+      file: string;
+      /** Conversation Id */
+      conversation_id?: string | null;
     };
     /**
      * ChannelContext
@@ -527,16 +663,143 @@ export interface components {
     /**
      * CreditsResponse
      * @description The user's current credit balance (stub counter).
+     *
+     *     ``low_balance`` is True when the balance is below
+     *     :data:`credits_service.LOW_BALANCE_THRESHOLD` (10 000 by default) — the web
+     *     app uses it to surface the under-limit warning (D-11-12).
      */
     CreditsResponse: {
       /** Balance */
       balance: number;
+      /**
+       * Low Balance
+       * @default false
+       */
+      low_balance: boolean;
+    };
+    /**
+     * DocumentRef
+     * @description Reference to an attached document — the API-boundary type.
+     *
+     *     Persisted alongside the original file as a ``{doc_ref}.meta.json``
+     *     sidecar in the workspace. Returned by :func:`upload`,
+     *     :func:`list_for_conversation`, and (via JSON) the API GET endpoint
+     *     (T18). Carries the metadata T14/T15/T16 need to render the prompt
+     *     sections + the synopsis.
+     */
+    DocumentRef: {
+      /** Doc Ref */
+      doc_ref: string;
+      /** Filename */
+      filename: string;
+      /** Title */
+      title: string;
+      /** Format */
+      format: string;
+      /** Workspace Path */
+      workspace_path: string;
+      strategy: components["schemas"]["IngestStrategy"];
+      /** Token Count */
+      token_count: number;
+      /** Page Count */
+      page_count?: number | null;
+      /** Sheet Names */
+      sheet_names?: string[] | null;
+      /** Size Bytes */
+      size_bytes?: number | null;
+      /**
+       * Images
+       * @default []
+       */
+      images: components["schemas"]["ImageContent"][];
     };
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
       detail?: components["schemas"]["ValidationError"][];
     };
+    /**
+     * ImageContent
+     * @description An image *reference* block within a multimodal message ``content`` list.
+     *
+     *     Per Spec 13 D-13-X-now option (c), the message store carries only the
+     *     workspace reference — image bytes live exactly once under the persona's
+     *     Spec 03 workspace and are resolved at send time by the backend
+     *     serialisers (Spec 13 T05/T06). This is the structural guard behind
+     *     Dominant Concern #2: the ``messages`` table size grows with reference
+     *     count, not with image bytes. See
+     *     ``docs/specs/phase2/spec_13/decisions.md`` (D-13-X-now) and the T13
+     *     store-by-reference regression test.
+     *
+     *     Attributes:
+     *         type: Discriminator tag — always the literal ``"image"`` so the
+     *             :data:`MessageContent` tagged union can resolve this block by
+     *             its ``type`` field on deserialisation.
+     *         workspace_path: The reference into the persona workspace (Spec 03).
+     *             Resolved to bytes only at backend-send time; the message store
+     *             never holds the bytes themselves.
+     *         media_type: One of the four supported image MIME types per
+     *             **D-13-3**: ``image/png``, ``image/jpeg``, ``image/webp``,
+     *             ``image/gif``. Any other value is rejected at validation time.
+     */
+    ImageContent: {
+      /**
+       * Type
+       * @default image
+       * @constant
+       */
+      type: "image";
+      /** Workspace Path */
+      workspace_path: string;
+      /**
+       * Media Type
+       * @enum {string}
+       */
+      media_type: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+    };
+    /**
+     * ImageRef
+     * @description Image reference carried on a chat message (spec 13, D-13-X-now option c).
+     *
+     *     Refers to a previously-uploaded image in the persona's workspace (Spec 03).
+     *     Image bytes live exactly once in the workspace; the chat body and the
+     *     persisted ``messages`` row carry only ``workspace_path`` + ``media_type``
+     *     so storage scales with reference count, not with image bytes.
+     *
+     *     Attributes:
+     *         workspace_path: Workspace-relative path returned by the uploads route
+     *             (``uploads/<ref>.<ext>``). Resolved against
+     *             ``workspace_root/owner_id/persona_id`` at backend send time.
+     *         media_type: One of the four supported image MIME types per D-13-3:
+     *             ``image/png``, ``image/jpeg``, ``image/webp``, ``image/gif``.
+     *             Any other value is rejected at validation time.
+     */
+    ImageRef: {
+      /** Workspace Path */
+      workspace_path: string;
+      /**
+       * Media Type
+       * @enum {string}
+       */
+      media_type: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+    };
+    /**
+     * IngestStrategy
+     * @description The ingestion paths a document can take.
+     *
+     *     ``VISION_HANDOFF_REQUIRED`` is what :func:`ingest_document` returns when
+     *     the parser sets ``needs_vision_handoff=True`` — the caller (T13's
+     *     :func:`persona_api.services.document_service.upload`) detects this and
+     *     performs the actual rasterisation + ImageContent creation (T21). The
+     *     caller-side outcome ``VISION_HANDOFF`` records the completed handoff
+     *     on the persisted :class:`DocumentRef`.
+     * @enum {string}
+     */
+    IngestStrategy:
+      | "whole_inject"
+      | "retrieval"
+      | "vision_handoff_required"
+      | "vision_handoff";
     /**
      * MessageView
      * @description A single message in a conversation history.
@@ -559,8 +822,45 @@ export interface components {
       } | null;
     };
     /**
+     * PersonaCapabilities
+     * @description Deployment-derived capability flags surfaced with the persona detail.
+     *
+     *     Hydrated from the runtime :class:`persona_runtime.tier.TierRegistry` so the
+     *     UI can answer "does this persona support image attachments?" BEFORE the
+     *     user attempts to send (Spec 13 fail-loud made visible — Spec F3 §10 #7;
+     *     D-F3-X-no-vision-surface-shape). At v0.1 the answer is deployment-wide:
+     *     every persona under a given deployment shares the same registry, so
+     *     ``vision`` is identical across personas — see D-F3-X-deployment-vs-persona-
+     *     capability-framing. The field's shape survives the v0.2 inflection where
+     *     per-persona tier pins make the answer genuinely per-persona; only the
+     *     hydration source changes (from registry to per-persona lookup).
+     *
+     *     Attributes:
+     *         vision: ``True`` iff at least one configured tier resolves to a
+     *             backend whose ``supports_vision`` is ``True``. Read via the
+     *             public :meth:`TierRegistry.supports_vision_for` method
+     *             (D-F3-X-tier-registry-public-contract).
+     *         configured_tiers: Tier names registered on the active deployment
+     *             in insertion order (``("small", "mid", "frontier")`` for the
+     *             typical three-tier deployment). The UI may surface these in a
+     *             disabled-attach tooltip to explain *which* models the deployment
+     *             has configured.
+     */
+    PersonaCapabilities: {
+      /** Vision */
+      vision: boolean;
+      /** Configured Tiers */
+      configured_tiers: string[];
+    };
+    /**
      * PersonaDetail
      * @description A persona's full detail (YAML + metadata).
+     *
+     *     The optional :attr:`capabilities` field (D-F3-X-capability-endpoint) is
+     *     additive on top of the Spec 08 / Spec 09 surface: tests + composition
+     *     roots that do not wire a :class:`TierRegistry` (e.g. unit fixtures
+     *     without the runtime) omit the field and the API returns ``None`` so the
+     *     persona-detail surface stays usable without runtime composition.
      */
     PersonaDetail: {
       /** Id */
@@ -571,6 +871,7 @@ export interface components {
       schema_version: string;
       /** Avatar Url */
       avatar_url?: string | null;
+      capabilities?: components["schemas"]["PersonaCapabilities"] | null;
       /**
        * Created At
        * Format: date-time
@@ -613,11 +914,27 @@ export interface components {
      *     ``channel`` is the optional connector passthrough (D-08-3) — null for the
      *     web UI. The runtime ignores it in v0.1; the API just stores it on the
      *     message row and echoes ``format_hints`` on the ``done`` event.
+     *
+     *     ``images`` is the optional spec-13 multimodal extension (D-13-X-now option
+     *     c, D-13-5): up to 4 :class:`ImageRef` per message. ``None`` (the default)
+     *     keeps the text-only path byte-for-byte unchanged. An empty list is
+     *     equivalent to ``None`` semantically but rejected as a validation error so
+     *     callers don't accidentally send ``images=[]`` and skip the cap check; pass
+     *     ``None`` or omit the field.
+     *
+     *     The cap is enforced via :class:`Field`'s built-in ``min_length`` /
+     *     ``max_length`` (D-13-5) so the failure surfaces as a structured
+     *     ``too_long`` / ``too_short`` Pydantic v2 error — JSON-serialisable through
+     *     the API's ``_request_422`` handler in :mod:`persona_api.errors` (a custom
+     *     ``field_validator`` would attach a raw :class:`ValueError` to ``ctx`` and
+     *     break the response body's ``json.dumps``).
      */
     PostMessageRequest: {
       /** Content */
       content: string;
       channel?: components["schemas"]["ChannelContext"] | null;
+      /** Images */
+      images?: components["schemas"]["ImageRef"][] | null;
     };
     /**
      * RefinePersonaRequest
@@ -1402,6 +1719,136 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ToolSummary"][];
+        };
+      };
+    };
+  };
+  list_documents_v1_conversations__conversation_id__documents_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        conversation_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DocumentRef"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  delete_document_v1_conversations__conversation_id__documents__doc_ref__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        conversation_id: string;
+        doc_ref: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_upload_v1_personas__persona_id__uploads_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        persona_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "multipart/form-data": components["schemas"]["Body_create_upload_v1_personas__persona_id__uploads_post"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_upload_v1_personas__persona_id__uploads__ref__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        persona_id: string;
+        ref: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
     };

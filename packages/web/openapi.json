@@ -452,7 +452,7 @@
       "delete": {
         "tags": ["conversations"],
         "summary": "Delete Conversation",
-        "description": "Delete a conversation + all its messages (cascade; 404 if not the caller's).",
+        "description": "Delete a conversation + all its messages + workspace artefacts.\n\nCascade reach (T19 + Spec 13 T12 co-landing per D-14-X-cascade-coordination):\n\n1. DB rows (existing): the ``conversations`` row + its ``messages`` /\n   ``turn_logs`` via FK cascade.\n2. **Document workspace + DocumentStore chunks** (T19): every doc\n   attached to the conversation, via\n   :func:`document_service.remove_all_for_conversation` \u2014 the\n   cascade-helper T13 introduced specifically for this reuse.\n3. **Image workspace files** (Spec 13 T12): each image referenced by\n   the conversation's messages. Spec 13 owns this branch; the two\n   cascade extensions coexist additively in this same handler per\n   the D-14-X-cascade-coordination locking decision.\n\n404 if not the caller's conversation (RLS-scoped).",
         "operationId": "delete_conversation_v1_conversations__conversation_id__delete",
         "parameters": [
           {
@@ -486,7 +486,7 @@
       "post": {
         "tags": ["conversations"],
         "summary": "Post Message",
-        "description": "Send a message; stream the response as SSE (\u00a75.2, KEYSTONE 1).",
+        "description": "Send a message; stream the response as SSE (\u00a75.2, KEYSTONE 1).\n\nMultimodal (spec 13 T20): when ``body.images`` is non-empty the route\nconstructs a multimodal :class:`ConversationMessage` content list\n(``[TextContent, ImageContent, ...]``) and passes ``turn_has_image=True``\nthrough to the runtime so :meth:`Router.choose` restricts to vision-capable\ntiers. The text-only path (``body.images is None``) is unchanged\nbyte-for-byte \u2014 T03/T13 regression invariants hold.",
         "operationId": "post_message_v1_conversations__conversation_id__messages_post",
         "parameters": [
           {
@@ -755,7 +755,7 @@
       "get": {
         "tags": ["me"],
         "summary": "Get Credits",
-        "description": "The caller's current credit balance (stub counter; \u00a75.5).",
+        "description": "The caller's current credit balance (stub counter; \u00a75.5).\n\n``low_balance`` is surfaced inline so the web app shows the under-limit\nwarning without a second round-trip (D-11-12).",
         "operationId": "get_credits_v1_me_credits_get",
         "responses": {
           "200": {
@@ -892,6 +892,195 @@
           }
         }
       }
+    },
+    "/v1/conversations/{conversation_id}/documents": {
+      "get": {
+        "tags": ["documents"],
+        "summary": "List Documents",
+        "description": "List documents attached to a conversation (RLS-scoped; 404 if not the caller's).",
+        "operationId": "list_documents_v1_conversations__conversation_id__documents_get",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DocumentRef"
+                  },
+                  "title": "Response List Documents V1 Conversations  Conversation Id  Documents Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{conversation_id}/documents/{doc_ref}": {
+      "delete": {
+        "tags": ["documents"],
+        "summary": "Delete Document",
+        "description": "Remove a document from a conversation (workspace files + chunks).\n\nIdempotent \u2014 removing a non-existent ``doc_ref`` is a no-op (204).",
+        "operationId": "delete_document_v1_conversations__conversation_id__documents__doc_ref__delete",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "name": "doc_ref",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc Ref"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas/{persona_id}/uploads": {
+      "post": {
+        "tags": ["uploads"],
+        "summary": "Create Upload",
+        "description": "Validate + store an upload under the caller's persona.\n\nDispatches by content-type per CSA-2 + D-14-X-uploads-coordination:\n\n- ``image/*`` (PNG / JPEG / WebP / GIF) \u2192 :func:`image_service.upload`\n  (Spec 13). Returns ``{\"workspace_path\", \"media_type\", \"size_bytes\"}``.\n- **Document MIME types** (PDF / DOCX / XLSX / CSV / TXT / MD / code)\n  \u2192 :func:`document_service.upload` (Spec 14). Requires a\n  ``conversation_id`` form field (documents are conversation-scoped per\n  Dominant Concern #1; the conversation existence + ownership are\n  verified via :func:`chat_service.get_conversation`). Returns the\n  :class:`document_service.DocumentRef` as JSON.\n- Anything else \u2192 415 Unsupported Media Type.\n\nCross-tenant persona id \u2192 404 (persona pre-flight); cross-tenant\nconversation_id \u2192 404 (chat_service.get_conversation under RLS).\nValidation errors \u2192 422 with structured body. Scanned PDFs raise\n:exc:`VisionHandoffRequiredError` \u2192 422 ``\"vision_handoff_required\"``\n(T13 / T21 interim contract \u2014 Spec 13 fail-loud at Spec 14's interim\nstate).",
+        "operationId": "create_upload_v1_personas__persona_id__uploads_post",
+        "parameters": [
+          {
+            "name": "persona_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Persona Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_upload_v1_personas__persona_id__uploads_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Upload V1 Personas  Persona Id  Uploads Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas/{persona_id}/uploads/{ref}": {
+      "get": {
+        "tags": ["uploads"],
+        "summary": "Get Upload",
+        "description": "Read an uploaded image by its workspace-relative ref.\n\nCross-tenant access returns 404 by design (existence-disclosure-safe).\nPath-traversal attempts (``..``) reject as 404 via the sandbox resolver.",
+        "operationId": "get_upload_v1_personas__persona_id__uploads__ref__get",
+        "parameters": [
+          {
+            "name": "persona_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Persona Id"
+            }
+          },
+          {
+            "name": "ref",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ref"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -948,6 +1137,29 @@
         "required": ["yaml", "prompt_version"],
         "title": "AuthoringDraft",
         "description": "The draft envelope returned by ``/author`` and ``/author/refine`` (D-10-2).\n\nA draft is NOT a persona row \u2014 the user reviews/refines it, then saves via\n``POST /v1/personas`` (which creates the row). ``errors`` is populated only\nwhen validation retries are exhausted (best-effort YAML returned for the form\nto fix, \u00a73.3); ``None`` on success."
+      },
+      "Body_create_upload_v1_personas__persona_id__uploads_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          }
+        },
+        "type": "object",
+        "required": ["file"],
+        "title": "Body_create_upload_v1_personas__persona_id__uploads_post"
       },
       "ChannelContext": {
         "properties": {
@@ -1126,13 +1338,107 @@
           "balance": {
             "type": "integer",
             "title": "Balance"
+          },
+          "low_balance": {
+            "type": "boolean",
+            "title": "Low Balance",
+            "default": false
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": ["balance"],
         "title": "CreditsResponse",
-        "description": "The user's current credit balance (stub counter)."
+        "description": "The user's current credit balance (stub counter).\n\n``low_balance`` is True when the balance is below\n:data:`credits_service.LOW_BALANCE_THRESHOLD` (10 000 by default) \u2014 the web\napp uses it to surface the under-limit warning (D-11-12)."
+      },
+      "DocumentRef": {
+        "properties": {
+          "doc_ref": {
+            "type": "string",
+            "title": "Doc Ref"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format"
+          },
+          "workspace_path": {
+            "type": "string",
+            "title": "Workspace Path"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/IngestStrategy"
+          },
+          "token_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Token Count"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "sheet_names": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sheet Names"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ImageContent"
+            },
+            "type": "array",
+            "title": "Images",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "doc_ref",
+          "filename",
+          "title",
+          "format",
+          "workspace_path",
+          "strategy",
+          "token_count"
+        ],
+        "title": "DocumentRef",
+        "description": "Reference to an attached document \u2014 the API-boundary type.\n\nPersisted alongside the original file as a ``{doc_ref}.meta.json``\nsidecar in the workspace. Returned by :func:`upload`,\n:func:`list_for_conversation`, and (via JSON) the API GET endpoint\n(T18). Carries the metadata T14/T15/T16 need to render the prompt\nsections + the synopsis."
       },
       "HTTPValidationError": {
         "properties": {
@@ -1146,6 +1452,60 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "ImageContent": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "image",
+            "title": "Type",
+            "default": "image"
+          },
+          "workspace_path": {
+            "type": "string",
+            "title": "Workspace Path"
+          },
+          "media_type": {
+            "type": "string",
+            "enum": ["image/png", "image/jpeg", "image/webp", "image/gif"],
+            "title": "Media Type"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["workspace_path", "media_type"],
+        "title": "ImageContent",
+        "description": "An image *reference* block within a multimodal message ``content`` list.\n\nPer Spec 13 D-13-X-now option (c), the message store carries only the\nworkspace reference \u2014 image bytes live exactly once under the persona's\nSpec 03 workspace and are resolved at send time by the backend\nserialisers (Spec 13 T05/T06). This is the structural guard behind\nDominant Concern #2: the ``messages`` table size grows with reference\ncount, not with image bytes. See\n``docs/specs/phase2/spec_13/decisions.md`` (D-13-X-now) and the T13\nstore-by-reference regression test.\n\nAttributes:\n    type: Discriminator tag \u2014 always the literal ``\"image\"`` so the\n        :data:`MessageContent` tagged union can resolve this block by\n        its ``type`` field on deserialisation.\n    workspace_path: The reference into the persona workspace (Spec 03).\n        Resolved to bytes only at backend-send time; the message store\n        never holds the bytes themselves.\n    media_type: One of the four supported image MIME types per\n        **D-13-3**: ``image/png``, ``image/jpeg``, ``image/webp``,\n        ``image/gif``. Any other value is rejected at validation time."
+      },
+      "ImageRef": {
+        "properties": {
+          "workspace_path": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Workspace Path"
+          },
+          "media_type": {
+            "type": "string",
+            "enum": ["image/png", "image/jpeg", "image/webp", "image/gif"],
+            "title": "Media Type"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["workspace_path", "media_type"],
+        "title": "ImageRef",
+        "description": "Image reference carried on a chat message (spec 13, D-13-X-now option c).\n\nRefers to a previously-uploaded image in the persona's workspace (Spec 03).\nImage bytes live exactly once in the workspace; the chat body and the\npersisted ``messages`` row carry only ``workspace_path`` + ``media_type``\nso storage scales with reference count, not with image bytes.\n\nAttributes:\n    workspace_path: Workspace-relative path returned by the uploads route\n        (``uploads/<ref>.<ext>``). Resolved against\n        ``workspace_root/owner_id/persona_id`` at backend send time.\n    media_type: One of the four supported image MIME types per D-13-3:\n        ``image/png``, ``image/jpeg``, ``image/webp``, ``image/gif``.\n        Any other value is rejected at validation time."
+      },
+      "IngestStrategy": {
+        "type": "string",
+        "enum": [
+          "whole_inject",
+          "retrieval",
+          "vision_handoff_required",
+          "vision_handoff"
+        ],
+        "title": "IngestStrategy",
+        "description": "The ingestion paths a document can take.\n\n``VISION_HANDOFF_REQUIRED`` is what :func:`ingest_document` returns when\nthe parser sets ``needs_vision_handoff=True`` \u2014 the caller (T13's\n:func:`persona_api.services.document_service.upload`) detects this and\nperforms the actual rasterisation + ImageContent creation (T21). The\ncaller-side outcome ``VISION_HANDOFF`` records the completed handoff\non the persisted :class:`DocumentRef`."
       },
       "MessageView": {
         "properties": {
@@ -1185,6 +1545,26 @@
         "title": "MessageView",
         "description": "A single message in a conversation history."
       },
+      "PersonaCapabilities": {
+        "properties": {
+          "vision": {
+            "type": "boolean",
+            "title": "Vision"
+          },
+          "configured_tiers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Configured Tiers"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["vision", "configured_tiers"],
+        "title": "PersonaCapabilities",
+        "description": "Deployment-derived capability flags surfaced with the persona detail.\n\nHydrated from the runtime :class:`persona_runtime.tier.TierRegistry` so the\nUI can answer \"does this persona support image attachments?\" BEFORE the\nuser attempts to send (Spec 13 fail-loud made visible \u2014 Spec F3 \u00a710 #7;\nD-F3-X-no-vision-surface-shape). At v0.1 the answer is deployment-wide:\nevery persona under a given deployment shares the same registry, so\n``vision`` is identical across personas \u2014 see D-F3-X-deployment-vs-persona-\ncapability-framing. The field's shape survives the v0.2 inflection where\nper-persona tier pins make the answer genuinely per-persona; only the\nhydration source changes (from registry to per-persona lookup).\n\nAttributes:\n    vision: ``True`` iff at least one configured tier resolves to a\n        backend whose ``supports_vision`` is ``True``. Read via the\n        public :meth:`TierRegistry.supports_vision_for` method\n        (D-F3-X-tier-registry-public-contract).\n    configured_tiers: Tier names registered on the active deployment\n        in insertion order (``(\"small\", \"mid\", \"frontier\")`` for the\n        typical three-tier deployment). The UI may surface these in a\n        disabled-attach tooltip to explain *which* models the deployment\n        has configured."
+      },
       "PersonaDetail": {
         "properties": {
           "id": {
@@ -1210,6 +1590,16 @@
             ],
             "title": "Avatar Url"
           },
+          "capabilities": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersonaCapabilities"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -1231,7 +1621,7 @@
           "updated_at"
         ],
         "title": "PersonaDetail",
-        "description": "A persona's full detail (YAML + metadata)."
+        "description": "A persona's full detail (YAML + metadata).\n\nThe optional :attr:`capabilities` field (D-F3-X-capability-endpoint) is\nadditive on top of the Spec 08 / Spec 09 surface: tests + composition\nroots that do not wire a :class:`TierRegistry` (e.g. unit fixtures\nwithout the runtime) omit the field and the API returns ``None`` so the\npersona-detail surface stays usable without runtime composition."
       },
       "PersonaSummary": {
         "properties": {
@@ -1291,13 +1681,29 @@
                 "type": "null"
               }
             ]
+          },
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ImageRef"
+                },
+                "type": "array",
+                "maxItems": 4,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Images"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": ["content"],
         "title": "PostMessageRequest",
-        "description": "Send a user message; the response streams over SSE (\u00a75.2).\n\n``channel`` is the optional connector passthrough (D-08-3) \u2014 null for the\nweb UI. The runtime ignores it in v0.1; the API just stores it on the\nmessage row and echoes ``format_hints`` on the ``done`` event."
+        "description": "Send a user message; the response streams over SSE (\u00a75.2).\n\n``channel`` is the optional connector passthrough (D-08-3) \u2014 null for the\nweb UI. The runtime ignores it in v0.1; the API just stores it on the\nmessage row and echoes ``format_hints`` on the ``done`` event.\n\n``images`` is the optional spec-13 multimodal extension (D-13-X-now option\nc, D-13-5): up to 4 :class:`ImageRef` per message. ``None`` (the default)\nkeeps the text-only path byte-for-byte unchanged. An empty list is\nequivalent to ``None`` semantically but rejected as a validation error so\ncallers don't accidentally send ``images=[]`` and skip the cap check; pass\n``None`` or omit the field.\n\nThe cap is enforced via :class:`Field`'s built-in ``min_length`` /\n``max_length`` (D-13-5) so the failure surfaces as a structured\n``too_long`` / ``too_short`` Pydantic v2 error \u2014 JSON-serialisable through\nthe API's ``_request_422`` handler in :mod:`persona_api.errors` (a custom\n``field_validator`` would attach a raw :class:`ValueError` to ``ctx`` and\nbreak the response body's ``json.dumps``)."
       },
       "RefinePersonaRequest": {
         "properties": {

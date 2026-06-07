@@ -1,6 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
+import { OutputList } from "@/components/chat/output/dispatcher";
 import { ToolCallCard } from "@/components/chat/tool-call-card";
 import { Card } from "@/components/ui/card";
 import { Markdown } from "@/components/ui/markdown";
@@ -30,10 +31,19 @@ export function StepCard({
   step,
   awaiting,
   onAnswer,
+  personaId,
 }: {
   step: RunStep;
   awaiting: boolean;
   onAnswer: (answer: string) => Promise<void>;
+  /**
+   * F4 T11: passed through to the OutputList → OutputDispatcher so the
+   * Bearer-auth byte loader (`useAuthedImageBlobUrl`) can resolve images
+   * and the download chip can fetch with auth. Drilled down from
+   * `RunView` → `RunTimeline` → `StepCard`; the run's `persona_id`
+   * already lives on `RunStatusResponse`.
+   */
+  personaId: string;
 }) {
   const t = useTranslations("runs");
   const isFinal = step.final !== undefined;
@@ -87,6 +97,19 @@ export function StepCard({
               <ToolCallCard key={`${tool.toolName}-${i}`} entry={tool} />
             ))}
           </div>
+        ) : null}
+
+        {/* F4 T11 (D-F4-X-step-card-output-extension): step.outputs are
+            derived view-time by runViewFromEvents (T04) from existing
+            tool_calling + tool_result events. The OutputList composes the
+            SAME renderer set as the chat path (T10) — single source of
+            truth for rich-output rendering across both surfaces. */}
+        {step.outputs.length > 0 ? (
+          <OutputList
+            personaId={personaId}
+            outputs={step.outputs}
+            className="mt-1"
+          />
         ) : null}
 
         {step.reasoning ? (

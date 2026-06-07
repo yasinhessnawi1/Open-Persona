@@ -1,5 +1,10 @@
 import type { ToolEntry } from "@/components/chat/tool-call-card";
 import type { RunStatusResponse } from "@/lib/api";
+import type { OutputContent } from "@/lib/api/output-content";
+import {
+  projectToolCalling,
+  projectToolResult,
+} from "@/lib/normalisers/_classify";
 import type { RunEvent } from "@/lib/sse-types";
 
 // Normalised run-viewer model (T07). Both the live `RunEvent` SSE stream and the
@@ -39,6 +44,28 @@ export interface RunStep {
   step: number;
   thinking: boolean;
   tools: ToolEntry[];
+  /**
+   * Spec F4 T04 (D-F4-X-output-derivation-shape): rich-output renderer
+   * inputs derived view-time from this step's `tool_calling` +
+   * `tool_result` events. Populated by {@link runViewFromEvents}; consumed
+   * by `<StepCard>` (T11) through the renderer dispatcher (T09).
+   *
+   * Lifecycle:
+   *   - `tool_calling` SETS the array to one `working` per recognized
+   *     capability tool (image_gen / code_exec / doc_gen).
+   *   - `tool_result` REPLACES the matching `working` (by tool name) with
+   *     the projected outputs: `failure` on is_error, classified
+   *     produced files on structured payload, or `result-block` on a
+   *     plain-stdout result. Multiple produced files expand the slot.
+   *   - Unrecognized capability tools (web_search, file_*, …) emit
+   *     NOTHING to this array — they surface via the existing tool-card
+   *     path. The F4 output surface is for rich outputs only.
+   *
+   * Top-level RunEvent `error` does NOT push here — it surfaces via the
+   * existing {@link error} field. Step-card has its own error display
+   * surface; doubling up would be noise.
+   */
+  outputs: OutputContent[];
   reasoning?: string;
   question?: string;
   answered: boolean;
@@ -59,7 +86,7 @@ export interface RunView {
 }
 
 function emptyStep(step: number): RunStep {
-  return { step, thinking: false, tools: [], answered: false };
+  return { step, thinking: false, tools: [], outputs: [], answered: false };
 }
 
 // ----- RunEvent reduction (live stream + the running/error snapshot) -----
@@ -109,6 +136,10 @@ export function runViewFromEvents(
           args: c.args,
           pending: true,
         }));
+        // F4 T04: seed step.outputs with one `working` per recognized
+        // capability tool. Unrecognized tools contribute nothing — their
+        // result surfaces through st.tools' tool-card path.
+        st.outputs = projectToolCalling(ev.data.tool_calls);
         break;
       }
       case "tool_result": {
@@ -124,6 +155,18 @@ export function runViewFromEvents(
               isError: ev.data.is_error,
               pending: false,
             };
+            break;
+          }
+        }
+        // F4 T04: replace the matching pending `working` in st.outputs with
+        // the projected result (failure / classified produced files /
+        // result-block). Mirror the tool_call matching: search backward by
+        // label === tool_name; the last unresolved working wins (handles
+        // parallel calls of the same capability tool).
+        for (let i = st.outputs.length - 1; i >= 0; i--) {
+          const item = st.outputs[i];
+          if (item.kind === "working" && item.label === ev.data.tool_name) {
+            st.outputs.splice(i, 1, ...projectToolResult(ev.data));
             break;
           }
         }

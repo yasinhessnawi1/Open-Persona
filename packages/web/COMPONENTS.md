@@ -124,6 +124,15 @@ These are the base-nova primitives. Token consumption flows through F1's `@theme
 - **Tag:** server
 - **Use when:** legacy callers only. **Prefer the T21 patterns:** `<SkeletonLine>`, `<SkeletonBlock>`, `<SkeletonAvatar>`, `<Spinner>` — they resolve animation through F1 `--motion-duration-*` tokens.
 
+### AuthedImage — F4-promoted (D-F4-X-authedimage-f2-promotion)
+
+- **Path:** [`src/components/ui/authed-image.tsx`](src/components/ui/authed-image.tsx)
+- **Tag:** client (uses `useAuthedImageBlobUrl`)
+- **Props:** `personaId: string`, `workspacePath: string`, `mediaType: string`, `alt: string`, `className?`.
+- **Use when:** every render of an authed image served by Spec 13's `GET /v1/personas/:id/uploads/:ref` (Bearer-only auth path). Composes `useAuthedImageBlobUrl` + the three loading / 404 / 5xx affordances. Used by F3 message-attached images (T10) AND F4's `<InlineVisual>` (T05) + `<ImageLightbox>` (T12).
+- **Don't use for:** non-authed images (use a plain `<img>` or `next/image`); user-uploaded composer previews before send (use `useObjectURL` instead — distinct lifecycle for browser `File` objects vs server-fetched bytes).
+- **Origin:** landed as F3-local for D-F3-X-image-serve-auth; promoted to F2 by F4 T16 strangler-fig (the second-consumer trigger). A re-export shim at `src/components/chat/authed-image.tsx` preserves the F3 import path; removable once all in-repo callers migrate.
+
 ---
 
 ## 2. Persona-identity components (D-F1-5 composite carriers)

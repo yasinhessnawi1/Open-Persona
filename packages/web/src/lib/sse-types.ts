@@ -33,10 +33,39 @@ export interface ToolCallingData {
   tool_calls: ToolCallPayload[];
 }
 
+/**
+ * One produced file in a `tool_result` event's structured payload.
+ *
+ * Wire-shape mirror of the runtime forwarding amendment at
+ * `packages/runtime/src/persona_runtime/agentic/events.py:96-103`
+ * (D-F4-X-event-kind-for-produced-files, Spec F4 T02b). The runtime
+ * forwards `ToolResult.data["produced_files"]` onto the event payload
+ * verbatim; this interface mirrors the dict shape the sandbox tool
+ * factory populates at
+ * `packages/core/src/persona/sandbox/tool.py:269-279`.
+ *
+ * Additive — absent on pre-amendment frames and on tools that don't
+ * produce files (web_search, file_*, etc.). The F4 chat + run normalisers
+ * read this when present; absence falls back to a `result-block` render.
+ */
+export interface ProducedFileRef {
+  path: string;
+  size_bytes: number;
+  media_type?: string | null;
+}
+
 export interface ToolResultData {
   tool_name: string;
   is_error: boolean;
   content: string;
+  /**
+   * D-F4-X-event-kind-for-produced-files: structured produced files
+   * surfaced from sandbox-backed tools (Spec 12 stdout-only / Spec 16
+   * docx-pptx-xlsx-pdf / Spec 17 charts). Omitted on tools that don't
+   * produce files and on pre-T02b frames (back-compat: F4 normalisers
+   * fall back to a result-block render when absent).
+   */
+  produced_files?: ProducedFileRef[];
 }
 
 // =================== CHAT stream (bare-payload frames) ===================

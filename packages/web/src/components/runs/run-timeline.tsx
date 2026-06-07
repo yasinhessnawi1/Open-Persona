@@ -15,9 +15,12 @@ import { StepCard } from "./step-card";
 export function RunTimeline({
   view,
   onAnswer,
+  personaId,
 }: {
   view: RunView;
   onAnswer: (answer: string) => Promise<void>;
+  /** F4 T11: drilled down from RunView → StepCard for the byte-load auth. */
+  personaId: string;
 }) {
   const t = useTranslations("runs");
   const running = view.status === "running";
@@ -51,6 +54,7 @@ export function RunTimeline({
             step={s}
             awaiting={s.step === awaitingStep}
             onAnswer={onAnswer}
+            personaId={personaId}
           />
         ))}
       </ol>

@@ -12,11 +12,20 @@ set -euo pipefail
 
 WEB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 API_DIR="$WEB_DIR/../api"
+REPO_ROOT="$WEB_DIR/../.."
 OUT_JSON="$WEB_DIR/openapi.json"
 OUT_TS="$WEB_DIR/src/lib/api/schema.ts"
 
+# uv 0.6.x writes editable installs as `_editable_impl_*.pth`; CPython 3.13
+# treats leading-underscore .pth files as hidden during site-init, so
+# ``import persona_api`` fails even though the package is "installed."
+# Repo conftest.py applies the same PYTHONPATH workaround for pytest; this
+# script applies it for the one-off OpenAPI dump (mirrors the Spec 01 §D-01-9
+# surprise). Drop when uv ships a release without the underscore prefix.
+PYTHONPATH_PREFIX="$REPO_ROOT/packages/core/src:$REPO_ROOT/packages/runtime/src:$REPO_ROOT/packages/api/src"
+
 echo "→ Dumping /openapi.json from the persona-api app factory…"
-( cd "$API_DIR" && uv run python -c \
+( cd "$API_DIR" && PYTHONPATH="$PYTHONPATH_PREFIX${PYTHONPATH:+:$PYTHONPATH}" uv run python -c \
   "import json; from persona_api.app import create_app; print(json.dumps(create_app().openapi(), indent=2))" \
 ) > "$OUT_JSON"
 

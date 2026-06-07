@@ -16,8 +16,16 @@
 
 import { render } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { derivePersonaIdentityColor } from "@/lib/persona-identity";
+
+// F3 T10 — MessageElement now renders <AuthedImage> for user messages
+// with `images`; AuthedImage uses Clerk's useAuth. Stub it so the
+// existing test suite doesn't need ClerkProvider boilerplate.
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => ({ getToken: () => Promise.resolve("test-token") }),
+}));
+
 import {
   MessageElement,
   type MessageElementView,
@@ -415,5 +423,56 @@ describe("MessageElement — D-F2-15 interleaved layout", () => {
     );
     const wrap = container.querySelector('[data-slot="message-element"]');
     expect(wrap?.getAttribute("data-layout")).toBe("stacked");
+  });
+});
+
+describe("MessageElement — F3 T10 attached images on user messages", () => {
+  it("renders attached images inside the user bubble via AuthedImage", () => {
+    const msg: MessageElementView = {
+      id: "u-1",
+      role: "user",
+      content: "What is this?",
+      images: [
+        { workspace_path: "uploads/a.png", media_type: "image/png" },
+        { workspace_path: "uploads/b.jpeg", media_type: "image/jpeg" },
+      ],
+    };
+    const { container } = renderWithIntl(
+      <MessageElement message={msg} persona={ASTRID} />,
+    );
+    const wrap = container.querySelector('[data-slot="message-element"]');
+    expect(wrap?.getAttribute("data-role")).toBe("user");
+    const imagesBlock = container.querySelector('[data-slot="message-images"]');
+    expect(imagesBlock).not.toBeNull();
+    expect(imagesBlock?.getAttribute("data-count")).toBe("2");
+    // The text content stays present too — it's the "look at this AND tell me…" flow.
+    expect(wrap?.textContent).toContain("What is this?");
+  });
+
+  it("renders text-only path byte-for-byte when images is absent (regression guard)", () => {
+    const msg: MessageElementView = {
+      id: "u-2",
+      role: "user",
+      content: "Just text.",
+      // images intentionally absent
+    };
+    const { container } = renderWithIntl(
+      <MessageElement message={msg} persona={ASTRID} />,
+    );
+    expect(container.querySelector('[data-slot="message-images"]')).toBeNull();
+    expect(container.textContent).toContain("Just text.");
+  });
+
+  it("renders text-only path byte-for-byte when images is empty array", () => {
+    const msg: MessageElementView = {
+      id: "u-3",
+      role: "user",
+      content: "Empty array case.",
+      images: [],
+    };
+    const { container } = renderWithIntl(
+      <MessageElement message={msg} persona={ASTRID} />,
+    );
+    expect(container.querySelector('[data-slot="message-images"]')).toBeNull();
   });
 });

@@ -11,6 +11,39 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Added (Spec F4 — Rich-Output UI Surface, Phase 5 complete; Phase 6 pending operator-pass + sign-off)
+
+> **`persona-web 0.15.0` + `persona-api 0.x.y` + `persona-runtime 0.x.y` candidates.** Capability-UI spec built entirely from F2 primitives consuming Spec 12 + 15 + 16 + 17 + 13 + 06/08. Two additive backend amendments — both in the closed-spec additive-extension precedent (10th entry: D-F4-X-bare-ref-resolution). No new design tokens. **599 vitest tests across 54 files** (F3 baseline 400 → +199); full check matrix green across web + api + runtime.
+
+- **`feat`: `OutputContent` discriminated union + Zod schema** at [`packages/web/src/lib/api/output-content.ts`](packages/web/src/lib/api/output-content.ts) — six variants (`inline-image` / `inline-chart` / `download-doc` / `result-block` / `working` / `failure`) with `kind` discriminator; `.strict()` per variant mirrors Pydantic `extra="forbid"`. D-F4-X-renderer-normaliser-shape.
+- **`feat`: chat + run normalisers via shared `_classify.ts`** at [`packages/web/src/lib/normalisers/`](packages/web/src/lib/normalisers/) — `chatSseToOutputContent(event)` and `runEventToOutputContent(event)` produce IDENTICAL OutputContent for the same produced_file payload. Transport-shape leakage stops here (D-09-1).
+- **`feat`: `RunStep.outputs` view-time derivation** in [`packages/web/src/lib/run.ts`](packages/web/src/lib/run.ts) — `runViewFromEvents` accumulates per-step `outputs: OutputContent[]` from tool_calling + tool_result events; no backend `Step` schema change (D-F4-X-output-derivation-shape).
+- **`feat`: F4 renderer set** at [`packages/web/src/components/chat/output/`](packages/web/src/components/chat/output/) — `<InlineVisual>` (R-F4-4 one-component with intent prop) + `<DownloadChip>` (Bearer-auth blob download) + `<ResultBlock>` (monospace + truncation + collapsible Shiki code via React.lazy + Suspense) + `<WorkingState>` (F1 ToolRunningIndicator visual reused verbatim) + `<OutputDispatcher>` + `<OutputList>` (six-variant exhaustive switch + path-traversal defence-in-depth) + `<ImageLightbox>` (portal modal with ESC/backdrop/close).
+- **`feat`: MessageElement + StepCard surface integration** — `message-element.tsx` InterleavedContent emits dispatcher per recognized capability tool alongside ToolCallCard; `step-card.tsx` consumes derived `step.outputs` via `<OutputList>`. SAME renderer set across both surfaces.
+- **`feat`: `<AuthedImage>` F2 promotion** — strangler-fig move to `src/components/ui/authed-image.tsx`; re-export shim at the F3 path preserves all existing imports (D-F4-X-authedimage-f2-promotion).
+- **`amendment`: `RunEvent.tool_result` constructor at [`packages/runtime/src/persona_runtime/agentic/events.py:96-103`](packages/runtime/src/persona_runtime/agentic/events.py#L96-L103)** — 4-line additive edit (Option A) forwards `result.data.produced_files` onto the event payload. Same constructor serves BOTH chat SSE AND RunEvent transports per the docstring self-naming → ONE edit lights up both normalisers. No Pydantic schema change. D-F4-X-event-kind-for-produced-files.
+- **`amendment`: `_persist_produced_file` policy at [`packages/api/src/persona_api/sandbox/runtime_tool.py:216-244`](packages/api/src/persona_api/sandbox/runtime_tool.py#L216-L244)** — D-F4-X-bare-ref-resolution three-branch persister policy fix. **THE Phase 3 R-F4-1 catch: Spec 16 doc downloads were 404ing in production; T02c fixes at the producer side.** Charts/ + intermediate/ stay at workspace root (load-bearing); everything else routes into `uploads/<filename>.<ext>` so the slash-aware resolver lands on the right path. 9 regression tests.
+- **`feat`: structural invariants test surface** at [`packages/web/src/components/chat/output/__tests__/structural-invariants.test.tsx`](packages/web/src/components/chat/output/__tests__/structural-invariants.test.tsx) — six cross-cutting structural assertions: dispatcher exhaustiveness, 1MB-stays-by-reference (F3 T22 mirror), single-renderer-set parity across transports, path-traversal swap-to-failure, cross-surface DOM identity, dispatch-table parity with R-F4-1. 35 tests.
+- **`feat`: Playwright scaffold** at [`packages/web/e2e/f4-rich-output.spec.ts`](packages/web/e2e/f4-rich-output.spec.ts) — 8 journeys (7 acceptance criteria coverage + 1 structural invariant journey); CSA-3 🟦 operator-passed at sign-off.
+
+### Decisions (Spec F4)
+
+> 18 decisions lock at Phase 4 + 1 future-tracking MAINTENANCE.md event-driven row (D-F4-Y-producer-kind). Full rationale in [`docs/specs/phase2/spec_F4/decisions.md`](docs/specs/phase2/spec_F4/decisions.md) + the project-wide one-liner mirror at [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+### Cross-spec coordination (Spec F4 → Spec 12/16/17 + F2)
+
+- **F4 → Spec 12 (×2):** additive `events.py:96-103` constructor edit + additive `runtime_tool.py:_persist_produced_file` policy edit. Closed-spec extensions; no Spec 12 re-open.
+- **F4 → Spec 16:** D-F4-X-bare-ref-resolution editorial note staged for `spec_16/closeout.md` ("Spec 16 doc downloads were 404ing in production until F4 Phase 5; fixed via `runtime_tool.py:231` (2026-06-07)").
+- **F4 → Spec 17:** `charts/<id>.png` policy unchanged (load-bearing for D-17-X-inline-hint-shape).
+- **F4 → F2:** `<AuthedImage>` promoted to canonical F2 home via strangler-fig.
+- **Additive-extension precedent chain hits 10 entries** with D-F4-X-bare-ref-resolution — pattern fully crystallised.
+
+### Known limitations (Spec F4 — production-honest)
+
+- **Persisted-step rich-output rendering degraded:** the `Step.model_dump` persisted snapshot doesn't carry structured `produced_files` — only the live `RunEvent` event-log path benefits from F4's `step.outputs[]`. Completed runs viewed later degrade to existing tool-card render. **Fix path:** additive amendment to backend `Step` Pydantic + persistence; tracked as future Spec 06/F4 follow-up.
+- **8 Playwright journeys + dark/light + mobile reference-composition spot-checks** deferred to 🟦 operator-pass at sign-off — full stack provisioning needed.
+- **F3 re-export shim** at `src/components/chat/authed-image.tsx` removable once all callers migrate to `@/components/ui/authed-image` — low priority.
+
 ### Added (Spec 18 — Unified Model Router, Phase 5 + 6 close-out)
 
 > **`persona-runtime 0.18.0` candidate.** Upgrades the Spec 05 rule-based router into a pluggable `Router` Protocol with a layered architecture (Layer 1 capability hard-filter + Layer 2 sweet-spot scorer over cost / quality / latency, weighted per profile). Subsumes V5's voice-latency routing as the `"voice"` profile. Strangler-fig discipline preserves the Spec 05 byte-for-byte: existing `test_router.py` 25/25 + `test_router_vision.py` 10/10 pass unchanged. 138 new runtime unit tests; 411 total runtime unit tests green; mypy --strict clean across 123 source files.

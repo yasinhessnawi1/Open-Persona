@@ -40,6 +40,8 @@ ALLOWLIST=(
   'src/components/persona/persona-avatar.tsx:45'    # text-[0.6rem] — avatar sm size (F1 closeout #12)
   'src/components/ui/markdown.tsx:79'               # text-[0.8em] — inline-code relative (F1 closeout #12)
   'src/components/ui/button.tsx:31'                 # text-[0.8rem] — button sm sizing (F2 T01 audit)
+  'src/components/chat/output/highlighted-code.tsx:102'  # F4 T07 — github-dark Shiki theme container bg matches the inline pre rendered by codeToHtml
+  'src/components/chat/output/highlighted-code.tsx:118'  # F4 T07 — github-dark plain-fallback bg+fg before Shiki tokenises
 )
 
 # Known-legacy entries: the audit-named text-[0.65rem] uses awaiting close.
