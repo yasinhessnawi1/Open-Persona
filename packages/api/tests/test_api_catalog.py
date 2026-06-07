@@ -33,7 +33,17 @@ def test_list_tools(client: TestClient) -> None:
     resp = client.get("/v1/tools", headers=_auth())
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()}
-    assert {"web_search", "web_fetch", "file_read", "file_write"} <= names
+    # Every built-in tool factory the runtime wires up — see catalog_service.
+    # Authoring constrains the LLM to "names from AVAILABLE only"; a tool
+    # missing here is silently invisible to the wizard.
+    assert {
+        "web_search",
+        "web_fetch",
+        "file_read",
+        "file_write",
+        "code_execution",
+        "generate_image",
+    } <= names
     # each has a non-empty description
     assert all(t["description"] for t in resp.json())
 
@@ -42,7 +52,17 @@ def test_list_skills(client: TestClient) -> None:
     resp = client.get("/v1/skills", headers=_auth())
     assert resp.status_code == 200
     names = {s["name"] for s in resp.json()}
-    assert {"web_research", "document_drafting"} <= names
+    # Every folder under persona/skills/builtin must be declared in the
+    # catalog — otherwise the authoring wizard can't suggest the skill.
+    assert {
+        "data_analysis",
+        "document_drafting",
+        "docx_generation",
+        "pdf_generation",
+        "pptx_generation",
+        "web_research",
+        "xlsx_generation",
+    } <= names
 
 
 def test_tools_requires_auth(client: TestClient) -> None:

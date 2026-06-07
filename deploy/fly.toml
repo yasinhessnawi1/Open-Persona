@@ -42,6 +42,17 @@ kill_timeout = "30s"
   # First surfaced 2026-06-07 after the F3/F4 deploy that introduced the
   # lifespan mkdir for image / document / produced-file storage.
   PERSONA_API_WORKSPACE_ROOT = "/var/lib/persona/workspace"
+  # tools_sandbox_root — Spec 03 file_read / file_write tools (D-03-23) and
+  # the code_execution sandbox (spec 12) use this as the workspace root for
+  # tool I/O. Distinct from PERSONA_API_WORKSPACE_ROOT (which is the API's
+  # image / document / produced-file store) — different module, different
+  # Pydantic Settings instance, different env prefix (PERSONA_ vs
+  # PERSONA_API_). Defaults to `./.persona_work` which on the deployed
+  # image resolves to `/app/.persona_work` (root-owned, non-writable) →
+  # PermissionError when the persona invokes file_write. Co-located on the
+  # same mounted volume as the API workspace so produced files persist
+  # across deploys.
+  PERSONA_TOOLS_SANDBOX_ROOT = "/var/lib/persona/tools"
 
 [mounts]
   source = "persona_audit"
