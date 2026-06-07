@@ -31,6 +31,17 @@ kill_timeout = "30s"
   # non-root container user got Permission denied on every persona create.
   PERSONA_API_AUDIT_ROOT = "/var/lib/persona/audit"
   PERSONA_TURNLOG_PATH = "/var/lib/persona/turnlogs"
+  # workspace_root — Spec 13 image uploads + Spec 14 documents + Spec 15
+  # generated images + Spec 16/17 produced files all land under this tree
+  # (`<workspace_root>/<owner_id>/<persona_id>/...`). Default falls back to
+  # `./.persona_work` (Path.cwd-relative), which on the deployed image
+  # resolves to `/app/.persona_work` — owned by root, NOT writable by the
+  # non-root persona user → PermissionError on lifespan startup. Same
+  # surface as PERSONA_API_AUDIT_ROOT above; co-located on the mounted
+  # volume so the bytes persist across deploys (D-15-X-workspace-coordination).
+  # First surfaced 2026-06-07 after the F3/F4 deploy that introduced the
+  # lifespan mkdir for image / document / produced-file storage.
+  PERSONA_API_WORKSPACE_ROOT = "/var/lib/persona/workspace"
 
 [mounts]
   source = "persona_audit"
