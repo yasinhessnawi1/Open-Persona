@@ -43,7 +43,7 @@ from persona.logging import get_logger
 from persona.schema.chunks import ChunkProvenance, PersonaChunk, WriteSource, make_chunk_id
 from persona.schema.conversation import ConversationMessage
 from persona.schema.tools import ToolResult
-from persona.skills import render_skill_index
+from persona.skills import collect_skill_supplements, render_skill_index
 from persona.tools import format_tool_result
 
 from persona_runtime.agentic.compactor import StepHistoryCompactor
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from persona.backends import ChatBackend, ChatResponse
+    from persona.sandbox.result import SandboxFile
     from persona.schema.persona import Persona
     from persona.schema.skills import SkillSpec
     from persona.schema.tools import ToolCall
@@ -65,7 +66,12 @@ if TYPE_CHECKING:
     from persona.tools import Toolbox
 
     from persona_runtime.prompt import PromptBuilder
-    from persona_runtime.router import Router
+
+    # Spec 18 T06: type-hint widened to the Router Protocol; behaviour
+    # untouched per D-18-X-agentic-loop-routing-coupling (step-tier is
+    # task-decomposition driven via _tier_for_step, NOT consulted via
+    # Router.route). The chat ``Router`` is untouched at this seam.
+    from persona_runtime.routing import Router
     from persona_runtime.tier import TierRegistry
 
 __all__ = ["AgenticLoop"]
@@ -135,6 +141,11 @@ class AgenticLoop:
         self._compactor = compactor or StepHistoryCompactor()
         self._max_steps = max_steps
         self._force_frontier = force_frontier_tier
+        # M1a per-step deferred input_files (D-16-2, D-16-2-state-location).
+        # Mutated by the use_skill intercept; drained by the composition
+        # root's deferred_input_files_provider callable wired into the
+        # code_execution factory. Cleared at every run() entry.
+        self.deferred_input_files: list[SandboxFile] = []
 
     async def run(
         self,
@@ -161,6 +172,7 @@ class AgenticLoop:
         """
         persona_id = self._require_persona_id()
         started_at = datetime.now(UTC)
+        self.deferred_input_files.clear()  # M1a per-run reset (D-16-2)
         run_id = ""  # set once we build the Run below
         steps: list[Step] = []
         status = RunStatus.RUNNING
@@ -450,6 +462,7 @@ class AgenticLoop:
         if spec is None:
             return
         content = await self._injector.inject(spec)
+        self.deferred_input_files.extend(collect_skill_supplements(spec))
         context.append(self._system(f"Activated skill '{name}':\n{content}"))
 
     # ----- dispatch + error recovery (§5.1/§5.2) ---------------------------

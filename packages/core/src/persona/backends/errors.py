@@ -23,6 +23,7 @@ __all__ = [
     "NoVisionTierConfiguredError",
     "ProviderError",
     "RateLimitError",
+    "RoutingConstraintsUnsatisfiableError",
 ]
 
 
@@ -74,9 +75,15 @@ class BackendTimeoutError(ProviderError):
     """
 
 
-# Spec 13 vision errors (D-13-X-error-hierarchy). Both inherit directly
-# from PersonaError — no intermediate VisionError parent until a third
-# vision-relevant error class lands, per D-03-1's flat-hierarchy rule.
+# Spec 13 vision errors (D-13-X-error-hierarchy) + Spec 18 generalisation
+# (D-18-X-constraint-failure-shape). Spec 13 originally placed both classes
+# directly under PersonaError per D-03-1's flat-hierarchy rule. Spec 18
+# generalises NoVisionTierConfiguredError to land below
+# RoutingConstraintsUnsatisfiableError — a true second class (the third would
+# be a context-window or tool-strength constraint failure) that now justifies
+# the intermediate parent. BackendVisionNotSupportedError stays a sibling
+# under PersonaError: it is a backend-dispatch failure (specific backend
+# cannot accept the request), not a router-side configuration failure.
 
 
 class BackendVisionNotSupportedError(PersonaError):
@@ -104,7 +111,36 @@ class BackendVisionNotSupportedError(PersonaError):
     """
 
 
-class NoVisionTierConfiguredError(PersonaError):
+class RoutingConstraintsUnsatisfiableError(PersonaError):
+    """Raised when Layer 1's hard filter empties the candidate set (Spec 18).
+
+    Generalises the Spec 13 ``NoVisionTierConfiguredError`` pattern: when
+    a turn carries hard requirements (vision / context window / strong
+    tool-calling) and no configured tier satisfies them, the router fails
+    loud rather than silently picking an incapable model
+    (D-18-X-constraint-failure-shape).
+
+    The structured ``context`` carries:
+
+    * ``reason`` — short token identifying which constraint emptied the
+      set (e.g., ``"no_vision_tier"``, ``"context_window_exceeded"``,
+      ``"no_strong_tools_tier"``).
+    * ``configured_tiers`` — comma-joined list of configured tier names.
+    * ``required`` — short token describing the unmet requirement
+      (e.g., ``"vision"``, ``"context_window>=64000"``, ``"strong_tools"``).
+      Present on new raise sites (T09); absent for back-compat raises
+      via :class:`NoVisionTierConfiguredError` (the existing Spec 13
+      raise site at ``router.py:202`` keeps its two-field context shape).
+
+    Catching this class catches **every** Layer 1 failure mode; catching
+    :class:`NoVisionTierConfiguredError` continues to catch only the
+    vision-specific case (subclass relationship — the existing
+    :class:`isinstance` checks at ``test_router_vision.py:200-203`` and any
+    downstream callers keep working).
+    """
+
+
+class NoVisionTierConfiguredError(RoutingConstraintsUnsatisfiableError):
     """Raised by the runtime router when an image message has no vision tier.
 
     Fired by the Spec 13 router (T11) when a ConversationMessage carries
@@ -114,8 +150,15 @@ class NoVisionTierConfiguredError(PersonaError):
     *configuration* failure (no tier exists) rather than a *dispatch*
     failure (a specific backend cannot accept the request).
 
-    The structured ``context`` carries:
+    Spec 18 (T03) moves this class under
+    :class:`RoutingConstraintsUnsatisfiableError` so the generalised
+    constraint-failure shape applies; the existing context shape is
+    preserved:
 
     * ``reason`` — always ``"no_vision_tier"`` so log filters can match.
     * ``configured_tiers`` — comma-joined list of configured tier names.
+
+    The Spec 18 ``required`` field is OPTIONAL on this subclass for
+    back-compat — the existing Spec 13 raise site at ``router.py:202``
+    does not set it; the new Spec 18 raise sites (T09) do.
     """

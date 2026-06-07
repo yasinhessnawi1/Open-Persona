@@ -42,6 +42,11 @@ class PersonaIdentity(BaseModel):
         language_default: ISO 639-1 code (``"en"``, ``"nb"``, ...).
         constraints: Hard constraints the persona must honour. Each entry
             is one constraint sentence.
+        visual_style: Optional persona-level aesthetic descriptor consumed
+            by the Spec 15 image-generation merge (D-15-4). Additive per
+            D-01-12 / D-13-X-now — existing personas without the field are
+            byte-for-byte unaffected. Merges at generation time, NOT at
+            prompt-build time; the runtime prompt builder does not read it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -51,6 +56,7 @@ class PersonaIdentity(BaseModel):
     background: str = Field(min_length=1)
     language_default: str = "en"
     constraints: list[str] = Field(default_factory=list)
+    visual_style: str | None = None
 
 
 class SelfFact(BaseModel):

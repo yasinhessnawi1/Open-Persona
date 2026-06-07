@@ -16,23 +16,39 @@ Lifecycle (D-05-4): :meth:`aclose` disconnects every *cached* backend. The
 **composition root** (the API in spec 08, or the integration-test fixtures)
 owns this — the :class:`~persona_runtime.loop.ConversationLoop` uses the
 registry but never closes it.
+
+Spec 18 (T04; D-18-3, D-18-X-protocol-location, D-18-X-latency-measurement-source):
+adds optional per-tier :class:`TierMetadata` (cost / first-token latency /
+throughput / context window / tool strength) at the **registry layer** —
+NOT on the :class:`ChatBackend` Protocol. The router (Spec 18 ``UnifiedRouter``)
+reads it; the backend never does. Existing :class:`TierConfig` constructions
+stay valid (the metadata field defaults to ``None``); existing callers of
+:func:`tier_registry_from_env` stay green (metadata population is opt-in via
+new env vars).
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 
 from persona.backends import BackendConfig, load_backend
 from persona.logging import get_logger
+from pydantic import BaseModel, ConfigDict, Field
 
 from persona_runtime.errors import TierNotConfiguredError
 
 if TYPE_CHECKING:
     from persona.backends import ChatBackend
 
-__all__ = ["TierConfig", "TierRegistry", "tier_registry_from_env"]
+__all__ = [
+    "TierConfig",
+    "TierMetadata",
+    "TierRegistry",
+    "tier_metadata_from_env",
+    "tier_registry_from_env",
+]
 
 _logger = get_logger("runtime.tier")
 
@@ -47,18 +63,74 @@ _TIER_ENV_PREFIXES: dict[str, str] = {
 }
 
 
+class TierMetadata(BaseModel):
+    """Per-tier routing metadata (Spec 18 T04; D-18-3, D-18-X-protocol-location).
+
+    Frozen Pydantic v2 + ``extra="forbid"``. Lives at the :class:`TierRegistry`
+    layer, **NOT** on the :class:`~persona.backends.ChatBackend` Protocol
+    (D-18-X-protocol-location). The :class:`UnifiedRouter` (Spec 18 T09–T11)
+    reads it via :meth:`TierRegistry.metadata_for`; the backend never does.
+
+    The :class:`HeuristicRouter` path (Spec 05 rules) does NOT consult metadata
+    — it operates on context signals + capability matrices only. Metadata is
+    populated, sparse, and additive; absence is handled per
+    D-18-X-partial-metadata-behaviour (tiers without metadata are excluded
+    from Layer 2 scoring; fall back to :class:`HeuristicRouter` if filtered
+    set is empty).
+
+    V5 R-V5-1 coordination: V5 reads :attr:`first_token_latency_ms` from this
+    registry. One measurement, two consumers (D-18-X-latency-measurement-source).
+
+    Attributes:
+        cost_input_per_1k_tokens: Provider cost per 1k INPUT tokens (cents).
+        cost_output_per_1k_tokens: Provider cost per 1k OUTPUT tokens (cents).
+        first_token_latency_ms: Mean first-token latency (milliseconds). Seed
+            from provider docs or env; the in-band
+            :class:`FirstTokenLatencyTracker` (T06) updates the value via EWMA
+            once warmed up.
+        throughput_tokens_per_sec: Mean throughput (tokens/sec) after first
+            token. Provider-documented or empirical.
+        context_window: Maximum context window the backend supports (tokens).
+            Drives Layer 1's context-window constraint when the turn's
+            ``estimated_input_tokens`` exceeds the window.
+        tool_strength: Categorical strength of the model's native tool-calling.
+            Drives Layer 1's strong-tools constraint when the turn's
+            ``requires_strong_tools`` is ``True``. ``"weak"`` excludes the tier
+            in that case; ``"medium"`` / ``"strong"`` keep it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cost_input_per_1k_tokens: float = Field(ge=0.0)
+    cost_output_per_1k_tokens: float = Field(ge=0.0)
+    first_token_latency_ms: float = Field(ge=0.0)
+    throughput_tokens_per_sec: float = Field(ge=0.0)
+    context_window: int = Field(gt=0)
+    tool_strength: Literal["weak", "medium", "strong"]
+
+
 @dataclass(frozen=True)
 class TierConfig:
     """How to instantiate the backend for one tier (spec §6.2).
+
+    Spec 18 (T04) adds optional :attr:`metadata` carrying cost / first-token
+    latency / throughput / context window / tool strength for the Spec 18
+    :class:`UnifiedRouter`. Existing constructions stay valid — the field
+    defaults to ``None`` (no metadata; :class:`UnifiedRouter` excludes the
+    tier from Layer 2 scoring per D-18-X-partial-metadata-behaviour).
 
     Attributes:
         name: Tier name — ``"frontier"``, ``"mid"``, or ``"small"``.
         backend_config: The :class:`persona.backends.BackendConfig` passed to
             :func:`persona.backends.load_backend` on first use.
+        metadata: Optional :class:`TierMetadata` for the Spec 18 router. When
+            ``None``, the tier is invisible to :class:`UnifiedRouter`'s Layer 2
+            scorer (the heuristic floor still serves the tier — fallback path).
     """
 
     name: str
     backend_config: BackendConfig
+    metadata: TierMetadata | None = field(default=None)
 
 
 class TierRegistry:
@@ -83,6 +155,52 @@ class TierRegistry:
         pre-filter, T13-T09) can produce stable error context strings.
         """
         return tuple(self._tiers)
+
+    def model_name_for(self, tier_name: str) -> str:
+        """Return the configured model name for ``tier_name`` without instantiating.
+
+        Spec 18 (T05). Read-only — does NOT trigger backend instantiation.
+        Used by :class:`HeuristicRouter.route` and :class:`UnifiedRouter.route`
+        to populate :attr:`RoutingDecision.model` without forcing eager
+        client construction.
+
+        Args:
+            tier_name: The tier name to look up.
+
+        Returns:
+            The configured model name string (e.g. ``"claude-sonnet-4-6"``).
+            Resolves through the same fallback chain as :meth:`get`.
+
+        Raises:
+            TierNotConfiguredError: No tier resolves, even after fallback.
+        """
+        effective = self._resolve(tier_name)
+        return self._tiers[effective].backend_config.model
+
+    def metadata_for(self, tier_name: str) -> TierMetadata | None:
+        """Return :class:`TierMetadata` for ``tier_name``, or ``None`` if unset.
+
+        Spec 18 (T04). Resolves through the same fallback chain as :meth:`get`,
+        so a request for an unconfigured tier consults the fallback's metadata
+        — but unlike :meth:`get`, this method does NOT instantiate the backend
+        (metadata lookup is read-only and never triggers backend construction).
+
+        Args:
+            tier_name: The tier name to look up.
+
+        Returns:
+            The :class:`TierMetadata` instance configured for the effective
+            tier, or ``None`` when neither the requested tier nor its fallback
+            has metadata populated. ``None`` is the signal Spec 18's
+            ``UnifiedRouter`` reads to exclude the tier from Layer 2 scoring
+            (D-18-X-partial-metadata-behaviour); the heuristic floor still
+            serves the tier on the fallback path (D-18-4).
+
+        Raises:
+            TierNotConfiguredError: No tier resolves, even after fallback.
+        """
+        effective = self._resolve(tier_name)
+        return self._tiers[effective].metadata
 
     def supports_vision_for(self, tier_name: str) -> bool:
         """Whether the backend for ``tier_name`` accepts image content.
@@ -182,6 +300,61 @@ class TierRegistry:
         self._cache.clear()
 
 
+def tier_metadata_from_env(*, prefix: str) -> TierMetadata | None:
+    """Build :class:`TierMetadata` from per-tier env vars (Spec 18 T04).
+
+    All six fields must be present (and well-formed) for a non-``None``
+    return — partial env configuration returns ``None`` and is logged at
+    DEBUG. This is the operator-override path; the in-band
+    :class:`FirstTokenLatencyTracker` (T06) is the measured path that
+    supersedes the env value once warmed up.
+
+    Env var schema (per tier ``PREFIX`` matching the tier's
+    :attr:`BackendConfig` prefix, e.g. ``PERSONA_FRONTIER_``):
+
+    * ``<PREFIX>COST_INPUT_PER_1K`` (float, cents)
+    * ``<PREFIX>COST_OUTPUT_PER_1K`` (float, cents)
+    * ``<PREFIX>FIRST_TOKEN_LATENCY_MS`` (float, milliseconds)
+    * ``<PREFIX>THROUGHPUT_TOKENS_PER_SEC`` (float)
+    * ``<PREFIX>CONTEXT_WINDOW`` (int, tokens)
+    * ``<PREFIX>TOOL_STRENGTH`` (one of ``"weak"`` / ``"medium"`` /
+      ``"strong"``)
+
+    Args:
+        prefix: The tier's env-var prefix (e.g. ``"PERSONA_FRONTIER_"``).
+
+    Returns:
+        A :class:`TierMetadata` instance when all six env vars are present
+        and parse cleanly; ``None`` otherwise (partial / absent / malformed).
+    """
+    required_keys = (
+        f"{prefix}COST_INPUT_PER_1K",
+        f"{prefix}COST_OUTPUT_PER_1K",
+        f"{prefix}FIRST_TOKEN_LATENCY_MS",
+        f"{prefix}THROUGHPUT_TOKENS_PER_SEC",
+        f"{prefix}CONTEXT_WINDOW",
+        f"{prefix}TOOL_STRENGTH",
+    )
+    if not all(key in os.environ for key in required_keys):
+        return None
+    try:
+        return TierMetadata(
+            cost_input_per_1k_tokens=float(os.environ[required_keys[0]]),
+            cost_output_per_1k_tokens=float(os.environ[required_keys[1]]),
+            first_token_latency_ms=float(os.environ[required_keys[2]]),
+            throughput_tokens_per_sec=float(os.environ[required_keys[3]]),
+            context_window=int(os.environ[required_keys[4]]),
+            tool_strength=os.environ[required_keys[5]],  # type: ignore[arg-type]
+        )
+    except (ValueError, TypeError) as exc:
+        _logger.warning(
+            "malformed tier metadata env vars; metadata absent prefix={prefix} error={error}",
+            prefix=prefix,
+            error=type(exc).__name__,
+        )
+        return None
+
+
 def tier_registry_from_env(*, default_prefix: str = "PERSONA_") -> TierRegistry:
     """Build a :class:`TierRegistry` from the environment (D-05-3).
 
@@ -192,6 +365,12 @@ def tier_registry_from_env(*, default_prefix: str = "PERSONA_") -> TierRegistry:
     defaults). When no tier blocks are present, a single backend built from
     ``default_prefix`` (the spec-02 ``PERSONA_*`` defaults) is registered for
     all three tier names.
+
+    Spec 18 (T04): per-tier :class:`TierMetadata` is populated additively via
+    :func:`tier_metadata_from_env` when the tier's six metadata env vars are
+    all present. Absent / partial metadata is silently accepted (returns
+    ``None``); the :class:`UnifiedRouter` excludes the tier from Layer 2
+    scoring while :class:`HeuristicRouter` continues to serve it.
 
     Args:
         default_prefix: Env prefix for the single-backend fallback.
@@ -205,12 +384,18 @@ def tier_registry_from_env(*, default_prefix: str = "PERSONA_") -> TierRegistry:
             tiers[tier_name] = TierConfig(
                 name=tier_name,
                 backend_config=BackendConfig.from_env(prefix=prefix),
+                metadata=tier_metadata_from_env(prefix=prefix),
             )
 
     if not tiers:
         single = BackendConfig.from_env(prefix=default_prefix)
+        single_metadata = tier_metadata_from_env(prefix=default_prefix)
         for tier_name in _TIER_ENV_PREFIXES:
-            tiers[tier_name] = TierConfig(name=tier_name, backend_config=single)
+            tiers[tier_name] = TierConfig(
+                name=tier_name,
+                backend_config=single,
+                metadata=single_metadata,
+            )
         _logger.info(
             "no per-tier env configured; serving the default backend for all tiers "
             "provider={provider}",

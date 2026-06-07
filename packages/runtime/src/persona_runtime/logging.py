@@ -26,6 +26,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from persona.logging import get_logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from persona_runtime.routing import (
+    RoutingDecision,  # noqa: TC001 — Pydantic model field needs runtime reference
+)
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -45,6 +49,24 @@ class TurnLog(BaseModel):
 
     Frozen + ``extra="forbid"``. ``timestamp`` must be tz-aware (UTC), matching
     the spec-01 model convention.
+
+    Spec 18 (T12; D-18-X-turnlog-extension) extends the shape additively with
+    routing observability:
+
+    * :attr:`routing_decision` — the full :class:`RoutingDecision` from
+      :meth:`Router.route`; serialises as nested JSON when persisted.
+    * :attr:`routing_latency_ms` — wall-clock duration of the router's
+      decision (from :func:`time.perf_counter` around the :meth:`route`
+      call). Distinct from :attr:`latency_ms` which covers the whole turn.
+    * :attr:`routing_fallback_triggered` — whether the :class:`UnifiedRouter`
+      smart path fell back to the embedded :class:`HeuristicRouter`.
+    * :attr:`routing_fallback_reason` — one of ``"timeout"`` /
+      ``"scoring_error"`` / ``"empty_metadata"`` / ``"partial_metadata:<tier>"``
+      when ``routing_fallback_triggered`` is ``True`` (D-18-X-fallback-instrumentation).
+
+    All four routing fields are OPTIONAL — pre-Spec-18 callers (legacy tests
+    that construct TurnLog directly without routing data) stay green by
+    omitting them.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -62,6 +84,10 @@ class TurnLog(BaseModel):
     skill_used: str | None = None
     history_compacted: bool = False
     timestamp: datetime
+    routing_decision: RoutingDecision | None = None
+    routing_latency_ms: float = Field(default=0.0, ge=0.0)
+    routing_fallback_triggered: bool = False
+    routing_fallback_reason: str | None = None
 
     @field_validator("timestamp", mode="after")
     @classmethod

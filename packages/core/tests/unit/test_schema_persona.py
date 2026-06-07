@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import yaml
 from persona.errors import PersonaNotFoundError, SchemaVersionMismatchError
 from persona.schema.persona import (
     SUPPORTED_SCHEMA_VERSIONS,
@@ -170,3 +171,80 @@ class TestPersonaConstruction:
         )
         with pytest.raises(ValidationError):
             p.persona_id = "x"  # type: ignore[misc]
+
+
+class TestVisualStyleAdditiveExtension:
+    """Spec 15 T10 — ``identity.visual_style`` is an additive Pydantic field.
+
+    Verifies the three guarantees of D-01-12 / D-13-X-now additive-extension
+    pattern: (a) existing personas without the field round-trip byte-for-byte;
+    (b) the new field round-trips when present; (c) ``extra="forbid"`` still
+    rejects typos so the additive change does not weaken validation.
+    """
+
+    @pytest.mark.parametrize("fixture", VALID_FIXTURES, ids=lambda p: p.name)
+    def test_existing_personas_round_trip_byte_for_byte(self, fixture: Path) -> None:
+        """Regression: existing valid fixtures (no ``visual_style``) round-trip unchanged.
+
+        Loads each pre-Spec-15 fixture, dumps it back through Pydantic, and
+        asserts the loaded form matches what the YAML naturally yields when
+        parsed through ``yaml.safe_load`` plus the same auto-derivations
+        ``Persona.from_yaml`` applies. ``visual_style`` must default to
+        ``None`` and must NOT appear in any pre-existing fixture's identity.
+        """
+        persona = Persona.from_yaml(fixture)
+
+        # The new field defaults to None for every fixture authored before Spec 15.
+        assert persona.identity.visual_style is None
+
+        # Round-trip via model_dump must exclude the new field's default-None
+        # presence from changing existing semantics. Re-validating the dumped
+        # output yields an equal model (frozen Pydantic supports ==).
+        dumped = persona.model_dump(mode="json")
+        reloaded = Persona.model_validate(dumped)
+        assert reloaded == persona
+
+        # The raw YAML must not contain visual_style — proves we haven't
+        # silently mutated the on-disk fixtures.
+        raw = yaml.safe_load(fixture.read_text(encoding="utf-8"))
+        assert "visual_style" not in raw.get("identity", {})
+
+    def test_visual_style_round_trip_when_present(self) -> None:
+        """A YAML carrying ``identity.visual_style`` loads + dumps the value cleanly."""
+        data = {
+            "schema_version": "1.0",
+            "identity": {
+                "name": "n",
+                "role": "r",
+                "background": "b",
+                "visual_style": "warm editorial illustration, muted earth palette",
+            },
+        }
+        p = Persona.model_validate(data)
+        assert p.identity.visual_style == "warm editorial illustration, muted earth palette"
+        dumped = p.model_dump(mode="json")
+        assert dumped["identity"]["visual_style"] == (
+            "warm editorial illustration, muted earth palette"
+        )
+
+    def test_visual_style_defaults_to_none(self) -> None:
+        """Constructing ``PersonaIdentity`` without the field yields ``None``."""
+        identity = PersonaIdentity(name="n", role="r", background="b")
+        assert identity.visual_style is None
+
+    def test_visual_style_accepts_explicit_none(self) -> None:
+        """Explicit ``None`` is accepted (matches the default)."""
+        identity = PersonaIdentity(name="n", role="r", background="b", visual_style=None)
+        assert identity.visual_style is None
+
+    def test_extra_forbid_still_rejects_typos(self) -> None:
+        """``extra="forbid"`` rejects a misspelt field name (``viual_style``)."""
+        with pytest.raises(ValidationError):
+            PersonaIdentity.model_validate(
+                {
+                    "name": "n",
+                    "role": "r",
+                    "background": "b",
+                    "viual_style": "watercolour",  # typo
+                },
+            )

@@ -51,6 +51,7 @@ from persona.sandbox.result import (
     ExecutionResult,
     NetworkPolicy,
     ResourceLimits,
+    SandboxFile,
 )
 from persona.schema.tools import ToolResult
 from persona.tools.audit import ToolAuditEvent
@@ -103,6 +104,8 @@ def make_code_execution_tool(
     session_id_provider: Callable[[], str | None] | None = None,
     pre_execute_hook: Callable[[], Awaitable[None]] | None = None,
     on_execute_success: Callable[[ExecutionResult], Awaitable[None]] | None = None,
+    deferred_input_files_provider: Callable[[], list[SandboxFile]] | None = None,
+    produced_file_persister: Callable[[str, str], Awaitable[None]] | None = None,
     description: str = _DEFAULT_DESCRIPTION,
 ) -> AsyncTool:
     """Build the ``code_execution`` :class:`AsyncTool`.
@@ -142,6 +145,18 @@ def make_code_execution_tool(
             are billed; OOM/timeout/killed are not). Hook exceptions are caught
             and logged so a credits-write failure cannot break the tool's result.
             ``None`` ⇒ no hook (CLI path; tests that don't exercise billing).
+        produced_file_persister: Async callable ``(session_id, ref) -> None``
+            invoked AFTER execute for each entry in
+            ``result.produced_files``. The api wires this to a closure that
+            calls :meth:`CodeSandbox.copy_produced_file_to` with a destination
+            under the persona workspace
+            (``D-17-X-bytes-persistence``). Fires for every produced file
+            regardless of outcome (partial-success runs may still produce
+            charts before erroring). ``ProducedFileSizeError`` propagates and
+            is caught by the ``SandboxError`` catch-and-convert path above —
+            the model sees a structured error explaining the cap and can
+            produce a smaller file. ``None`` ⇒ no persistence (CLI / tests
+            that don't need the bytes outside the sandbox).
         description: Tool description fed to the model. The default covers
             the spec §6 wording; override to surface persona-specific guidance.
 
@@ -172,13 +187,26 @@ def make_code_execution_tool(
         try:
             if pre_execute_hook is not None:
                 await pre_execute_hook()
+            deferred = deferred_input_files_provider() if deferred_input_files_provider else None
             result = await sandbox.execute(
                 code,
                 session_id=session_id,
                 timeout_s=limits.wall_clock_s,
                 limits=limits,
                 network=network,
+                input_files=deferred,
             )
+            # D-17-X-bytes-persistence: persist produced bytes to the API
+            # workspace so the existing GET /uploads/{ref:path} route can
+            # serve them. ProducedFileSizeError propagates here and is caught
+            # by the SandboxError block below so the model gets a structured
+            # error and can produce a smaller file (D-12-X-read-produced-file).
+            # Fires for every produced file regardless of outcome — a
+            # partial-success run that produced a chart before erroring still
+            # gets its bytes persisted so the model can reference them.
+            if produced_file_persister is not None and session_id is not None:
+                for sf in result.produced_files:
+                    await produced_file_persister(session_id, sf.path)
         except SandboxError as exc:
             # D-12-6 catch-and-convert: any sandbox-family error surfaces as
             # a structured failure result so the model can recover. The

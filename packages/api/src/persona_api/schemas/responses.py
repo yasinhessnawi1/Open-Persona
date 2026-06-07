@@ -21,6 +21,7 @@ __all__ = [
     "CreditsResponse",
     "DoneEvent",
     "MessageView",
+    "PersonaCapabilities",
     "PersonaDetail",
     "PersonaSummary",
     "RunStatusResponse",
@@ -51,13 +52,50 @@ class PersonaSummary(_Output):
     updated_at: datetime
 
 
+class PersonaCapabilities(_Output):
+    """Deployment-derived capability flags surfaced with the persona detail.
+
+    Hydrated from the runtime :class:`persona_runtime.tier.TierRegistry` so the
+    UI can answer "does this persona support image attachments?" BEFORE the
+    user attempts to send (Spec 13 fail-loud made visible — Spec F3 §10 #7;
+    D-F3-X-no-vision-surface-shape). At v0.1 the answer is deployment-wide:
+    every persona under a given deployment shares the same registry, so
+    ``vision`` is identical across personas — see D-F3-X-deployment-vs-persona-
+    capability-framing. The field's shape survives the v0.2 inflection where
+    per-persona tier pins make the answer genuinely per-persona; only the
+    hydration source changes (from registry to per-persona lookup).
+
+    Attributes:
+        vision: ``True`` iff at least one configured tier resolves to a
+            backend whose ``supports_vision`` is ``True``. Read via the
+            public :meth:`TierRegistry.supports_vision_for` method
+            (D-F3-X-tier-registry-public-contract).
+        configured_tiers: Tier names registered on the active deployment
+            in insertion order (``("small", "mid", "frontier")`` for the
+            typical three-tier deployment). The UI may surface these in a
+            disabled-attach tooltip to explain *which* models the deployment
+            has configured.
+    """
+
+    vision: bool
+    configured_tiers: tuple[str, ...]
+
+
 class PersonaDetail(_Output):
-    """A persona's full detail (YAML + metadata)."""
+    """A persona's full detail (YAML + metadata).
+
+    The optional :attr:`capabilities` field (D-F3-X-capability-endpoint) is
+    additive on top of the Spec 08 / Spec 09 surface: tests + composition
+    roots that do not wire a :class:`TierRegistry` (e.g. unit fixtures
+    without the runtime) omit the field and the API returns ``None`` so the
+    persona-detail surface stays usable without runtime composition.
+    """
 
     id: str
     yaml: str
     schema_version: str
     avatar_url: str | None = None
+    capabilities: PersonaCapabilities | None = None
     created_at: datetime
     updated_at: datetime
 

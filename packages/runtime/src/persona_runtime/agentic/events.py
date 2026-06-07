@@ -94,11 +94,40 @@ class RunEvent(BaseModel):
 
     @classmethod
     def tool_result(cls, step: int, tool_name: str, result: ToolResult) -> RunEvent:
-        """A tool dispatch completed (success or ``is_error=True``)."""
+        """A tool dispatch completed (success or ``is_error=True``).
+
+        D-F4-X-event-kind-for-produced-files (Spec F4 Phase 5 T02b — Option A):
+        forward structured ``produced_files`` from ``ToolResult.data`` onto
+        the event payload when present. The sandbox tool factory at
+        ``packages/core/src/persona/sandbox/tool.py:269-279`` populates
+        ``result.data["produced_files"]`` as ``list[{path, size_bytes,
+        media_type}]``; pre-amendment this constructor dropped it.
+
+        Additive (back-compat): pre-existing frames lacked the field; the
+        F4 frontend dispatcher reads it when present and falls back to a
+        result-block render when absent. **One edit covers both chat SSE
+        AND RunEvent transports** because this constructor is the single
+        place each event's payload shape is defined (see module docstring
+        lines 7-8) — chat ``_sse(ev.type, ev.data)`` (bare payload, D-09-1)
+        and run ``model_dump_json(event)`` (envelope with ``.data`` nested)
+        both observe the same upstream shape.
+
+        Empty ``produced_files: []`` is omitted from the payload (absence
+        IS the back-compat shape; renderers treat absence as "no files").
+        """
+        data: dict[str, Any] = {
+            "tool_name": tool_name,
+            "is_error": result.is_error,
+            "content": result.content,
+        }
+        if result.data is not None:
+            pf = result.data.get("produced_files")
+            if isinstance(pf, list) and pf:
+                data["produced_files"] = pf
         return cls(
             type="tool_result",
             step=step,
-            data={"tool_name": tool_name, "is_error": result.is_error, "content": result.content},
+            data=data,
             timestamp=datetime.now(UTC),
         )
 

@@ -21,7 +21,7 @@ from persona.config import PersonaCoreConfig
 from persona.errors import PersonaNotFoundError
 from persona.history import ConversationHistoryManager
 from persona.schema.persona import Persona
-from persona.skills import SkillInjector, SkillScanner, make_use_skill_tool
+from persona.skills import BUILTIN_ROOT, SkillInjector, SkillScanner, make_use_skill_tool
 from persona.stores import (
     EpisodicStore,
     IdentityStore,
@@ -40,8 +40,10 @@ from persona_api.db.models import personas as personas_t
 from persona_api.sandbox import make_pool_code_execution_tool
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
+    from persona.sandbox.result import SandboxFile
     from persona.stores.embedder import Embedder
     from persona.stores.protocol import MemoryStore
     from persona.tools.mcp.client import MCPClient
@@ -72,6 +74,7 @@ class RuntimeFactory:
         audit_root: Path,
         core_config: PersonaCoreConfig | None = None,
         sandbox_pool: SandboxPool | None = None,
+        workspace_root: Path | None = None,
     ) -> None:
         self._engine = rls_engine
         self._embedder = embedder
@@ -84,6 +87,11 @@ class RuntimeFactory:
         # ``code_execution`` tool is absent from the toolbox in that case
         # and surfaces ``SandboxUnavailableError`` if the model still calls it.
         self._sandbox_pool = sandbox_pool
+        # Spec 17 D-17-X-bytes-persistence — workspace root for produced-file
+        # persist + intermediate/* cross-turn staging. Threaded through to
+        # ``make_pool_code_execution_tool``. None (test / CLI path) ⇒ no
+        # persistence + no staging; tool dispatches as before.
+        self._workspace_root = workspace_root
         # MCP clients accumulated across requests, closed on shutdown.
         self._mcp_clients: list[MCPClient] = []
 
@@ -117,22 +125,66 @@ class RuntimeFactory:
             "episodic": EpisodicStore(backend=backend, audit_logger=audit),
         }
 
-    async def _build_toolbox(self, persona: Persona, scanned_skills: list[object]) -> object:
+    async def _build_toolbox(
+        self,
+        persona: Persona,
+        scanned_skills: list[object],
+        deferred_input_files_holder: list[SandboxFile] | None = None,
+    ) -> object:
         """Build the toolbox (+ use_skill when the persona has skills + code_execution
         when the sandbox pool is configured). MCP clients are tracked for shutdown.
+
+        ``deferred_input_files_holder`` is the Spec 16 M1a shared bucket:
+        a mutable ``list[SandboxFile]`` the caller passes in BEFORE the loop
+        is constructed (the loop will share the same list as its
+        ``deferred_input_files`` attribute). The ``code_execution`` tool's
+        ``deferred_input_files_provider`` callable is a drain-and-clear
+        closure over the same list — when the runtime appends staged
+        supplements at the use_skill intercept, the next ``code_execution``
+        dispatch sees them, consumes them, and clears the holder so a
+        second dispatch in the same turn doesn't re-stage. ``None`` (test
+        path) ⇒ no provider wired; staging is a no-op.
         """
         extra: list[object] = []
         if scanned_skills:
             extra.append(make_use_skill_tool(scanned_skills))  # type: ignore[arg-type]
         if self._sandbox_pool is not None:
             # Spec 12 T10: API-composed code_execution wires
-            # (a) lazy-eager pool acquire via pre_execute_hook (D-12-17), and
-            # (b) D-12-3 flat per-execution credits deduction on outcome=="ok".
+            # (a) lazy-eager pool acquire via pre_execute_hook (D-12-17),
+            # (b) D-12-3 flat per-execution credits deduction on outcome=="ok",
+            # (c) Spec 16 M1a deferred-input-files drain-and-clear (D-16-2,
+            #     D-16-2-state-location).
+            provider: Callable[[], list[SandboxFile]] | None
+            if deferred_input_files_holder is not None:
+                # Bind the holder via a closure (not a default argument) so
+                # mypy's narrowing carries through. The closure captures the
+                # non-None holder by reference; mutations are visible across
+                # the use_skill intercept (writer) and the tool dispatch
+                # (drainer).
+                holder = deferred_input_files_holder
+
+                def _drain_and_clear() -> list[SandboxFile]:
+                    """Return current staged supplements + clear the holder.
+
+                    Atomic enough for the single-threaded asyncio loop the
+                    tool dispatches on: ``copy()`` snapshot + ``clear()``
+                    happen between awaits. The runtime's use_skill intercept
+                    appends to ``holder``; the tool's dispatch drains.
+                    """
+                    snapshot = list(holder)
+                    holder.clear()
+                    return snapshot
+
+                provider = _drain_and_clear
+            else:
+                provider = None
             extra.append(
                 make_pool_code_execution_tool(
                     pool=self._sandbox_pool,
                     rls_engine=self._engine,
                     persona_id=persona.persona_id,
+                    deferred_input_files_provider=provider,
+                    workspace_root=self._workspace_root,
                 )
             )
         toolbox, mcp_clients = await build_default_toolbox(
@@ -144,7 +196,13 @@ class RuntimeFactory:
         return toolbox
 
     def _scan_skills(self, persona: Persona) -> tuple[SkillScanner, list[object]]:
-        scanner = SkillScanner(skill_paths=[])  # built-in skill discovery via config later
+        # ``BUILTIN_ROOT`` (re-exported from persona-core ``persona.skills``)
+        # is the single source of truth shared with ``catalog_service`` so
+        # both surfaces resolve declared skills against the same on-disk
+        # directory. Without this path, every persona-declared skill would
+        # log a "declared skill not found" warning at every chat turn and
+        # the loop would never inject any skill content.
+        scanner = SkillScanner(skill_paths=[BUILTIN_ROOT])
         scanned = scanner.scan(
             declared_skills=persona.skills,
             tool_allow_list=list(persona.tools) if persona.tools else None,
@@ -154,11 +212,27 @@ class RuntimeFactory:
     # -- the closures the routes call ---------------------------------------
 
     async def build_conversation_loop(self, persona_id: str) -> ConversationLoop:
-        """Construct the ConversationLoop for ``persona_id`` (KEYSTONE 1, T08)."""
+        """Construct the ConversationLoop for ``persona_id`` (KEYSTONE 1, T08).
+
+        Wires the Spec 16 M1a deferred-input-files holder (D-16-2 /
+        D-16-2-state-location): a single ``list[SandboxFile]`` is shared
+        between the loop's public ``deferred_input_files`` attribute and
+        the ``code_execution`` tool's drain-and-clear provider closure.
+        The use_skill intercept appends to this list; the next
+        ``code_execution`` dispatch drains it.
+        """
         persona = self._load_persona(persona_id)
         scanner, scanned = self._scan_skills(persona)
-        toolbox = await self._build_toolbox(persona, scanned)
-        return ConversationLoop(
+        # M1a shared holder — created BEFORE the toolbox so the
+        # code_execution tool's drain-and-clear provider closes over the
+        # same list the loop will write to.
+        deferred_holder: list[SandboxFile] = []
+        toolbox = await self._build_toolbox(
+            persona,
+            scanned,
+            deferred_input_files_holder=deferred_holder,
+        )
+        loop = ConversationLoop(
             persona=persona,
             stores=self._build_stores(),
             toolbox=toolbox,  # type: ignore[arg-type]
@@ -171,13 +245,29 @@ class RuntimeFactory:
             tier_registry=self._tier_registry,
             turn_log_writer=self._turn_log_writer,
         )
+        # Replace the loop's default-empty deferred_input_files with the
+        # SHARED holder (same identity), so the use_skill intercept's
+        # ``self.deferred_input_files.extend(...)`` mutates the same list
+        # the tool's provider drains. Per D-16-2-state-location the
+        # attribute is public for exactly this composition-root binding.
+        loop.deferred_input_files = deferred_holder
+        return loop
 
     async def build_agentic_loop(self, persona_id: str) -> AgenticLoop:
-        """Construct the AgenticLoop for ``persona_id`` (KEYSTONE 2, T11)."""
+        """Construct the AgenticLoop for ``persona_id`` (KEYSTONE 2, T11).
+
+        Wires the Spec 16 M1a deferred-input-files holder symmetrically to
+        :meth:`build_conversation_loop`.
+        """
         persona = self._load_persona(persona_id)
         _scanner, scanned = self._scan_skills(persona)
-        toolbox = await self._build_toolbox(persona, scanned)
-        return AgenticLoop(
+        deferred_holder: list[SandboxFile] = []
+        toolbox = await self._build_toolbox(
+            persona,
+            scanned,
+            deferred_input_files_holder=deferred_holder,
+        )
+        loop = AgenticLoop(
             persona=persona,
             stores=self._build_stores(),
             toolbox=toolbox,  # type: ignore[arg-type]
@@ -187,6 +277,8 @@ class RuntimeFactory:
             router=Router(),
             tier_registry=self._tier_registry,
         )
+        loop.deferred_input_files = deferred_holder
+        return loop
 
     async def build_title(self, first_message: str) -> str:
         """Generate a short (≤5-word) conversation title from the first message,

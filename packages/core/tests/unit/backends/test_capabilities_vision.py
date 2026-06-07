@@ -35,6 +35,7 @@ from persona.backends.config import BackendConfig
 from persona.backends.errors import (
     BackendVisionNotSupportedError,
     NoVisionTierConfiguredError,
+    RoutingConstraintsUnsatisfiableError,
 )
 from persona.backends.ollama import OllamaBackend
 from persona.backends.openai_compat import (
@@ -318,13 +319,38 @@ class TestNoVisionTierConfiguredError:
 # -----------------------------------------------------------------------------
 
 
-class TestFlatHierarchy:
+class TestErrorHierarchy:
+    """Verify the Spec 13 + Spec 18 error-hierarchy invariants.
+
+    Spec 13 D-13-X-error-hierarchy locked two sibling errors directly under
+    ``PersonaError``: :class:`BackendVisionNotSupportedError` (the runtime-side
+    capability surface) and :class:`NoVisionTierConfiguredError` (the
+    deployment-side configuration surface). No intermediate ``VisionError``;
+    no parent/child relationship between the two.
+
+    Spec 18 D-18-X-constraint-failure-shape generalised
+    :class:`NoVisionTierConfiguredError` under a new
+    :class:`RoutingConstraintsUnsatisfiableError` parent (also a direct child
+    of ``PersonaError``) so future capability-constraint filters share one
+    parent. ``NoVisionTierConfiguredError`` is preserved as a back-compat
+    subclass — existing ``except NoVisionTierConfiguredError`` callers keep
+    catching only the Spec 13 case; the new ``RoutingConstraintsUnsatisfiableError``
+    is the union surface for future filter classes.
+
+    The invariants below hold across both spec versions:
+
+    * The two original errors are NOT in parent/child relation with each other
+      (the Spec 13 D-13-X invariant).
+    * Both are reachable from ``PersonaError`` via inheritance (back-compat).
+    * The Spec 18 generalisation slots in cleanly: ``NoVisionTierConfigured`` →
+      ``RoutingConstraintsUnsatisfiable`` → ``PersonaError``.
+    """
+
     def test_no_vision_tier_is_not_subclass_of_backend_vision_not_supported(
         self,
     ) -> None:
-        # D-13-X-error-hierarchy is explicit: the two errors are siblings,
-        # both directly under PersonaError. No intermediate VisionError
-        # parent, and no parent/child relationship between the two.
+        # D-13-X-error-hierarchy invariant: the two errors are NOT in
+        # parent/child relation with each other.
         assert not issubclass(NoVisionTierConfiguredError, BackendVisionNotSupportedError)
 
     def test_backend_vision_not_supported_is_not_subclass_of_no_vision_tier(
@@ -332,8 +358,30 @@ class TestFlatHierarchy:
     ) -> None:
         assert not issubclass(BackendVisionNotSupportedError, NoVisionTierConfiguredError)
 
-    def test_both_are_direct_children_of_persona_error(self) -> None:
-        # __bases__ check — the direct parent is PersonaError, not some
-        # intermediate VisionError.
+    def test_backend_vision_not_supported_is_direct_child_of_persona_error(self) -> None:
+        # Spec 13 shape unchanged: the runtime-side capability error is a
+        # direct child of PersonaError.
         assert BackendVisionNotSupportedError.__bases__ == (PersonaError,)
-        assert NoVisionTierConfiguredError.__bases__ == (PersonaError,)
+
+    def test_no_vision_tier_is_routing_constraints_unsatisfiable(self) -> None:
+        # Spec 18 D-18-X-constraint-failure-shape: NoVisionTierConfiguredError
+        # is now a back-compat subclass of RoutingConstraintsUnsatisfiableError.
+        # Direct __bases__ check captures the locked hierarchy shape.
+        assert NoVisionTierConfiguredError.__bases__ == (RoutingConstraintsUnsatisfiableError,)
+
+    def test_routing_constraints_unsatisfiable_is_direct_child_of_persona_error(
+        self,
+    ) -> None:
+        # The Spec 18 generalisation parent sits directly under PersonaError —
+        # one intermediate level between NoVisionTierConfiguredError and
+        # PersonaError, by design.
+        assert RoutingConstraintsUnsatisfiableError.__bases__ == (PersonaError,)
+
+    def test_no_vision_tier_remains_reachable_from_persona_error(self) -> None:
+        # Back-compat invariant: ``except PersonaError`` still catches
+        # NoVisionTierConfiguredError via the inheritance chain.
+        assert issubclass(NoVisionTierConfiguredError, PersonaError)
+        # And the Spec 13 ``except NoVisionTierConfiguredError`` callers
+        # still catch only the Spec 13 case (not RoutingConstraintsUnsatisfiable
+        # at large).
+        assert not issubclass(RoutingConstraintsUnsatisfiableError, NoVisionTierConfiguredError)

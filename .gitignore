@@ -56,5 +56,13 @@ docker-compose.override.yml
 .playwright-mcp/
 .tmp_smoke_workspace/
 
+# Spec 16 D-16-X-3: inspection artifacts (.docx/.pptx/.xlsx/.pdf) are binary;
+# evidence at close-out is the per-row scorecard in state.md, not the binaries.
+docs/specs/phase2/spec_16/inspection/
+
+# Spec 17 T09 chart-inspection artifacts (.png) are binary; same discipline —
+# scorecards in state.md are the close-out evidence, not the PNG files.
+docs/specs/phase2/spec_17/inspection/
+
 docs/
 CLAUDE.md

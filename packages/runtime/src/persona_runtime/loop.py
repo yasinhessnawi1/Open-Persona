@@ -38,18 +38,26 @@ from persona.logging import get_logger
 from persona.schema.chunks import ChunkProvenance, PersonaChunk, WriteSource, make_chunk_id
 from persona.schema.conversation import ConversationMessage
 from persona.schema.tools import ToolCall, ToolResult
-from persona.skills import render_skill_index
+from persona.skills import collect_skill_supplements, render_skill_index
 from persona.tools import format_tool_result
 
 from persona_runtime.agentic.events import RunEvent
 from persona_runtime.logging import TurnLog, estimate_cost_cents
-from persona_runtime.prompt import RetrievedContext
+from persona_runtime.prompt import DocumentContext, RetrievedContext
+from persona_runtime.routing import (
+    FirstTokenLatencyTracker,
+    HeuristicRouter,
+    RoutingContext,
+    RoutingDecision,
+    classifiers,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
     from persona.backends import ChatBackend, StreamChunk, TokenUsage
     from persona.history import ConversationHistoryManager
+    from persona.sandbox.result import SandboxFile
     from persona.schema.conversation import Conversation
     from persona.schema.persona import Persona
     from persona.schema.skills import SkillSpec
@@ -59,7 +67,7 @@ if TYPE_CHECKING:
 
     from persona_runtime.logging import TurnLogWriter
     from persona_runtime.prompt import PromptBuilder
-    from persona_runtime.router import Router
+    from persona_runtime.routing import Router
     from persona_runtime.tier import TierRegistry
 
 __all__ = ["ConversationLoop"]
@@ -142,6 +150,7 @@ class ConversationLoop:
         tier_registry: TierRegistry,
         turn_log_writer: TurnLogWriter,
         max_tool_rounds: int = 5,
+        latency_tracker: FirstTokenLatencyTracker | None = None,
     ) -> None:
         self._persona = persona
         self._stores = stores
@@ -156,6 +165,24 @@ class ConversationLoop:
         self._tiers = tier_registry
         self._turn_log_writer = turn_log_writer
         self._max_tool_rounds = max_tool_rounds
+        # Spec 18 T06: per-process first-token-latency tracker
+        # (D-18-X-first-token-measurement-impl). Composition-root-owned so
+        # multiple loops share a single EWMA estimate per model; an unset
+        # tracker is the legacy path (no measurement, no UnifiedRouter
+        # latency signal).
+        self._latency_tracker = latency_tracker
+        # Spec 18 T06 strangler-fig affordance: legacy callers may have
+        # constructed `Router()` without a registry; ensure the router's
+        # registry slot is wired so `route(context)` can do Layer 1 filtering.
+        # New callers should construct `HeuristicRouter(tier_registry=...)`
+        # directly. Documented mutation per D-18-X-strangler-fig-alias-shape.
+        if isinstance(router, HeuristicRouter) and router._tier_registry is None:  # noqa: SLF001
+            router._tier_registry = tier_registry  # noqa: SLF001
+        # M1a per-turn deferred input_files (D-16-2, D-16-2-state-location).
+        # Mutated by the use_skill intercept; drained by the composition
+        # root's deferred_input_files_provider callable wired into the
+        # code_execution factory. Cleared at every turn() entry.
+        self.deferred_input_files: list[SandboxFile] = []
 
     async def turn(
         self,
@@ -164,6 +191,7 @@ class ConversationLoop:
         on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
         *,
         turn_has_image: bool = False,
+        document_context: DocumentContext | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Process one user turn, yielding StreamChunks for the response.
 
@@ -199,17 +227,21 @@ class ConversationLoop:
         """
         persona_id = self._require_persona_id()
         started = time.perf_counter()
+        self.deferred_input_files.clear()  # M1a per-turn reset (D-16-2)
 
         context = self._retrieve(persona_id, user_message)
         history, compacted = await self._manage_history(conversation)
         skill_index = render_skill_index(self._scanned_skills)
-        tier = self._router.choose(
-            self._persona,
-            user_message,
-            conversation,
+        # Spec 18 T12: measure the router's OWN decision latency (distinct
+        # from the whole-turn latency_ms) for D-18-X-turnlog-extension.
+        routing_started = time.perf_counter()
+        decision = self._decide_routing(
+            user_message=user_message,
+            conversation=conversation,
             turn_has_image=turn_has_image,
-            tier_registry=self._tiers,
         )
+        routing_latency_ms = (time.perf_counter() - routing_started) * 1000.0
+        tier = decision.tier
         if on_event is not None:
             await on_event(RunEvent.tier(tier))
         backend = self._tiers.get(tier)
@@ -238,6 +270,7 @@ class ConversationLoop:
                     user_message,
                     max_tokens=max_tokens,
                     matched_skill_content=matched_skill_content,
+                    document_context=document_context,
                 ),
                 *tool_messages,
             ]
@@ -298,9 +331,9 @@ class ConversationLoop:
                                 )
                             )
                         elif name in self._skills_by_name:
-                            matched_skill_content = await self._injector.inject(
-                                self._skills_by_name[name]
-                            )
+                            spec = self._skills_by_name[name]
+                            matched_skill_content = await self._injector.inject(spec)
+                            self.deferred_input_files.extend(collect_skill_supplements(spec))
                             skill_used = name
                             injected_this_turn = True
                 # One round = one re-prompt-after-dispatch (D-05-11), regardless
@@ -328,6 +361,7 @@ class ConversationLoop:
                         user_message,
                         max_tokens=max_tokens,
                         matched_skill_content=matched_skill_content,
+                        document_context=document_context,
                     ),
                     *tool_messages,
                 ]
@@ -359,6 +393,8 @@ class ConversationLoop:
             tool_calls=tool_call_count,
             skill_used=skill_used,
             compacted=compacted,
+            decision=decision,
+            routing_latency_ms=routing_latency_ms,
         )
         now = datetime.now(UTC)
         conversation.messages.append(
@@ -438,6 +474,56 @@ class ConversationLoop:
         response = await backend.chat(prompt)
         return response.content.strip()
 
+    def _decide_routing(
+        self,
+        *,
+        user_message: str,
+        conversation: Conversation,
+        turn_has_image: bool,
+    ) -> RoutingDecision:
+        """Compute the routing decision for this turn (Spec 18 T06).
+
+        Composition-root responsibility: applies the persona override
+        short-circuit (Spec 05 rule 1, preserved per D-18-X-strangler-fig-alias-shape),
+        pre-classifies the message signals (boilerplate / identity-sensitive)
+        per :mod:`persona_runtime.routing.classifiers`, builds the
+        :class:`RoutingContext`, and dispatches to the injected
+        :class:`Router` Protocol implementation.
+
+        Args:
+            user_message: This turn's user message.
+            conversation: The live conversation (for the first-turn signal).
+            turn_has_image: Whether this turn carries any
+                :class:`~persona.schema.content.ImageContent` — drives Layer 1.
+
+        Returns:
+            The :class:`RoutingDecision` carrying the chosen tier + model +
+            rationale + observability metadata.
+        """
+        override = self._persona.routing.tier_for_generation
+        if override != "auto":
+            # Composition root handles the override — the router never sees
+            # this case (Spec 05 rule 1 preserved). Build a minimal decision
+            # so the TurnLog records the override path for observability.
+            return RoutingDecision(
+                tier=override,
+                model=self._tiers.model_name_for(override),
+                rationale=f"persona_override → {override}",
+                candidates_considered=(override,),
+            )
+
+        routing_context = RoutingContext(
+            requires_vision=turn_has_image,
+            estimated_input_tokens=len(user_message) // 4,  # v0.1 cheap estimate
+            requires_strong_tools=False,
+            is_first_turn=(conversation.turn_count == 0),
+            is_identity_sensitive=classifiers.is_persona_critical(user_message, self._persona),
+            is_boilerplate=classifiers.is_boilerplate(user_message),
+            conversation_phase="opening" if conversation.turn_count == 0 else "middle",
+            profile="text_default",
+        )
+        return self._router.route(routing_context)
+
     async def _stream_round(
         self,
         backend: ChatBackend,
@@ -451,12 +537,24 @@ class ConversationLoop:
 
         Tool-call deltas are accumulated by ``call_id``; args JSON is parsed at
         stream end (malformed → empty dict, fail-safe).
+
+        Spec 18 T06 (D-18-X-first-token-measurement-impl): when a
+        :class:`FirstTokenLatencyTracker` is wired into the loop, the FIRST
+        non-empty ``chunk.delta`` records ``(perf_counter() - t_start) * 1000``
+        as that backend's first-token latency. V5 reads the registry field;
+        :class:`UnifiedRouter` reads it for Layer 2 latency scoring.
         """
         names: dict[str, str] = {}
         args_json: dict[str, str] = {}
         order: list[str] = []
+        t_start = time.perf_counter()
+        first_token_recorded = False
         async for chunk in backend.chat_stream(prompt_messages, tools=self._toolbox.get_specs()):
             if chunk.delta:
+                if not first_token_recorded and self._latency_tracker is not None:
+                    first_token_ms = (time.perf_counter() - t_start) * 1000.0
+                    self._latency_tracker.record(backend.model_name, first_token_ms)
+                    first_token_recorded = True
                 outcome.text += chunk.delta
                 yield chunk.delta
             if chunk.usage is not None:
@@ -551,6 +649,8 @@ class ConversationLoop:
         tool_calls: int,
         skill_used: str | None,
         compacted: bool,
+        decision: RoutingDecision,
+        routing_latency_ms: float,
     ) -> None:
         prompt_tokens = usage.prompt_tokens if usage is not None else 0
         completion_tokens = usage.completion_tokens if usage is not None else 0
@@ -572,5 +672,9 @@ class ConversationLoop:
                 skill_used=skill_used,
                 history_compacted=compacted,
                 timestamp=datetime.now(UTC),
+                routing_decision=decision,
+                routing_latency_ms=routing_latency_ms,
+                routing_fallback_triggered=decision.fallback_triggered,
+                routing_fallback_reason=decision.fallback_reason,
             )
         )

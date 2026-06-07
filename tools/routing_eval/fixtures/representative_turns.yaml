@@ -1,0 +1,185 @@
+# Spec 18 routing-evaluation labelled fixture (T13; R-18-4 starter set).
+# N=10 representative turns spanning the routing scenario space.
+# Grows over time like any test fixture — extend by adding entries; replay test
+# verifies every entry's expected_tier matches the router's choice on a 3-tier
+# (frontier / mid / small) deployment with the cost / latency metadata below.
+#
+# IMPORTANT: labels reflect the **observed Layer 2 formula output**, not Spec 05's
+# categorical rules. The continuous quality_proxy + per-profile weights produce
+# different choices than Spec 05's "first turn → frontier" intuition in some
+# cases (see closeout.md for the finding). This fixture is the regression
+# baseline: if labels and router diverge, ONE of these is true:
+#   1. The router changed (regression — investigate).
+#   2. The formula constants tuned at v0.2 (label needs updating with rationale).
+#   3. The metadata defaults in build_eval_registry drifted from the preamble.
+# All three surface loud — that IS the test.
+#
+# Schema per entry:
+#   description: human-readable summary
+#   context: kwargs for RoutingContext construction
+#   expected_tier: the tier the router currently chooses
+#   notes: observed signal arithmetic + which axis dominated
+#
+# Per-tier metadata used by replay.py (mirrors the lean v0.1 production shape):
+#   frontier: claude-opus-4-7 — cost 1.50/7.50 cents/1k, 1200ms latency, 200k window, strong tools
+#   mid:      claude-haiku-4-5 — cost 0.08/0.40 cents/1k, 400ms latency, 200k window, strong tools
+#   small:    llama-3.1-8b     — cost 0.005/0.008 cents/1k, 100ms latency, 8k window, weak tools
+
+turns:
+  - description: "Boilerplate acknowledgement — quintessential cost-saver turn"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 50
+      requires_strong_tools: false
+      is_first_turn: false
+      is_identity_sensitive: false
+      is_boilerplate: true
+      conversation_phase: "middle"
+      profile: "text_default"
+    expected_tier: "small"
+    notes: "quality_proxy=0; small wins on cost+latency+quality_fit (estimate 0.0 matches)."
+
+  - description: "First turn of a new conversation — identity establishment"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 100
+      requires_strong_tools: false
+      is_first_turn: true
+      is_identity_sensitive: false
+      is_boilerplate: false
+      conversation_phase: "opening"
+      profile: "text_default"
+    expected_tier: "mid"
+    notes: |
+      quality_proxy=0.35 (first_turn 0.30 + opening 0.05). mid wins because its
+      quality_estimate (0.5) is closer than frontier's (1.0). This contradicts
+      Spec 05's "first turn → frontier" rule — the continuous formula softens it.
+      Phase 5 finding: v0.2 may raise first_turn weight if telemetry shows
+      quality drift on first turns; v0.1 ships the locked D-18-5 leans.
+
+  - description: "Identity-sensitive question — persona-critical content"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 200
+      requires_strong_tools: false
+      is_first_turn: false
+      is_identity_sensitive: true
+      is_boilerplate: false
+      conversation_phase: "middle"
+      profile: "text_default"
+    expected_tier: "mid"
+    notes: |
+      quality_proxy=0.30 (identity_sensitive). Same softening as first-turn:
+      mid's quality_estimate (0.5) is closer than frontier's (1.0). v0.2 tuning
+      candidate per Phase 5 finding.
+
+  - description: "Routine in-character chat turn — minimal signals"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 250
+      requires_strong_tools: false
+      is_first_turn: false
+      is_identity_sensitive: false
+      is_boilerplate: false
+      conversation_phase: "middle"
+      profile: "text_default"
+    expected_tier: "small"
+    notes: |
+      quality_proxy=0; cost-preferred small wins. Spec 05's "default → mid"
+      rule is replaced by the Layer 2 cost optimisation. The "small handles
+      routine work fine" trade is intentional per the cost-saving design intent.
+
+  - description: "Vision turn — must route to vision-capable tier"
+    context:
+      requires_vision: true
+      estimated_input_tokens: 300
+      requires_strong_tools: false
+      is_first_turn: false
+      is_identity_sensitive: false
+      is_boilerplate: false
+      conversation_phase: "middle"
+      profile: "text_default"
+    expected_tier: "frontier"
+    notes: |
+      Layer 1 filter excludes small + mid (not vision-capable in eval registry);
+      only frontier survives — Layer 2 has no choice but frontier.
+
+  - description: "Tool-heavy turn — strong tool-calling required"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 500
+      requires_strong_tools: true
+      is_first_turn: false
+      is_identity_sensitive: false
+      is_boilerplate: false
+      conversation_phase: "middle"
+      profile: "text_default"
+    expected_tier: "mid"
+    notes: |
+      Layer 1 filters small (tool_strength=weak); frontier + mid survive.
+      quality_proxy=0.15; mid wins on cost.
+
+  - description: "Voice turn — first-token latency dominates"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 80
+      requires_strong_tools: false
+      is_first_turn: false
+      is_identity_sensitive: false
+      is_boilerplate: false
+      conversation_phase: "middle"
+      profile: "voice"
+    expected_tier: "small"
+    notes: |
+      Voice latency weight 0.60; small (100ms) dominates frontier (1200ms)
+      and mid (400ms) on the latency axis. Voice cost weight only 0.10, so
+      cost barely contributes.
+
+  - description: "Voice + identity-sensitive — latency wins"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 80
+      requires_strong_tools: false
+      is_first_turn: false
+      is_identity_sensitive: true
+      is_boilerplate: false
+      conversation_phase: "middle"
+      profile: "voice"
+    expected_tier: "small"
+    notes: |
+      quality_proxy=0.30 (identity_sensitive). Even with the quality signal,
+      voice latency weighting (0.60) means small's 100ms first-token still
+      wins. v0.2 candidate: revisit if voice quality regressions surface.
+
+  - description: "Long-context turn — small's 8k window excludes it"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 50000
+      requires_strong_tools: false
+      is_first_turn: false
+      is_identity_sensitive: false
+      is_boilerplate: false
+      conversation_phase: "middle"
+      profile: "text_default"
+    expected_tier: "mid"
+    notes: |
+      Layer 1 filters small (8k context window < 50k estimated tokens);
+      mid + frontier survive. quality_proxy=0.10 (token-saturated);
+      mid wins on cost.
+
+  - description: "Closing-phase summarisation — small quality signal"
+    context:
+      requires_vision: false
+      estimated_input_tokens: 800
+      requires_strong_tools: false
+      is_first_turn: false
+      is_identity_sensitive: false
+      is_boilerplate: false
+      conversation_phase: "closing"
+      profile: "text_default"
+    expected_tier: "small"
+    notes: |
+      quality_proxy=0.05 (closing phase only); barely-non-zero quality_proxy
+      makes small (quality_estimate 0.0) the best fit; cost+latency also
+      favour small. Spec 05 would have routed mid here; Layer 2 prefers
+      cost-saving.

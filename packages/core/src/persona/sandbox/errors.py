@@ -26,6 +26,7 @@ from persona.errors import PersonaError
 __all__ = [
     "CodeSandboxError",
     "ExecutionTimeoutError",
+    "ProducedFileSizeError",
     "ResourceLimitError",
     "SandboxError",
     "SandboxQuotaExceededError",
@@ -97,6 +98,29 @@ class SandboxUnavailableError(SandboxError):
     For ``HostedSandbox`` (T08): raised on substrate API outages.
     Per-user concurrency cap exhaustion is :class:`SandboxQuotaExceededError`
     (a more specific subtype; T09).
+    """
+
+
+class ProducedFileSizeError(SandboxError):
+    """A produced file exceeds the per-file size cap during persist (D-12-X-read-produced-file).
+
+    Raised by :meth:`CodeSandbox.copy_produced_file_to` /
+    :meth:`CodeSandbox.read_produced_file_bytes` when the sandbox-produced
+    file at ``ref`` exceeds 100 MB. Flows through Spec 06 tool-error-recovery
+    so the model gets an explainable error and can correct (resize chart,
+    slim PDF, sample dataframe before export, etc.) — never an OOM crash on
+    the hosted memory ceiling.
+
+    Distinct from :class:`ResourceLimitError` (which is about substrate-side
+    runtime caps): this is the *persist-time* cap, applied when the runtime
+    is about to copy bytes out of the sandbox into the API workspace.
+
+    Conventional ``context`` keys:
+
+    - ``ref`` — the workspace-relative produced-file path.
+    - ``size_bytes`` — actual file size.
+    - ``cap_bytes`` — the configured cap (default 100 MB).
+    - ``session_id`` — sandbox session.
     """
 
 

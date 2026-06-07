@@ -39,6 +39,11 @@ dev = [
     "pypdfium2>=5.0,<6",
     "python-docx>=1.1,<2",
     "openpyxl>=3.1,<4",
+    # Spec 16 T11-T14 — host-side parsers for the §3.7 inspection asserts.
+    # python-pptx mirrors the sandbox image manifest pin so the test side and
+    # the in-sandbox library are version-aligned; never imported by
+    # persona-core / persona-runtime code paths inside the sandbox.
+    "python-pptx>=1.0,<2",
     # Spec 12 LocalDockerSandbox — docker SDK in dev so unit tests can mock
     # against the SDK types (LogConfig, Ulimit, container shapes) without
     # requiring users to install the `[sandbox]` extra explicitly. The
@@ -133,11 +138,21 @@ ignore_missing_imports = true
 module = ["pypdfium2", "pypdfium2.*"]
 ignore_missing_imports = true
 
+# regex (persona-core, spec 15 T09 categorical hard-line filter) ships no
+# py.typed marker; the ``types-regex`` stubs lag the runtime and the API
+# surface we touch (``compile``, ``Pattern[str]``, ``sub``, ``split``) is
+# stable + small. Mirror the docker/pgvector/jose/e2b/openpyxl/pypdfium2
+# discipline rather than depend on partial third-party stubs.
+[[tool.mypy.overrides]]
+module = ["regex", "regex.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["packages/core/tests", "packages/runtime/tests", "packages/api/tests"]
 markers = [
     "integration: marks tests that require external services (Docker, real DB)",
     "external: marks tests that call real external APIs (Anthropic, OpenAI)",
     "contract: marks protocol contract compliance tests",
+    "docker: marks tests that require a running Docker daemon (Spec 16 T09 etc.)",
 ]
 addopts = "-v --tb=short -m 'not integration and not external'"

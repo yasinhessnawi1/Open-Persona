@@ -28,16 +28,24 @@ still sees the successful execution).
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path  # noqa: TC003 — runtime use in workspace path resolution
 from typing import TYPE_CHECKING
 
 from persona.logging import get_logger
+from persona.sandbox.result import SandboxFile
 from persona.sandbox.tool import make_code_execution_tool
 
 from persona_api.sandbox.context import get_sandbox_request_context
 from persona_api.services import credits_service
 
 if TYPE_CHECKING:
-    from persona.sandbox.result import ExecutionResult, NetworkPolicy, ResourceLimits
+    from collections.abc import Callable
+
+    from persona.sandbox.result import (
+        ExecutionResult,
+        NetworkPolicy,
+        ResourceLimits,
+    )
     from persona.tools.audit import ToolAuditLogger
     from persona.tools.protocol import AsyncTool
     from sqlalchemy import Engine
@@ -62,6 +70,8 @@ def make_pool_code_execution_tool(
     audit_logger: ToolAuditLogger | None = None,
     persona_id: str | None = None,
     credit_cost: int = _CODE_EXECUTION_CREDIT_COST,
+    deferred_input_files_provider: Callable[[], list[SandboxFile]] | None = None,
+    workspace_root: Path | None = None,
 ) -> AsyncTool:
     """Build the API-composed ``code_execution`` tool.
 
@@ -84,6 +94,33 @@ def make_pool_code_execution_tool(
         network_policy / resource_limits: Per-persona policy (D-12-4 / D-12-1).
         audit_logger / persona_id: Forwarded to the T03 factory for audit emission.
         credit_cost: Flat per-execution credit deduction (D-12-3 default = 1).
+        deferred_input_files_provider: Spec 16 M1a wiring — a drain-and-clear
+            callable that returns the list of supplements the runtime
+            staged on the use_skill intercept (D-16-2 / D-16-2-state-location).
+            Wired by :class:`RuntimeFactory` to the per-request loop's public
+            ``deferred_input_files`` attribute; called once per dispatch and
+            its return value is passed as ``input_files=`` to the substrate.
+            ``None`` ⇒ no supplements staged (pre-M1a tests / CLI / contexts
+            that never activate skills).
+        workspace_root: Global workspace root (the directory the API serves
+            via ``GET /v1/personas/:id/uploads/{ref:path}``). When set
+            together with ``persona_id``, the tool gains two production
+            behaviours (D-17-X-bytes-persistence + D-12-X-read-produced-file):
+
+            * **Persist after dispatch.** Each entry in
+              ``ExecutionResult.produced_files`` is copied from the sandbox
+              session's host_out into ``workspace_root/owner_id/persona_id/<ref>``
+              via :meth:`CodeSandbox.copy_produced_file_to`. The existing
+              upload-serve route then reads them via the slash-aware ref
+              logic at ``image_service.fetch:300``.
+            * **Stage intermediate/* before dispatch.** Files at
+              ``workspace_root/owner_id/persona_id/intermediate/`` are
+              augmented onto ``deferred_input_files_provider``'s output so the
+              cross-turn re-load discipline (the SKILL.md's parquet cache
+              pattern) survives Spec 12 sessions that get reaped.
+
+            ``None`` ⇒ no persistence and no staging (CLI / tests / contexts
+            where bytes-to-workspace is out of scope).
 
     Returns:
         An :class:`AsyncTool` named ``code_execution`` ready to register in
@@ -121,6 +158,107 @@ def make_pool_code_execution_tool(
             reason="code_execution",
         )
 
+    def _resolve_persona_workspace() -> Path | None:
+        """Compute ``<workspace_root>/<owner_id>/<persona_id>`` per-call.
+
+        Returns ``None`` when any of (workspace_root, persona_id, ctx) is
+        missing — the persist + stage paths are disabled. This matches the
+        CLI / one-shot semantics: no ctx ⇒ no per-tenant workspace.
+        """
+        if workspace_root is None or persona_id is None:
+            return None
+        ctx = get_sandbox_request_context()
+        if ctx is None:
+            return None
+        return workspace_root / ctx.owner_id / persona_id
+
+    def _augmented_input_files_provider() -> list[SandboxFile]:
+        """Compose Spec 16 M1a supplements + Spec 17 cross-turn intermediate.
+
+        D-17-X-bytes-persistence inverse flow: before each dispatch, stage
+        ``<persona_workspace>/intermediate/*`` files into ``input_files`` so
+        the SKILL.md's parquet re-load pattern works across Spec 12 session
+        reaps (D-12-17). Composes with the existing supplements provider;
+        does not replace it.
+        """
+        files: list[SandboxFile] = []
+        if deferred_input_files_provider is not None:
+            files.extend(deferred_input_files_provider())
+        persona_workspace = _resolve_persona_workspace()
+        if persona_workspace is None:
+            return files
+        intermediate_dir = persona_workspace / "intermediate"
+        if not intermediate_dir.is_dir():
+            return files
+        for path in sorted(intermediate_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(persona_workspace).as_posix()
+            try:
+                content = path.read_bytes()
+            except OSError as exc:
+                _logger.warning(
+                    "intermediate file read failed; skipping",
+                    path=rel,
+                    exc_type=type(exc).__name__,
+                )
+                continue
+            files.append(
+                SandboxFile(
+                    path=rel,
+                    content_bytes=content,
+                    size_bytes=len(content),
+                    media_type="application/octet-stream",
+                )
+            )
+        return files
+
+    async def _persist_produced_file(session_id: str, ref: str) -> None:
+        """Copy a produced file from the sandbox session to the persona workspace.
+
+        D-17-X-bytes-persistence call site. The inner
+        :func:`make_code_execution_tool` body invokes this for every entry
+        in ``ExecutionResult.produced_files`` after dispatch. The sandbox's
+        :meth:`copy_produced_file_to` enforces the
+        :data:`PRODUCED_FILE_CAP_BYTES` cap and raises
+        :class:`ProducedFileSizeError` (a :class:`SandboxError` subclass) on
+        overage — caught by the existing T03 catch-and-convert path so the
+        model sees a structured error explaining the cap.
+
+        **D-F4-X-bare-ref-resolution (Spec F4 Phase 5 T02c).** Three-branch
+        persist-target policy so :func:`image_service.fetch`'s slash-aware
+        resolver at ``image_service.py:300`` serves every produced file
+        through ``GET /v1/personas/:id/uploads/{ref:path}`` without 404:
+
+          * ``charts/<id>.png`` (Spec 17 matplotlib) → stays at workspace
+            root. The ``charts/`` prefix is load-bearing for F4's
+            inline-vs-download discriminator (D-17-X-inline-hint-shape);
+            the slash triggers the resolver's pass-through branch.
+          * ``intermediate/<name>.parquet`` (Spec 17 cross-turn cache) →
+            stays at workspace root. Not user-facing; consumed by the
+            next-turn input-staging in
+            :func:`_augmented_input_files_provider` above.
+          * everything else (Spec 16 docx/pptx/xlsx/pdf produced as bare
+            ``<filename>.<ext>``; general bare-ref produced files) →
+            routes into ``uploads/<filename>.<ext>`` so the resolver's
+            slash-less branch
+            (``relative = f"{_UPLOAD_DIR_NAME}/{ref}"``) lands on the
+            right path.
+
+        Pre-T02c, Spec 16 docs persisted at workspace root and the GET
+        resolver looked under ``uploads/`` → every document download
+        404'd. 10th entry in the additive-precedent chain (D-01-12 → … →
+        this). No Spec 12 / Spec 16 re-open required.
+        """
+        persona_workspace = _resolve_persona_workspace()
+        if persona_workspace is None:
+            return
+        if ref.startswith("charts/") or ref.startswith("intermediate/"):
+            target = persona_workspace / ref
+        else:
+            target = persona_workspace / "uploads" / ref
+        await pool.sandbox.copy_produced_file_to(session_id, ref, target)
+
     return make_code_execution_tool(
         pool.sandbox,
         network_policy=network_policy,
@@ -130,4 +268,6 @@ def make_pool_code_execution_tool(
         session_id_provider=_session_id_provider,
         pre_execute_hook=_pre_execute_hook,
         on_execute_success=_on_execute_success,
+        deferred_input_files_provider=_augmented_input_files_provider,
+        produced_file_persister=_persist_produced_file,
     )

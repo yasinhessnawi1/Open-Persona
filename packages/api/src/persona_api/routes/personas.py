@@ -8,6 +8,8 @@ business logic lives in the services; the routes are thin.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fastapi import APIRouter, Depends, Request, status
 
 from persona_api.auth import AuthenticatedUser, get_current_user
@@ -17,6 +19,7 @@ from persona_api.schemas import (
     AuthoringDraft,
     AuthorPersonaRequest,
     CreatePersonaRequest,
+    PersonaCapabilities,
     PersonaDetail,
     PersonaSummary,
     RefinePersonaRequest,
@@ -30,6 +33,9 @@ from persona_api.services import (
     persona_service,
 )
 
+if TYPE_CHECKING:
+    from persona_runtime.tier import TierRegistry
+
 # The 3-round refinement cap (D-10-5): the UI owns the counter, the server is
 # the backstop. `round` is the count of refinements already applied.
 _MAX_REFINE_ROUNDS = 3
@@ -37,13 +43,50 @@ _MAX_REFINE_ROUNDS = 3
 router = APIRouter(prefix="/v1/personas", tags=["personas"])
 
 
-def _persona_detail(row: dict[str, object]) -> PersonaDetail:
+def _tier_registry(request: Request) -> TierRegistry | None:
+    """Return the app-scoped :class:`TierRegistry` if the runtime is wired.
+
+    The composition root (``app.py`` lifespan) mounts ``app.state.tier_registry``
+    when a runtime backend is configured. Tests that don't wire the runtime
+    leave the attribute unset; the persona-detail surface stays usable and
+    just omits :attr:`PersonaDetail.capabilities`.
+    """
+    return getattr(request.app.state, "tier_registry", None)
+
+
+def _capabilities_from_registry(
+    tier_registry: TierRegistry | None,
+) -> PersonaCapabilities | None:
+    """Hydrate :class:`PersonaCapabilities` from the runtime registry.
+
+    Returns ``None`` if the registry was not wired (test paths / composition
+    roots without a runtime). At v0.1 capability is deployment-derived per
+    D-F3-X-deployment-vs-persona-capability-framing — the same answer applies
+    to every persona under a given deployment because the registry is
+    app-scoped. Reads through the public
+    :meth:`TierRegistry.supports_vision_for` contract
+    (D-F3-X-tier-registry-public-contract) so capability-matrix migrations
+    don't ripple here.
+    """
+    if tier_registry is None:
+        return None
+    tier_names = tier_registry.configured_tier_names
+    vision = any(tier_registry.supports_vision_for(name) for name in tier_names)
+    return PersonaCapabilities(vision=vision, configured_tiers=tier_names)
+
+
+def _persona_detail(
+    row: dict[str, object],
+    *,
+    tier_registry: TierRegistry | None,
+) -> PersonaDetail:
     avatar = row.get("avatar_url")
     return PersonaDetail(
         id=str(row["id"]),
         yaml=str(row["yaml"]),
         schema_version=str(row["schema_version"]),
         avatar_url=str(avatar) if avatar is not None else None,
+        capabilities=_capabilities_from_registry(tier_registry),
         created_at=row["created_at"],  # type: ignore[arg-type]
         updated_at=row["updated_at"],  # type: ignore[arg-type]
     )
@@ -73,7 +116,7 @@ async def create_persona(
     row = persona_service.get_persona(
         rls_engine=request.app.state.rls_engine, persona_id=persona_id
     )
-    return _persona_detail(row)
+    return _persona_detail(row, tier_registry=_tier_registry(request))
 
 
 @router.post("/author", response_model=AuthoringDraft, dependencies=[Depends(rate_limit("author"))])
@@ -196,7 +239,7 @@ async def get_persona(
     row = persona_service.get_persona(
         rls_engine=request.app.state.rls_engine, persona_id=persona_id
     )
-    return _persona_detail(row)
+    return _persona_detail(row, tier_registry=_tier_registry(request))
 
 
 @router.patch("/{persona_id}", response_model=PersonaDetail)
@@ -225,7 +268,7 @@ async def update_persona(
     row = persona_service.get_persona(
         rls_engine=request.app.state.rls_engine, persona_id=persona_id
     )
-    return _persona_detail(row)
+    return _persona_detail(row, tier_registry=_tier_registry(request))
 
 
 @router.delete("/{persona_id}", status_code=status.HTTP_204_NO_CONTENT)

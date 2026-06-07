@@ -126,3 +126,128 @@ class TestRunEventInvariants:
         ev = RunEvent.tool_calling(1, calls)
         restored = RunEvent.model_validate_json(ev.model_dump_json())
         assert restored == ev
+
+
+class TestToolResultProducedFilesForwarding:
+    """Spec F4 T02b — additive ``produced_files`` forwarding on tool_result.
+
+    Verifies the D-F4-X-event-kind-for-produced-files lock (Option A: edit
+    one constructor, no Pydantic schema change). The single constructor at
+    ``events.py:96-103`` serves BOTH chat SSE (bare payload via
+    ``_sse(ev.type, ev.data)``) AND run SSE (whole RunEvent envelope via
+    ``event.model_dump_json()``) per the module-level docstring at
+    events.py:7-8 — one constructor edit lights up both transports.
+    """
+
+    def test_payload_back_compat_when_data_is_none(self) -> None:
+        """``ToolResult.data is None`` → payload retains the three-key shape.
+
+        Back-compat: existing consumers see exactly ``{tool_name, is_error,
+        content}`` — the addition is silent until a tool surfaces
+        produced_files.
+        """
+        result = ToolResult(tool_name="web_search", content="ok", is_error=False)
+        event = RunEvent.tool_result(step=0, tool_name="web_search", result=result)
+        assert event.data == {
+            "tool_name": "web_search",
+            "is_error": False,
+            "content": "ok",
+        }
+        assert "produced_files" not in event.data
+
+    def test_payload_back_compat_when_data_omits_produced_files(self) -> None:
+        """Tools whose ``.data`` carries OTHER structured detail (truncated,
+        results) do not contribute produced_files; the field stays absent."""
+        result = ToolResult(
+            tool_name="file_read",
+            content="ok",
+            is_error=False,
+            data={"truncated": True},
+        )
+        event = RunEvent.tool_result(step=0, tool_name="file_read", result=result)
+        assert "produced_files" not in event.data
+
+    def test_produced_files_forwarded_when_present(self) -> None:
+        """Non-empty list under ``data["produced_files"]`` is forwarded verbatim.
+
+        Mirrors what the sandbox tool factory populates at
+        ``packages/core/src/persona/sandbox/tool.py:269-279`` — list of
+        ``{path, size_bytes, media_type}`` dicts.
+        """
+        produced = [
+            {"path": "charts/q1.png", "size_bytes": 12345, "media_type": "image/png"},
+            {
+                "path": "report.docx",
+                "size_bytes": 67890,
+                "media_type": (
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+            },
+        ]
+        result = ToolResult(
+            tool_name="code_execution",
+            content="ok",
+            is_error=False,
+            data={"produced_files": produced},
+        )
+        event = RunEvent.tool_result(step=1, tool_name="code_execution", result=result)
+        assert event.data["produced_files"] == produced
+        assert event.data["tool_name"] == "code_execution"
+        assert event.data["is_error"] is False
+        assert event.data["content"] == "ok"
+
+    def test_empty_produced_files_list_is_omitted(self) -> None:
+        """Empty ``produced_files: []`` is omitted from the payload.
+
+        Absence IS the back-compat shape; renderers treat absence as "no
+        files to render." This avoids emitting noise frames when a sandbox
+        dispatch happened to produce zero files.
+        """
+        result = ToolResult(
+            tool_name="code_execution",
+            content="ok",
+            is_error=False,
+            data={"produced_files": []},
+        )
+        event = RunEvent.tool_result(step=0, tool_name="code_execution", result=result)
+        assert "produced_files" not in event.data
+
+    def test_is_error_path_carries_no_produced_files(self) -> None:
+        """``ProducedFileSizeError`` + other failures: ``is_error=True``; data
+        may contain ``error_type`` / ``context`` but not produced_files.
+
+        The event surfaces ``is_error=True`` so the renderer routes to a
+        failure variant via the normaliser; absence of produced_files
+        prevents accidental file-card render alongside the failure.
+        """
+        result = ToolResult(
+            tool_name="code_execution",
+            content="produced file exceeds 100 MB cap",
+            is_error=True,
+            data={"error_type": "ProducedFileSizeError"},
+        )
+        event = RunEvent.tool_result(step=0, tool_name="code_execution", result=result)
+        assert event.data["is_error"] is True
+        assert "produced_files" not in event.data
+
+    def test_json_round_trip_preserves_produced_files(self) -> None:
+        """The forwarded structure survives ``model_dump_json`` / reload.
+
+        Run SSE serialises via ``event.model_dump_json()`` (D-09-1 nested
+        ``.data`` envelope); chat SSE serialises via
+        ``json.dumps(ev.data)`` (D-09-1 bare payload). Both paths require
+        the list to be JSON-safe — verified here.
+        """
+        produced = [
+            {"path": "charts/x.png", "size_bytes": 100, "media_type": "image/png"},
+        ]
+        result = ToolResult(
+            tool_name="code_execution",
+            content="ok",
+            is_error=False,
+            data={"produced_files": produced},
+        )
+        event = RunEvent.tool_result(step=2, tool_name="code_execution", result=result)
+        restored = RunEvent.model_validate_json(event.model_dump_json())
+        assert restored == event
+        assert restored.data["produced_files"] == produced

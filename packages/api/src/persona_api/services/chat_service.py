@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from persona.backends import StreamChunk
     from persona_runtime.agentic.events import RunEvent
     from persona_runtime.loop import ConversationLoop
+    from persona_runtime.prompt import DocumentContext
     from sqlalchemy import Connection, Engine
 
     from persona_api.schemas import ChannelContext
@@ -215,6 +216,7 @@ async def stream_chat(
     title_builder: Callable[[str], Awaitable[str]] | None = None,
     images: list[ImageRefSchema] | None = None,
     turn_has_image: bool = False,
+    document_context: DocumentContext | None = None,
 ) -> AsyncIterator[bytes]:
     """Drive ConversationLoop.turn and stream SSE; persist after the final yield.
 
@@ -281,7 +283,11 @@ async def stream_chat(
         # present. The scripted test loops accept ``**_kwargs`` so this is
         # compatible with both the real loop and the spec-08 scripted loops.
         async for chunk in loop.turn(
-            conversation, user_message, _on_event, turn_has_image=turn_has_image
+            conversation,
+            user_message,
+            _on_event,
+            turn_has_image=turn_has_image,
+            document_context=document_context,
         ):
             last_chunk = chunk
             for frame in _drain():  # tool_calling / tool_result that fired before this chunk

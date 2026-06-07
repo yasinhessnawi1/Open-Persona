@@ -33,6 +33,7 @@ __all__ = [
     "get_balance",
     "list_turn_usage",
     "list_usage",
+    "refund",
     "require_credits",
 ]
 
@@ -98,6 +99,45 @@ def deduct(*, rls_engine: Engine, user_id: str, amount: int, reason: str) -> int
                 id=f"ctx_{uuid.uuid4().hex}",
                 user_id=user_id,
                 delta=-amount,
+                reason=reason,
+            )
+        )
+    return int(new_balance)
+
+
+def refund(*, rls_engine: Engine, user_id: str, amount: int, reason: str) -> int:
+    """Refund ``amount`` credits via a reverse-deduct ledger entry. Returns the new balance.
+
+    Pattern (a) per D-15-X-credit-flow-semantics (spec 15 T13): writes
+    ``INSERT INTO credit_transactions (delta=+amount, reason=...)`` and runs
+    ``UPDATE credits SET balance = balance + amount`` in a single
+    ``rls_engine.begin()`` transaction so the ledger and the running balance
+    move atomically. Schema-compatible with the existing ``credit_transactions``
+    table (``delta`` is ``Integer, nullable=False`` with no ``CheckConstraint``,
+    so positive deltas are physically allowed — research §0.1); no Alembic
+    migration required.
+
+    Composed by ``persona_api.imagegen.service.generate`` (T15) on provider
+    failure after the pre-deduct gate has fired, so a denial-of-wallet attacker
+    cannot burn credits with parallel-fire failed generations
+    (D-15-X-pre-deduct-credits; T17 is the binary proof). ``amount = 0`` is a
+    no-op — no ledger row, no balance change, returns the current balance.
+    """
+    if amount == 0:
+        return ensure_balance(rls_engine=rls_engine, user_id=user_id)
+    ensure_balance(rls_engine=rls_engine, user_id=user_id)
+    with rls_engine.begin() as conn:
+        new_balance = conn.execute(
+            update(credits_t)
+            .where(credits_t.c.user_id == user_id)
+            .values(balance=credits_t.c.balance + amount, updated_at=text("now()"))
+            .returning(credits_t.c.balance)
+        ).scalar_one()
+        conn.execute(
+            insert(credit_tx_t).values(
+                id=f"ctx_{uuid.uuid4().hex}",
+                user_id=user_id,
+                delta=amount,
                 reason=reason,
             )
         )

@@ -13,6 +13,12 @@ validates ``skill_name`` against that closure, returning either:
 Integration smoke: the produced tool satisfies ``isinstance(tool,
 AsyncTool)`` and dispatches through :class:`persona.tools.Toolbox` like any
 other tool.
+
+Also covers ``collect_skill_supplements`` (Spec 16 M1a, D-16-2 /
+D-16-2-supplements-relative-path / D-16-X-7) — the producer must emit
+**relative** ``SandboxFile.path`` values so the consumer side's
+``host_in / f.path`` join lands at the bind-mount root, not at the
+container-internal absolute path.
 """
 
 # ruff: noqa: ANN401, ARG001, ARG002
@@ -24,13 +30,31 @@ from pathlib import Path  # noqa: TC003 — used at runtime in fixtures
 import pytest
 from persona.schema.skills import SkillSpec
 from persona.schema.tools import ToolCall
-from persona.skills.use_skill_tool import make_use_skill_tool
+from persona.skills.use_skill_tool import collect_skill_supplements, make_use_skill_tool
 from persona.tools.protocol import AsyncTool
 from persona.tools.toolbox import Toolbox
 
 
 def _spec(tmp_path: Path, name: str) -> SkillSpec:
     return SkillSpec(name=name, description=f"{name} desc", path=tmp_path)
+
+
+def _spec_with_supplements(root: Path, name: str, topics: list[str]) -> SkillSpec:
+    """Build a fake skill on disk with a ``supplements/`` directory.
+
+    ``root`` is the parent ``tmp_path``; each topic in ``topics`` is created
+    as ``<root>/<name>/supplements/<topic>.md`` with non-trivial bytes so
+    ``content_bytes`` is observably non-empty.
+    """
+    skill_root = root / name
+    supplements = skill_root / "supplements"
+    supplements.mkdir(parents=True)
+    for topic in topics:
+        (supplements / f"{topic}.md").write_text(
+            f"# {topic}\n\nDeeper guidance for {topic} under {name}.\n",
+            encoding="utf-8",
+        )
+    return SkillSpec(name=name, description=f"{name} desc", path=skill_root)
 
 
 class TestFactoryShape:
@@ -197,3 +221,129 @@ class TestToolboxIntegration:
         call = ToolCall(name="use_skill", args={"skill_name": "bogus"})
         result = await toolbox.dispatch(call)
         assert result.is_error is True
+
+
+# ---------------------------------------------------------------------------
+# Spec 16 — collect_skill_supplements (D-16-2 / D-16-X-7 /
+# D-16-2-supplements-relative-path regression guards)
+# ---------------------------------------------------------------------------
+
+
+class TestCollectSkillSupplementsRelativePath:
+    """D-16-2-supplements-relative-path regression guards.
+
+    Earlier revisions emitted absolute ``SandboxFile.path`` values of the
+    form ``/workspace/in/.skills/<name>/supplements/<topic>.md``. Because
+    ``Path('/host_in') / '/workspace/in/...'`` short-circuits to
+    ``Path('/workspace/in/...')`` per Python's path-join semantics, the
+    consumer ``LocalDockerSandbox._seed_workspace`` then attempted writes
+    at ``/workspace/in/...`` on the **host** — failing with
+    ``OSError: [Errno 30] Read-only file system: '/workspace'`` on macOS.
+    These tests enforce the source-of-truth discipline: paths in transport
+    are relative; the absolute form is only the mounted destination.
+    """
+
+    def test_returns_relative_paths(self, tmp_path: Path) -> None:
+        """No emitted ``SandboxFile.path`` may start with ``/``; each must
+        begin with ``.skills/`` (the workspace-root-relative prefix)."""
+        spec = _spec_with_supplements(
+            tmp_path,
+            "docx_generation",
+            ["tables", "styles"],
+        )
+        staged = collect_skill_supplements(spec)
+        assert len(staged) == 2
+        for entry in staged:
+            assert not entry.path.startswith("/"), (
+                f"SandboxFile.path {entry.path!r} is absolute; per "
+                "D-16-2-supplements-relative-path the transport form is "
+                "workspace-relative."
+            )
+            assert entry.path.startswith(".skills/"), (
+                f"SandboxFile.path {entry.path!r} must begin with .skills/ "
+                "(the workspace-relative supplements prefix)."
+            )
+            assert entry.content_bytes, "supplements payload must be non-empty"
+            assert entry.media_type == "text/markdown"
+
+    def test_relative_path_shape_per_topic(self, tmp_path: Path) -> None:
+        """The relative path is ``.skills/<name>/supplements/<topic>.md`` —
+        no leading slash, no ``/workspace/in/`` prefix."""
+        spec = _spec_with_supplements(tmp_path, "xlsx_generation", ["formulas"])
+        [entry] = collect_skill_supplements(spec)
+        assert entry.path == ".skills/xlsx_generation/supplements/formulas.md"
+
+    def test_round_trip_via_seed_workspace(self, tmp_path: Path) -> None:
+        """Mimic ``LocalDockerSandbox._seed_workspace``'s ``host_in / f.path``
+        join. With **relative** transport paths, the files must land under
+        ``<host_in>/.skills/<name>/supplements/<topic>.md`` — NOT at
+        ``/workspace/in/...`` on the host.
+
+        This is the direct regression for the production bug D-16-X-7
+        surfaced: pre-fix, the join short-circuited to an absolute
+        ``/workspace/...`` path on the host, which raised
+        ``OSError: [Errno 30] Read-only file system`` on macOS.
+        """
+        skills_root = tmp_path / "skills_src"
+        spec = _spec_with_supplements(skills_root, "pdf_generation", ["flowables"])
+        staged = collect_skill_supplements(spec)
+
+        host_in = tmp_path / "host_in"
+        host_in.mkdir()
+        # Inline the consumer's join semantics verbatim from
+        # ``LocalDockerSandbox._seed_workspace``.
+        for f in staged:
+            target = host_in / f.path
+            assert str(target).startswith(str(host_in)), (
+                f"join short-circuited: target {target!r} escaped host_in "
+                f"{host_in!r} (the D-16-X-7 production bug)"
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            assert f.content_bytes is not None
+            target.write_bytes(f.content_bytes)
+
+        expected = host_in / ".skills/pdf_generation/supplements/flowables.md"
+        assert expected.is_file(), (
+            f"expected supplement landed at {expected}; the host-side seed "
+            "did not place the bytes correctly under host_in"
+        )
+        # And critically, NOT at the absolute /workspace/in/... path.
+        forbidden = Path("/workspace/in/.skills/pdf_generation/supplements/flowables.md")
+        assert not forbidden.exists(), (
+            "supplement leaked to absolute /workspace/in/...; transport "
+            "path must be relative (D-16-2-supplements-relative-path)"
+        )
+
+    def test_path_matches_skill_md_teaching(self, tmp_path: Path) -> None:
+        """At the bind-mount-internal view, ``/workspace/in/`` + the
+        relative ``SandboxFile.path`` equals the absolute path the SKILL.md
+        packs teach the model (``/workspace/in/.skills/<name>/supplements/
+        <topic>.md``).
+
+        This is the D-16-2-path "path-taught == path-staged" invariant
+        re-stated at the relative-transport layer: the SKILL.md packs
+        teach the absolute sandbox-internal path; the transport carries
+        the workspace-relative path; the two reconcile via the bind-mount
+        prefix.
+        """
+        spec = _spec_with_supplements(
+            tmp_path,
+            "pptx_generation",
+            ["layouts"],
+        )
+        [entry] = collect_skill_supplements(spec)
+        # The SKILL.md teaches: /workspace/in/.skills/<name>/supplements/<topic>.md
+        expected_skill_md_view = "/workspace/in/.skills/pptx_generation/supplements/layouts.md"
+        # The bind-mount-internal view = "/workspace/in/" + relative transport.
+        reconstructed = "/workspace/in/" + entry.path
+        assert reconstructed == expected_skill_md_view, (
+            f"reconstructed sandbox view {reconstructed!r} does not equal the "
+            f"path the SKILL.md packs teach ({expected_skill_md_view!r}); "
+            "D-16-2-path / D-16-2-supplements-relative-path invariant broken."
+        )
+
+    def test_no_supplements_dir_returns_empty(self, tmp_path: Path) -> None:
+        """The lean case for skills that fit inline — no supplements/ dir
+        ⇒ empty list, no errors."""
+        spec = SkillSpec(name="lean_skill", description="lean", path=tmp_path)
+        assert collect_skill_supplements(spec) == []

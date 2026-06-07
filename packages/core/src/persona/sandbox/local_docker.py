@@ -183,7 +183,15 @@ _BASE_CONTAINER_KWARGS: dict[str, Any] = {
         "PYTHONUNBUFFERED": "1",  # stream stdout in real time
         "HOME": "/home/nobody",
         "TMPDIR": "/tmp",
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        # D-12-X-venv-path-ordering: prepend /opt/venv/bin so the persona-sandbox
+        # image's venv-installed tooling (python-docx, openpyxl, python-pptx,
+        # reportlab, etc.) is reachable via ``python`` / ``pip`` without forcing
+        # SKILL.md packs to teach a ``sys.path.insert`` workaround. The explicit
+        # system-path tail preserves R-12-2's hardening intent (no host PATH
+        # leakage, no shell-injection vector). Surfaced by Spec 16 T09/T10 as a
+        # production bug: without the venv prefix, ``from docx import Document``
+        # raises ModuleNotFoundError inside the running container.
+        "PATH": "/opt/venv/bin:/usr/local/bin:/usr/bin:/bin",
         "MPLCONFIGDIR": "/home/nobody/.mpl",
     },
 }
@@ -447,6 +455,109 @@ class LocalDockerSandbox:
             await asyncio.to_thread(client.close)
         except DockerException as exc:  # pragma: no cover — defensive
             _logger.warning("docker client close failed", exc_type=type(exc).__name__)
+
+    async def copy_produced_file_to(
+        self,
+        session_id: str,
+        ref: str,
+        target_path: Path,
+    ) -> None:
+        """Copy a produced file from the session's host_out to a target path.
+
+        D-12-X-read-produced-file local impl: ``shutil.copyfile`` from
+        ``<host_out>/<ref>`` to ``target_path``. Direct disk-to-disk via
+        the OS — zero memory pressure regardless of file size, up to the
+        :data:`PRODUCED_FILE_CAP_BYTES` cap.
+        """
+        source = self._resolve_produced_source(session_id, ref)
+        await asyncio.to_thread(self._copy_produced_sync, source, target_path, session_id, ref)
+
+    async def read_produced_file_bytes(
+        self,
+        session_id: str,
+        ref: str,
+    ) -> bytes:
+        """Read produced file bytes for audit/debug small-file paths.
+
+        D-12-X-read-produced-file local impl: a guarded
+        ``source.read_bytes()`` after the size cap is checked.
+        """
+        source = self._resolve_produced_source(session_id, ref)
+        return await asyncio.to_thread(self._read_produced_sync, source, session_id, ref)
+
+    def _resolve_produced_source(self, session_id: str, ref: str) -> Path:
+        """Resolve the host path of a produced file in the session's out-mount.
+
+        Raises :class:`CodeSandboxError` if the session has no recorded
+        workspace (was never created / already reaped).
+        """
+        if session_id not in self._session_workspaces:
+            msg = f"session {session_id!r} has no recorded workspace; cannot read produced file"
+            raise CodeSandboxError(
+                msg,
+                context={"reason": "no_session", "session_id": session_id, "ref": ref},
+            )
+        _host_in, host_out = self._session_workspaces[session_id]
+        return host_out / ref
+
+    @staticmethod
+    def _copy_produced_sync(source: Path, target_path: Path, session_id: str, ref: str) -> None:
+        """Sync copy with size-cap + missing-file guards. Called via ``to_thread``."""
+        from persona.sandbox.errors import ProducedFileSizeError  # noqa: PLC0415
+        from persona.sandbox.protocol import PRODUCED_FILE_CAP_BYTES  # noqa: PLC0415
+
+        if not source.is_file():
+            msg = f"produced file {ref!r} not found in session {session_id!r}"
+            raise CodeSandboxError(
+                msg,
+                context={"reason": "produced_file_missing", "session_id": session_id, "ref": ref},
+            )
+        size_bytes = source.stat().st_size
+        if size_bytes > PRODUCED_FILE_CAP_BYTES:
+            msg = (
+                f"produced file {ref!r} is {size_bytes} bytes, "
+                f"exceeds {PRODUCED_FILE_CAP_BYTES}-byte cap"
+            )
+            raise ProducedFileSizeError(
+                msg,
+                context={
+                    "ref": ref,
+                    "size_bytes": str(size_bytes),
+                    "cap_bytes": str(PRODUCED_FILE_CAP_BYTES),
+                    "session_id": session_id,
+                },
+            )
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target_path)
+
+    @staticmethod
+    def _read_produced_sync(source: Path, session_id: str, ref: str) -> bytes:
+        """Sync read with size-cap + missing-file guards. Called via ``to_thread``."""
+        from persona.sandbox.errors import ProducedFileSizeError  # noqa: PLC0415
+        from persona.sandbox.protocol import PRODUCED_FILE_CAP_BYTES  # noqa: PLC0415
+
+        if not source.is_file():
+            msg = f"produced file {ref!r} not found in session {session_id!r}"
+            raise CodeSandboxError(
+                msg,
+                context={"reason": "produced_file_missing", "session_id": session_id, "ref": ref},
+            )
+        size_bytes = source.stat().st_size
+        if size_bytes > PRODUCED_FILE_CAP_BYTES:
+            msg = (
+                f"produced file {ref!r} is {size_bytes} bytes, "
+                f"exceeds {PRODUCED_FILE_CAP_BYTES}-byte cap"
+            )
+            raise ProducedFileSizeError(
+                msg,
+                context={
+                    "ref": ref,
+                    "size_bytes": str(size_bytes),
+                    "cap_bytes": str(PRODUCED_FILE_CAP_BYTES),
+                    "session_id": session_id,
+                },
+            )
+        return source.read_bytes()
 
     # -- Sync internals (called via asyncio.to_thread) ---------------------
 

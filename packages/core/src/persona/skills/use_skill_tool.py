@@ -33,9 +33,57 @@ from persona.schema.tools import ToolResult
 from persona.tools.protocol import AsyncTool, tool
 
 if TYPE_CHECKING:
+    from persona.sandbox.result import SandboxFile
     from persona.schema.skills import SkillSpec
 
-__all__ = ["make_use_skill_tool"]
+__all__ = ["collect_skill_supplements", "make_use_skill_tool"]
+
+
+def collect_skill_supplements(spec: SkillSpec) -> list[SandboxFile]:
+    """Scan ``<spec.path>/supplements/`` for ``*.md`` files (Spec 16 M1a, D-16-2).
+
+    Returns a list of :class:`SandboxFile` entries with **relative** ``path``
+    values of the form ``.skills/<spec.name>/supplements/<topic>.md``
+    (D-16-2-supplements-relative-path). The consumer joins them with the
+    substrate's bind-mount root:
+
+    * Local docker: ``host_in / f.path`` → ``<host_in>/.skills/<name>/...``,
+      which becomes ``/workspace/in/.skills/<name>/...`` inside the container
+      (the path the SKILL.md packs teach the model to read).
+    * Hosted E2B: ``/home/user/{f.path}`` → ``/home/user/.skills/<name>/...``
+      (the hosted equivalent of ``/workspace/in`` per D-12-9).
+
+    **Source-of-truth discipline:** the path *in transport* (the
+    ``SandboxFile.path`` field) is relative; the absolute form is only the
+    mounted destination inside the sandbox. Earlier revisions used an
+    absolute ``/workspace/in/.skills/...`` here, which short-circuited
+    ``Path('/host_in') / '/workspace/in/...' == Path('/workspace/in/...')``
+    semantics and caused the host-side write to fail with
+    ``OSError: [Errno 30] Read-only file system: '/workspace'`` (D-16-X-7).
+
+    The runtime stages these as ``input_files`` on the next ``code_execution``
+    dispatch so the model can read deeper guidance from inside sandboxed code.
+    No supplements directory ⇒ empty list (the lean case for skills that fit
+    inline). Tool factory stays oblivious to ``SkillSpec`` — it just receives
+    generic ``SandboxFile`` entries (D-16-2-wiring boundary).
+    """
+    from persona.sandbox.result import SandboxFile
+
+    supplements_dir = spec.path / "supplements"
+    if not supplements_dir.is_dir():
+        return []
+    staged: list[SandboxFile] = []
+    for md_path in sorted(supplements_dir.glob("*.md")):
+        payload = md_path.read_bytes()
+        staged.append(
+            SandboxFile(
+                path=f".skills/{spec.name}/supplements/{md_path.stem}.md",
+                content_bytes=payload,
+                size_bytes=len(payload),
+                media_type="text/markdown",
+            )
+        )
+    return staged
 
 
 def make_use_skill_tool(skills: list[SkillSpec]) -> AsyncTool:

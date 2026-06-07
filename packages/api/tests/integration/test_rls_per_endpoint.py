@@ -280,3 +280,232 @@ def test_runtime_store_path_is_tenant_scoped(app_client: TestClient) -> None:
     app_eng.dispose()
     su.dispose()
     assert visible == 0  # B cannot see A's persona's memory chunks
+
+
+# ---------------------------------------------------------------------------
+# Spec 15 T18: cross-tenant RLS sweep extension for /imagegen.
+#
+# Extends the spec-08 sweep + the spec-13 T11 uploads pair so the imagegen
+# route is covered by the same RLS adversarial proof. Same shape as the
+# uploads cross-tenant test (D-08-1 existence-disclosure-safe 404), plus
+# the three Spec 15 invariants the imagegen route adds on top:
+#
+# 1. **No bytes written for B** — the route's pre-flight RLS persona check
+#    fires before the service layer's workspace I/O, so user B's workspace
+#    subtree (under A's persona id, or anywhere) stays empty.
+# 2. **Credits for B NOT deducted** — the pre-flight 404 fires BEFORE the
+#    route's ``require_credits`` gate AND before the service-layer
+#    pre-deduct (D-15-X-pre-deduct-credits), so the credits ledger has no
+#    new entries for B.
+# 3. **No audit entry for B** — the route only emits ``imagegen.create`` on
+#    the success branch (after a successful generation); the 404 path
+#    short-circuits before any audit emission.
+#
+# These three invariants together prove "cross-tenant attack is structurally
+# inert" — not just "the HTTP response is 404" but "no side effect on the
+# system from the attempt." Mirrors the test_api_imagegen.py scenario-2
+# pattern, but landed here in the per-endpoint sweep so the spec-08 RLS
+# acceptance proof inherits the imagegen route.
+# ---------------------------------------------------------------------------
+
+
+class _NoOpImageBackend:
+    """Fake :class:`ImageBackend` that fails loud if dispatched.
+
+    The cross-tenant 404 must fire at the route's pre-flight RLS check —
+    BEFORE any backend dispatch. If the test ever reaches ``generate()``
+    the assertion below makes the failure obvious, rather than silently
+    succeeding because B's request happens to fail later for an unrelated
+    reason. Mirrors the ``_RejectingBackend`` shape from test_api_imagegen.
+    """
+
+    @property
+    def provider_name(self) -> str:
+        return "fake"
+
+    @property
+    def model_name(self) -> str:
+        return "fake-no-op"
+
+    async def generate(self, prompt: str, *, options: object | None = None) -> object:  # noqa: ARG002
+        raise AssertionError(
+            "imagegen backend reached on cross-tenant call — pre-flight RLS 404 should have fired"
+        )
+
+    async def edit(
+        self,
+        input_image: object,
+        instructions: str,  # noqa: ARG002
+        *,
+        options: object | None = None,  # noqa: ARG002
+    ) -> object:
+        raise NotImplementedError("edit not supported in v1")
+
+
+def test_user_b_cannot_post_imagegen_to_user_a_persona(
+    migrated_engine: Engine,  # noqa: ARG001 — ensures schema + grants
+    embedder: HashEmbedder384,
+    tmp_path: object,
+) -> None:
+    """Spec 15 T18: cross-tenant POST to /personas/{id}/imagegen → 404.
+
+    Two users, persona owned by A; B's POST returns 404 (existence-
+    disclosure-safe per D-08-1 / D-15-X-workspace-coordination). The three
+    Spec-15-specific invariants are asserted on top of the base 404:
+
+    * No bytes written for B (workspace empty under B/A_persona_id).
+    * No credits movement for B (no new credit_transactions row).
+    * No audit entry for B (no imagegen.create row).
+    """
+    import os
+    from pathlib import Path
+
+    from persona_api.app import create_app
+    from persona_api.config import APIConfig
+    from persona_api.db.models import audit_log as audit_log_t
+    from persona_api.db.models import credit_transactions as credit_tx_t
+    from sqlalchemy import select
+
+    app_url = os.environ.get("APP_DATABASE_URL")
+    if not app_url:
+        pytest.skip("APP_DATABASE_URL not set")
+    # Cross-tenant isolation requires RLS to actually fire — superusers
+    # bypass RLS per D-07-5. Skip cleanly when the test env is using the
+    # superuser DSN; the structural invariant cannot be verified there.
+    if "persona_app" not in app_url:
+        pytest.skip(
+            "APP_DATABASE_URL is not using the non-superuser persona_app role;"
+            " RLS isolation cannot be verified (D-07-5)"
+        )
+
+    assert isinstance(tmp_path, Path)
+    workspace_root = tmp_path / "workspace"
+    cfg = APIConfig(
+        app_database_url=app_url,
+        audit_root=str(tmp_path / "audit"),
+        workspace_root=workspace_root,
+    )
+    app = create_app(cfg)
+
+    from persona_api.auth import AuthenticatedUser
+
+    async def _verify(token: str) -> AuthenticatedUser:
+        return AuthenticatedUser(id=token, email=None)
+
+    async def _build(_pid: str) -> _Loop:
+        return _Loop()
+
+    with TestClient(app) as c:
+        app.state.verify_token = _verify
+        # Mirror the existing ``app_client`` fixture overrides so the
+        # create-persona path doesn't pull a real chat backend (which
+        # would 500 on missing ANTHROPIC_API_KEY in CI) and uses a fast
+        # deterministic embedder for memory population.
+        app.state.embedder = embedder
+        app.state.build_conversation_loop = _build
+        # Drop the runtime registry so the persona-detail response does
+        # not lazily instantiate a chat backend (the registry's
+        # ``supports_vision_for`` triggers a backend construction which
+        # raises ``AuthenticationError("missing API key")`` when
+        # ``ANTHROPIC_API_KEY`` is unset — pre-existing CI surface). The
+        # ``_persona_detail`` helper treats a missing registry as
+        # ``capabilities = None`` (test paths), so the 201 lands cleanly.
+        if hasattr(app.state, "tier_registry"):
+            app.state.tier_registry = None
+        # Install a fake backend that loud-fails if reached. Cross-tenant
+        # 404 must fire BEFORE dispatch — this is the structural guarantee.
+        app.state.image_backend = _NoOpImageBackend()
+        su = make_rls_engine(os.environ["DATABASE_URL"])
+        try:
+            # Seed both users under the superuser engine (FK target for
+            # personas.owner_id + credits.user_id).
+            with su.begin() as conn:
+                for u in ("user_A", "user_B"):
+                    conn.execute(
+                        text(
+                            "INSERT INTO users (id, email) VALUES (:i, :e) ON CONFLICT DO NOTHING"
+                        ),
+                        {"i": u, "e": f"{u}@x.test"},
+                    )
+
+            # A creates a persona. The body is the minimal valid YAML from
+            # the existing sweep above; visual_style left unset (T10 made
+            # it additive + optional).
+            pid = c.post("/v1/personas", json={"yaml": _YAML}, headers=_h("user_A")).json()["id"]
+
+            # Snapshot the credit_transactions + audit_log state for B
+            # before the cross-tenant attempt. Both should be unchanged
+            # afterward.
+            with su.begin() as conn:
+                pre_deltas = [
+                    int(r[0])
+                    for r in conn.execute(
+                        select(credit_tx_t.c.delta).where(credit_tx_t.c.user_id == "user_B")
+                    ).all()
+                ]
+                pre_actions = [
+                    str(r[0])
+                    for r in conn.execute(
+                        select(audit_log_t.c.action).where(audit_log_t.c.user_id == "user_B")
+                    ).all()
+                ]
+
+            # B's cross-tenant POST → 404 (existence-disclosure-safe).
+            resp = c.post(
+                f"/v1/personas/{pid}/imagegen",
+                json={"prompt": "a red bicycle", "size": "1024x1024", "count": 1},
+                headers=_h("user_B"),
+            )
+            assert resp.status_code == 404, resp.text
+
+            # Invariant 1: no bytes for B anywhere under the workspace.
+            # The route 404s before any I/O — neither B/A_persona_id/uploads
+            # nor any B subtree should exist with content. ``glob('**/*')``
+            # walks the whole workspace and asserts no files (directories
+            # may exist from the app's ``workspace_root.mkdir`` at startup,
+            # but no file bytes).
+            user_b_root = workspace_root / "user_B"
+            if user_b_root.exists():
+                files = [p for p in user_b_root.rglob("*") if p.is_file()]
+                assert files == [], f"expected no bytes for user B, got {files}"
+            # Defensive: confirm B/A_persona_id specifically is empty too.
+            user_b_a_persona = workspace_root / "user_B" / pid
+            if user_b_a_persona.exists():
+                files = [p for p in user_b_a_persona.rglob("*") if p.is_file()]
+                assert files == [], f"expected no bytes at workspace/user_B/{pid}, got {files}"
+
+            # Invariant 2: no credits movement for B (the pre-flight 404
+            # fires before require_credits + before service-layer
+            # pre-deduct). The ledger row count for B is unchanged.
+            with su.begin() as conn:
+                post_deltas = [
+                    int(r[0])
+                    for r in conn.execute(
+                        select(credit_tx_t.c.delta).where(credit_tx_t.c.user_id == "user_B")
+                    ).all()
+                ]
+            assert post_deltas == pre_deltas, (
+                f"expected no credit movement for user B, got pre={pre_deltas} post={post_deltas}"
+            )
+
+            # Invariant 3: no audit entry for B against ``imagegen.create``
+            # (the API-layer audit only fires on the success branch in
+            # routes/imagegen.py; the 404 short-circuits before it).
+            with su.begin() as conn:
+                post_actions = [
+                    str(r[0])
+                    for r in conn.execute(
+                        select(audit_log_t.c.action).where(audit_log_t.c.user_id == "user_B")
+                    ).all()
+                ]
+            assert "imagegen.create" not in post_actions, (
+                f"expected no imagegen.create audit row for user B, got {post_actions}"
+            )
+            # And nothing new at all on the imagegen action for B.
+            new_actions = [a for a in post_actions if a not in pre_actions]
+            assert "imagegen.create" not in new_actions
+
+        finally:
+            with su.begin() as conn:
+                conn.execute(text("DELETE FROM users WHERE id IN ('user_A','user_B')"))
+            su.dispose()

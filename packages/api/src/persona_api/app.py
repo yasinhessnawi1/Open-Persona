@@ -20,6 +20,15 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from persona.imagegen import (
+    ImageBackend,
+    ImageBackendConfig,
+    ImageGenUnavailableError,
+    load_image_backend,
+)
+from persona.logging import get_logger
+from persona.stores.document_store import DocumentStore
+from persona.stores.postgres import PostgresBackend
 from persona_runtime.errors import TierNotConfiguredError
 from persona_runtime.tier import tier_registry_from_env
 
@@ -38,6 +47,7 @@ from persona_api.routes import (
     conversations,
     documents,
     health,
+    imagegen,
     me,
     personas,
     runs,
@@ -55,6 +65,50 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine
 
 __all__ = ["create_app"]
+
+
+_LOG = get_logger("api.app")
+
+
+def _compose_image_backend() -> ImageBackend | None:
+    """Build the image-generation backend at startup (spec 15 T16).
+
+    Reads ``PERSONA_IMAGEGEN_*`` env vars via
+    :class:`persona.imagegen.ImageBackendConfig`. When ``api_key`` is
+    ``None`` (the env var is unset) we return ``None`` and log a warning
+    rather than raising — dev environments without an image provider
+    boot cleanly; the route raises
+    :class:`persona.imagegen.ImageGenUnavailableError` → 503 on a request
+    that needs the backend, same fail-loud pattern as the Spec 12
+    sandbox-pool absence (D-12-5).
+
+    Returns ``None`` when no provider is configured OR when the concrete
+    backend constructor itself raises
+    :class:`ImageGenUnavailableError` at construction time (auth check
+    happens then per D-15-X-construction-time-fail-fast; we let the
+    deployment boot regardless so chat / runs / authoring routes stay
+    available).
+    """
+    config = ImageBackendConfig.from_env(prefix="PERSONA_IMAGEGEN_")
+    if config.api_key is None:
+        _LOG.warning(
+            "PERSONA_IMAGEGEN_API_KEY not set — image generation will return 503"
+            " (provider={provider} model={model})",
+            provider=config.provider,
+            model=config.model,
+        )
+        return None
+    try:
+        return load_image_backend(config)
+    except ImageGenUnavailableError as exc:
+        _LOG.warning(
+            "image backend construction failed; image generation will return 503"
+            " (provider={provider} model={model} reason={reason})",
+            provider=config.provider,
+            model=config.model,
+            reason=str(exc),
+        )
+        return None
 
 
 def _e2b_api_key_present() -> bool:
@@ -108,6 +162,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # available; in-memory otherwise. The buckets table is NOT under RLS, so the
     # Postgres store uses a plain (non-listener) engine.
     app.state.rate_limiter = _build_rate_limiter(config, rls_engine)
+
+    # F3 — DocumentStore builder (Spec 14 T17/T18). Per-request callable so
+    # routes/uploads.py + routes/documents.py + routes/conversations.py
+    # (cascade-delete) can construct a DocumentStore bound to the RLS-scoped
+    # engine. Cross-tenant access is structurally blocked by D-08-1's pool
+    # listener; the builder is just the composition wiring. None when no DB
+    # engine is configured (test paths override `app.state.build_document_store`
+    # with an in-memory fake; see routes/documents.py).
+    if rls_engine is not None:
+        _document_backend = PostgresBackend(engine=rls_engine, embedder=app.state.embedder)
+        app.state.build_document_store = lambda: DocumentStore(backend=_document_backend)
+    # Sibling alias for routes/documents.py which reads `sandbox_root` (legacy
+    # name from the spec-03 sandbox-path resolver). Same value as
+    # `workspace_root`; keeping the alias avoids a route rename ripple.
+    app.state.sandbox_root = app.state.workspace_root
     # The agentic-run registry (T11, D-08-5): in-process event bus + task tracker.
     # Single worker (S08-4). Cancelled on shutdown.
     run_registry = RunRegistry(rls_engine) if rls_engine is not None else None
@@ -131,6 +200,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await sandbox_pool.start()  # spawns the pool-owned background reaper
     app.state.sandbox_pool = sandbox_pool
 
+    # Image-generation backend (spec 15 T16). Composed at startup so the
+    # route layer can dispatch through ``app.state.image_backend`` without
+    # re-reading env vars per request. ``None`` when no provider is
+    # configured — the route raises ``ImageGenUnavailableError`` → 503
+    # in that case (same dev-friendly graceful-absence shape as the
+    # E2B-less sandbox pool).
+    app.state.image_backend = _compose_image_backend()
+
     # Runtime composition root (T10): the TierRegistry (app-scoped) + the
     # per-request loop builders. Built only when a model backend is configured
     # AND a DB engine exists; tests override app.state.build_conversation_loop
@@ -152,6 +229,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # Spec 12 T10: pass the hosted sandbox pool (may be None when
                 # E2B_API_KEY is unset; factory absents code_execution in that case).
                 sandbox_pool=sandbox_pool,
+                # Spec 17 D-17-X-bytes-persistence: thread the workspace root
+                # so the code_execution tool persists produced files into the
+                # served persona workspace + stages intermediate/* cross-turn.
+                workspace_root=app.state.workspace_root,
             )
             app.state.tier_registry = tier_registry
             app.state.authoring_tier = config.authoring_tier
@@ -247,3 +328,4 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(tools.router)
     app.include_router(documents.router)
     app.include_router(uploads.router)
+    app.include_router(imagegen.router)

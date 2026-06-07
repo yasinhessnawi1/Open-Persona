@@ -18,6 +18,8 @@ toolbox / loops dispatched, and returns a configurable
 
 from __future__ import annotations
 
+from pathlib import Path  # noqa: TC003 — runtime use in copy_produced_file_to
+
 from persona.sandbox import (
     ExecutionResult,
     NetworkPolicy,
@@ -57,6 +59,9 @@ class FakeSandbox:
         self.created_sessions: set[str] = set()
         self.destroyed_sessions: set[str] = set()
         self.aclose_called = False
+        # D-12-X-read-produced-file Protocol contract additions:
+        self.copy_calls: list[dict[str, object]] = []
+        self.produced_bytes: dict[str, bytes] = {}
 
     async def execute(
         self,
@@ -98,3 +103,23 @@ class FakeSandbox:
 
     async def aclose(self) -> None:
         self.aclose_called = True
+
+    async def copy_produced_file_to(
+        self,
+        session_id: str,  # noqa: ARG002 — Protocol contract; fake doesn't use it
+        ref: str,  # noqa: ARG002 — Protocol contract; fake doesn't use it
+        target_path: Path,  # noqa: ARG002 — Protocol contract; fake doesn't use it
+    ) -> None:
+        """D-12-X-read-produced-file Protocol contract. Fake records the call
+        in :attr:`copy_calls`; tests can populate :attr:`produced_bytes` to
+        simulate file presence and patch ``target_path.write_bytes`` as needed."""
+        self.copy_calls.append({"session_id": session_id, "ref": ref, "target_path": target_path})
+
+    async def read_produced_file_bytes(
+        self,
+        session_id: str,  # noqa: ARG002 — Protocol contract
+        ref: str,
+    ) -> bytes:
+        """D-12-X-read-produced-file Protocol contract. Returns
+        :attr:`produced_bytes[ref]` if set, else ``b""``."""
+        return self.produced_bytes.get(ref, b"")

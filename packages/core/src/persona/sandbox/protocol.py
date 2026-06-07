@@ -42,6 +42,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from persona.sandbox.result import (
         ExecutionResult,
         NetworkPolicy,
@@ -49,7 +51,18 @@ if TYPE_CHECKING:
         SandboxFile,
     )
 
-__all__ = ["CodeSandbox"]
+
+#: Per-file size cap when persisting sandbox-produced bytes to the API workspace
+#: (D-12-X-read-produced-file). 100 MB covers ~99% of realistic charts and
+#: documents; beyond this, the runtime raises
+#: :class:`persona.sandbox.errors.ProducedFileSizeError` and Spec 06's
+#: tool-error-recovery surfaces the cap to the model so it can produce a
+#: smaller file. Distinct from the substrate-side
+#: :class:`persona.sandbox.result.ResourceLimits` caps (which are runtime
+#: caps); this is the *persist-time* cap.
+PRODUCED_FILE_CAP_BYTES = 100 * 1024 * 1024
+
+__all__ = ["PRODUCED_FILE_CAP_BYTES", "CodeSandbox"]
 
 
 @runtime_checkable
@@ -201,5 +214,92 @@ class CodeSandbox(Protocol):
         composition root (T10) registers this with the FastAPI lifespan
         symmetrically to :meth:`TierRegistry.aclose` and the MCP client
         :meth:`disconnect` calls.
+        """
+        ...
+
+    async def copy_produced_file_to(
+        self,
+        session_id: str,
+        ref: str,
+        target_path: Path,
+    ) -> None:
+        """Copy a produced file from the sandbox session to a host path
+        (D-12-X-read-produced-file).
+
+        After :meth:`execute` returns, ``ExecutionResult.produced_files``
+        carries metadata only — the bytes live in the sandbox session's
+        write-mount on the host (local) or in the substrate's filesystem
+        (hosted). This method copies those bytes to ``target_path`` so the
+        API persona workspace can serve them via the existing
+        ``GET /v1/personas/:id/uploads/{ref:path}`` route.
+
+        Two-tier production-shaped contract:
+
+        - **Local impl** uses ``shutil.copyfile(source, target_path)``
+          — direct disk-to-disk via the OS, zero memory pressure regardless
+          of file size. The source lives at
+          ``<sandbox_workspace_root>/session-<safe_id>/out/<ref>``.
+        - **Hosted impl** (E2B) reads ``await sandbox.files.read(...)``
+          then writes the bytes — memory == file size (SDK doesn't stream).
+
+        **Runtime always uses this** for persistence;
+        :meth:`read_produced_file_bytes` is for audit/debug small-file cases.
+
+        The :data:`PRODUCED_FILE_CAP_BYTES` cap (100 MB) is enforced here.
+        Beyond the cap, :class:`persona.sandbox.errors.ProducedFileSizeError`
+        is raised — the runtime catches it and surfaces via Spec 06
+        tool-error-recovery so the model produces a smaller file
+        (resize chart, slim PDF, sample dataframe before export).
+
+        Args:
+            session_id: The session that produced the file (the
+                tenant-isolated keying from kickoff trip-up #6).
+            ref: Workspace-relative path returned in
+                ``ExecutionResult.produced_files[i].path``.
+            target_path: Host filesystem destination. Caller ensures the
+                parent directory exists.
+
+        Raises:
+            persona.sandbox.errors.ProducedFileSizeError: ``ref`` exceeds
+                :data:`PRODUCED_FILE_CAP_BYTES` (100 MB).
+            persona.sandbox.errors.CodeSandboxError: Backend internal
+                failure (file missing from sandbox; substrate I/O error).
+            persona.sandbox.errors.SandboxUnavailableError: Backend
+                substrate unreachable.
+        """
+        ...
+
+    async def read_produced_file_bytes(
+        self,
+        session_id: str,
+        ref: str,
+    ) -> bytes:
+        """Read produced file bytes — convenience for small files
+        (D-12-X-read-produced-file).
+
+        Intended for audit/debug paths that need the bytes inline (e.g.
+        logging a small artifact, computing a hash). For routine
+        persistence, the runtime calls :meth:`copy_produced_file_to`
+        instead — that path is zero-memory on the local backend.
+
+        The :data:`PRODUCED_FILE_CAP_BYTES` cap (100 MB) is enforced.
+        Beyond the cap, :class:`persona.sandbox.errors.ProducedFileSizeError`
+        is raised.
+
+        Args:
+            session_id: The session that produced the file.
+            ref: Workspace-relative path returned in
+                ``ExecutionResult.produced_files[i].path``.
+
+        Returns:
+            File bytes.
+
+        Raises:
+            persona.sandbox.errors.ProducedFileSizeError: ``ref`` exceeds
+                :data:`PRODUCED_FILE_CAP_BYTES` (100 MB).
+            persona.sandbox.errors.CodeSandboxError: Backend internal
+                failure (file missing; substrate I/O error).
+            persona.sandbox.errors.SandboxUnavailableError: Backend
+                substrate unreachable.
         """
         ...

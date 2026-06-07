@@ -167,13 +167,56 @@ class TestR122Hardening:
     def test_minimal_environment(self) -> None:
         """R-12-2 #14: minimal env — no host PATH/HOME leakage."""
         env = _BASE_CONTAINER_KWARGS["environment"]
-        # Allowed
-        assert env["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+        # Allowed (D-12-X-venv-path-ordering: venv prefix is the first segment
+        # so the image's installed tooling is reachable, system tail preserves
+        # R-12-2 explicit-PATH hardening).
+        assert env["PATH"] == "/opt/venv/bin:/usr/local/bin:/usr/bin:/bin"
         assert env["HOME"] == "/home/nobody"
         assert env["PYTHONUNBUFFERED"] == "1"
         # Disallowed: anything that would leak host secrets
         for forbidden in ("AWS_ACCESS_KEY_ID", "OPENAI_API_KEY", "DATABASE_URL", "USER"):
             assert forbidden not in env
+
+    def test_path_contains_venv_bin_prefix(self) -> None:
+        """D-12-X-venv-path-ordering regression guard.
+
+        The persona-sandbox image's ``ENV PATH=/opt/venv/bin:$PATH`` puts the
+        venv's ``python``/``pip`` first; the container kwargs override that
+        env, so the venv prefix MUST be the first segment of the override or
+        ``from docx import Document`` (and every other image-installed lib)
+        raises ``ModuleNotFoundError`` at runtime. Surfaced by Spec 16
+        T09/T10 — a future R-12-2 re-hardening pass MUST NOT silently revert
+        this.
+        """
+        env_path = _BASE_CONTAINER_KWARGS["environment"]["PATH"]
+        segments = env_path.split(":")
+        assert segments[0] == "/opt/venv/bin", (
+            f"venv bin must be the FIRST PATH segment so image-installed "
+            f"tooling is reachable; got {env_path!r}"
+        )
+
+    def test_path_preserves_system_paths(self) -> None:
+        """D-12-X-venv-path-ordering: R-12-2 explicit-PATH hardening preserved.
+
+        The venv prefix MUST NOT drop the explicit system-bin tail — R-12-2's
+        hardening intent is that PATH is fully explicit (no host leakage, no
+        shell-injection surface), and the system-bin entries must remain in
+        their hardened order.
+        """
+        env_path = _BASE_CONTAINER_KWARGS["environment"]["PATH"]
+        segments = env_path.split(":")
+        # All three system-bin entries still present in the original order.
+        for required in ("/usr/local/bin", "/usr/bin", "/bin"):
+            assert required in segments, (
+                f"R-12-2 hardened system PATH must retain {required!r}; got {env_path!r}"
+            )
+        idx_local = segments.index("/usr/local/bin")
+        idx_usr = segments.index("/usr/bin")
+        idx_bin = segments.index("/bin")
+        assert idx_local < idx_usr < idx_bin, (
+            f"system-bin entries must keep R-12-2 ordering "
+            f"(/usr/local/bin < /usr/bin < /bin); got {env_path!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

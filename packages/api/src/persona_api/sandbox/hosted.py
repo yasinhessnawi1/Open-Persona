@@ -35,14 +35,17 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path  # noqa: TC003 — runtime use in copy_produced_file_to
 from typing import TYPE_CHECKING, Any
 
 from persona.logging import get_logger
 from persona.sandbox.errors import (
     CodeSandboxError,
     ExecutionTimeoutError,
+    ProducedFileSizeError,
     SandboxUnavailableError,
 )
+from persona.sandbox.protocol import PRODUCED_FILE_CAP_BYTES
 from persona.sandbox.result import (
     ExecutionOutcome,
     ExecutionResult,
@@ -228,6 +231,88 @@ class HostedSandbox:
         session_ids = list(self._sessions.keys())
         for session_id in session_ids:
             await self.destroy_session(session_id)
+
+    async def copy_produced_file_to(
+        self,
+        session_id: str,
+        ref: str,
+        target_path: Path,
+    ) -> None:
+        """Copy a produced file from the E2B sandbox to a host target path.
+
+        D-12-X-read-produced-file hosted impl: ``sandbox.files.read`` then
+        ``target_path.write_bytes`` — memory == file size (the E2B SDK
+        doesn't stream), bounded by :data:`PRODUCED_FILE_CAP_BYTES`.
+        """
+        data = await self.read_produced_file_bytes(session_id, ref)
+        await asyncio.to_thread(self._write_bytes, target_path, data)
+
+    async def read_produced_file_bytes(
+        self,
+        session_id: str,
+        ref: str,
+    ) -> bytes:
+        """Read produced file bytes from the E2B sandbox.
+
+        D-12-X-read-produced-file hosted impl: ``sandbox.files.read`` for
+        the substrate-native fetch; the size cap is enforced post-read
+        (E2B's SDK doesn't expose a server-side size check pre-fetch — we
+        rely on the substrate-side resource caps to prevent runaway file
+        creation in the first place).
+        """
+        sandbox = self._sessions.get(session_id)
+        if sandbox is None:
+            msg = f"session {session_id!r} not found; cannot read produced file"
+            raise CodeSandboxError(
+                msg,
+                context={"reason": "no_session", "session_id": session_id, "ref": ref},
+            )
+        try:
+            data = await asyncio.to_thread(self._read_e2b_bytes, sandbox, ref)
+        except CodeSandboxError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — SDK error hierarchy abstracted
+            msg = f"E2B sandbox file read failed for {ref!r}: {type(exc).__name__}: {exc}"
+            raise CodeSandboxError(
+                msg,
+                context={
+                    "reason": "e2b_read_failed",
+                    "session_id": session_id,
+                    "ref": ref,
+                },
+            ) from exc
+        size_bytes = len(data)
+        if size_bytes > PRODUCED_FILE_CAP_BYTES:
+            msg = (
+                f"produced file {ref!r} is {size_bytes} bytes, "
+                f"exceeds {PRODUCED_FILE_CAP_BYTES}-byte cap"
+            )
+            raise ProducedFileSizeError(
+                msg,
+                context={
+                    "ref": ref,
+                    "size_bytes": str(size_bytes),
+                    "cap_bytes": str(PRODUCED_FILE_CAP_BYTES),
+                    "session_id": session_id,
+                },
+            )
+        return data
+
+    @staticmethod
+    def _read_e2b_bytes(sandbox: E2BSandbox, ref: str) -> bytes:
+        """Sync E2B file read. Substrate path is ``/home/user/<ref>``
+        (D-12-9 hosted equivalent of /workspace/out)."""
+        result = sandbox.files.read(f"/home/user/{ref}", format="bytes")
+        if not isinstance(result, bytes):
+            # E2B's typed overloads return str by default; format="bytes" must yield bytes.
+            return bytes(result)
+        return result
+
+    @staticmethod
+    def _write_bytes(target_path: Path, data: bytes) -> None:
+        """Sync write with parent-dir mkdir. Called via to_thread."""
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(data)
 
     # -- Sync internals (called via asyncio.to_thread) ---------------------
 

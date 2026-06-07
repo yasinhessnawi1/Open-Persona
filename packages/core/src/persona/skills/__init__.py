@@ -24,19 +24,31 @@ Public surface:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from persona.errors import SkillManifestError
 from persona.schema.skills import SkillSpec
 from persona.skills._tokens import count_tokens
 from persona.skills.index import render_skill_index
 from persona.skills.injector import SkillInjector
 from persona.skills.scanner import SkillScanner
-from persona.skills.use_skill_tool import make_use_skill_tool
+from persona.skills.use_skill_tool import collect_skill_supplements, make_use_skill_tool
+
+#: Filesystem path to the bundled built-in skills directory. Shared by
+#: persona-api services that wire :class:`SkillScanner` so the catalog
+#: endpoint and the runtime composition root stay in lockstep; the
+#: directory ships as package data via persona-core's ``pyproject.toml``
+#: ``[tool.hatch.build.targets.wheel].include`` entries
+#: (``src/persona/skills/builtin/**/SKILL.md`` + ``supplements/*.md``).
+BUILTIN_ROOT: Path = Path(__file__).parent / "builtin"
 
 __all__ = [
+    "BUILTIN_ROOT",
     "SkillInjector",
     "SkillManifestError",
     "SkillScanner",
     "SkillSpec",
+    "collect_skill_supplements",
     "count_tokens",
     "make_use_skill_tool",
     "render_skill_index",

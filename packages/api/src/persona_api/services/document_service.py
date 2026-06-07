@@ -62,7 +62,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from persona.documents.ingest import IngestStrategy, ingest_document
 from persona.documents.parsers import SUPPORTED_EXTENSIONS, parse_document
@@ -73,10 +73,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from persona.stores.document_store import DocumentStore
+    from persona_runtime.prompt import DocumentContext
 
 __all__ = [
     "DOCUMENT_DIR_NAME",
     "DocumentRef",
+    "build_document_context",
     "get_document_text",
     "list_for_conversation",
     "remove_all_for_conversation",
@@ -309,6 +311,120 @@ def list_for_conversation(
             continue
         refs.append(ref)
     return refs
+
+
+def build_document_context(
+    *,
+    sandbox_root: Path,
+    persona_id: str,
+    conversation_id: str,
+    user_message: str,
+    document_store: DocumentStore | None,
+    retrieval_top_k: int = 5,
+) -> DocumentContext:
+    """Build the per-turn :class:`persona_runtime.prompt.DocumentContext`.
+
+    F3 follow-up — closes the third Spec 14 integration gap (after
+    ``build_document_store`` wiring and the ``memory_chunks`` RLS aux
+    policy). The chat path needs to thread attached documents into
+    the prompt-builder; this helper is the boundary that reads from
+    the workspace sidecars + queries the DocumentStore and produces
+    the typed runtime shape.
+
+    Args:
+        sandbox_root: Workspace root.
+        persona_id: Persona scope.
+        conversation_id: Conversation scope (documents are
+            conversation-scoped per Spec 14 §6).
+        user_message: This turn's user message (drives RETRIEVAL ranking).
+        document_store: The conversation-scoped store (returned from
+            ``app.state.build_document_store``). ``None`` skips the
+            RETRIEVAL path — whole-inject docs still inject their full
+            text since they're sidecar-backed.
+        retrieval_top_k: Per-doc cap on RETRIEVAL chunks. Defaults to 5;
+            T22's D-14-X-prompt-bound-target asserts < 30 000 tokens
+            even at high retrieval volume.
+
+    Returns:
+        A :class:`DocumentContext` populated with:
+          - ``whole_inject_docs``: every doc with
+            ``strategy == WHOLE_INJECT`` (small enough for full-text
+            injection per D-14-1's 3000-token threshold);
+          - ``retrieved_chunks``: per-doc top-K query results for docs
+            with ``strategy == RETRIEVAL``;
+          - ``attached_documents``: the synopsis row for every attached
+            doc regardless of strategy (T16 structural defence).
+        Empty ``DocumentContext`` when no docs are attached.
+    """
+    # Lazy import — runtime is api's downstream, but the runtime types are
+    # safe to import at call time (api already depends on persona_runtime).
+    from persona_runtime.prompt import (  # noqa: PLC0415
+        DocumentContext,
+        DocumentDescriptor,
+        DocumentInjection,
+    )
+
+    refs = list_for_conversation(
+        sandbox_root=sandbox_root,
+        persona_id=persona_id,
+        conversation_id=conversation_id,
+    )
+    if not refs:
+        return DocumentContext()
+
+    whole_inject: list[DocumentInjection] = []
+    retrieved: list[Any] = []
+    descriptors: list[DocumentDescriptor] = []
+
+    for ref in refs:
+        descriptors.append(
+            DocumentDescriptor(
+                title=ref.title,
+                format=ref.format,
+                page_count=ref.page_count,
+                sheet_names=ref.sheet_names,
+                size_bytes=ref.size_bytes,
+            )
+        )
+        if ref.strategy == IngestStrategy.WHOLE_INJECT:
+            text = get_document_text(
+                sandbox_root=sandbox_root,
+                persona_id=persona_id,
+                conversation_id=conversation_id,
+                doc_ref=ref.doc_ref,
+            )
+            if text:
+                whole_inject.append(
+                    DocumentInjection(
+                        title=ref.title,
+                        format=ref.format,
+                        full_text=text,
+                    )
+                )
+        elif ref.strategy == IngestStrategy.RETRIEVAL and document_store is not None:
+            # Per-doc retrieval scoped by metadata.doc_ref so each doc's
+            # chunks compete only within their own document (avoids one
+            # noisy long doc swamping the top-K).
+            try:
+                chunks = document_store.query(
+                    conversation_id,
+                    user_message,
+                    top_k=retrieval_top_k,
+                    doc_ref=ref.doc_ref,
+                )
+            except Exception:  # noqa: BLE001 — RETRIEVAL is best-effort
+                _log.warning(
+                    "document retrieval failed for ref {} — skipping",
+                    ref.doc_ref,
+                )
+                continue
+            retrieved.extend(chunks)
+
+    return DocumentContext(
+        whole_inject_docs=tuple(whole_inject),
+        retrieved_chunks=tuple(retrieved),
+        attached_documents=tuple(descriptors),
+    )
 
 
 def get_document_text(

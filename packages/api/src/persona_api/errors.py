@@ -23,6 +23,7 @@ from persona.errors import (
     SchemaVersionMismatchError,
     ToolNotAllowedError,
 )
+from persona.imagegen.errors import ImageGenUnavailableError
 from persona.logging import get_logger
 from persona.sandbox.errors import (
     SandboxQuotaExceededError,
@@ -37,6 +38,7 @@ _log = get_logger("api.errors")
 
 __all__ = [
     "AuthenticationError",
+    "ConcurrencyCappedError",
     "ConversationNotFoundError",
     "CreditsExhaustedError",
     "RateLimitExceededError",
@@ -73,6 +75,20 @@ class RateLimitExceededError(PersonaError):
 
 class RefinementLimitError(PersonaError):
     """Raised when an authoring-refinement request exceeds the 3-round cap (→ 422; D-10-5)."""
+
+
+class ConcurrencyCappedError(PersonaError):
+    """Raised when a per-user in-flight cap is exhausted (→ 429; D-15-X-concurrency-cap).
+
+    Distinct from :class:`RateLimitExceededError` (per-minute count window):
+    a concurrency cap is the *in-flight* bound — the user already has one
+    image-generation request running and a second arrived before the first
+    completed. The cap is enforced via Postgres advisory transactional
+    locks (``pg_try_advisory_xact_lock`` keyed by ``hash(user_id)``) so
+    the bound holds across multiple API workers (D-15-X-concurrency-cap;
+    async-semaphore rejected). ``context`` always carries ``user_id`` and
+    may carry ``retry_after_s`` to feed the HTTP ``Retry-After`` header.
+    """
 
 
 def _body(error: str, detail: str, context: dict[str, str]) -> dict[str, Any]:
@@ -148,6 +164,29 @@ def register_exception_handlers(app: FastAPI) -> None:
             headers=headers,
         )
 
+    @app.exception_handler(ConcurrencyCappedError)
+    async def _imagegen_concurrency_429(_: Request, exc: ConcurrencyCappedError) -> JSONResponse:
+        """Per-user image-generation in-flight cap exhausted (spec 15 T14, D-15-X-concurrency-cap).
+
+        Distinct from :class:`RateLimitExceededError` (per-minute window) and
+        :class:`SandboxQuotaExceededError` (per-tenant sandbox slots): the
+        concurrency cap is the *in-flight* bound on a single capability for a
+        single user. Returning 429 + ``Retry-After`` lets the client back off
+        until the user's first in-flight generation completes (typical p95
+        latency for `gpt-image-1` / Flux 1.1 [pro] is single-digit seconds —
+        the 5s hint matches the lower bound of the expected wait).
+        """
+        retry_after = exc.context.get("retry_after_s", "5")
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content=_body(
+                "concurrency_capped",
+                exc.message or "image generation already in flight for this user",
+                exc.context,
+            ),
+            headers={"Retry-After": retry_after},
+        )
+
     @app.exception_handler(SandboxQuotaExceededError)
     async def _sandbox_quota_429(_: Request, exc: SandboxQuotaExceededError) -> JSONResponse:
         """Per-user sandbox cap exhausted (spec 12 T09c, D-12-17 quota path).
@@ -180,6 +219,27 @@ def register_exception_handlers(app: FastAPI) -> None:
                 exc.context,
             ),
             headers={"Retry-After": "60"},
+        )
+
+    @app.exception_handler(ImageGenUnavailableError)
+    async def _imagegen_unavailable_503(_: Request, exc: ImageGenUnavailableError) -> JSONResponse:
+        """Image-generation backend unreachable (spec 15 T16, D-15-X-construction-time-fail-fast).
+
+        Fires when the deployment did not set ``PERSONA_IMAGEGEN_API_KEY``
+        OR when the provider rejected our credentials at call time (401/403
+        from the SDK). Distinct from :class:`ImageProviderError` (502 — the
+        provider is reachable but rejected us for non-credential reasons)
+        and :class:`SandboxUnavailableError` (503 — the sandbox substrate
+        is down).
+        """
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_body(
+                "imagegen_unavailable",
+                exc.message or "image generation backend is not configured",
+                exc.context,
+            ),
+            headers={"Retry-After": "30"},
         )
 
     @app.exception_handler(SandboxUnavailableError)

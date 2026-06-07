@@ -12,8 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import persona.skills as _skills_pkg
-from persona.skills import SkillScanner
+from persona.skills import BUILTIN_ROOT, SkillScanner
 from persona.tools.builtin.file_read import make_file_read_tool
 from persona.tools.builtin.file_write import make_file_write_tool
 from persona.tools.builtin.web_fetch import make_web_fetch_tool
@@ -23,7 +22,6 @@ __all__ = ["list_skills", "list_tools"]
 
 # The v0.1 bundled skills (architecture §9.3).
 _BUILTIN_SKILLS = ["web_research", "document_drafting"]
-_BUILTIN_SKILLS_DIR = Path(_skills_pkg.__file__).parent / "builtin"
 
 
 def list_tools() -> list[tuple[str, str]]:
@@ -39,6 +37,6 @@ def list_tools() -> list[tuple[str, str]]:
 
 def list_skills() -> list[tuple[str, str]]:
     """The bundled skills as (name, description) pairs."""
-    scanner = SkillScanner(skill_paths=[_BUILTIN_SKILLS_DIR])
+    scanner = SkillScanner(skill_paths=[BUILTIN_ROOT])
     scanned = scanner.scan(declared_skills=_BUILTIN_SKILLS)
     return [(s.name, s.description) for s in scanned]

@@ -18,12 +18,17 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path  # noqa: TC003 — runtime use in copy_produced_file_to tests
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-from persona.sandbox.errors import SandboxQuotaExceededError, SandboxUnavailableError
+from persona.sandbox.errors import (
+    ProducedFileSizeError,
+    SandboxQuotaExceededError,
+    SandboxUnavailableError,
+)
 from persona.sandbox.result import ExecutionResult, NetworkPolicy, ResourceLimits, SandboxFile
 from persona.sandbox.tool import make_code_execution_tool
 from persona_api.sandbox import (
@@ -49,13 +54,20 @@ class _FakeSandbox:
         *,
         outcome: str = "ok",
         execute_raises: BaseException | None = None,
+        produced_files: tuple[SandboxFile, ...] = (),
+        copy_raises: BaseException | None = None,
     ) -> None:
         self.outcome = outcome
         self.execute_raises = execute_raises
+        self.produced_files = produced_files
+        self.copy_raises = copy_raises
         self.execute_calls: list[dict[str, object]] = []
         self.created: list[str] = []
         self.destroyed: list[str] = []
         self.aclose_calls: int = 0
+        # D-12-X-read-produced-file Protocol contract additions:
+        self.copy_calls: list[tuple[str, str, Path]] = []
+        self.read_calls: list[tuple[str, str]] = []
 
     async def execute(
         self,
@@ -68,7 +80,9 @@ class _FakeSandbox:
         network: NetworkPolicy | None = None,  # noqa: ARG002 — Protocol contract
         input_files: list[SandboxFile] | None = None,  # noqa: ARG002 — Protocol contract
     ) -> ExecutionResult:
-        self.execute_calls.append({"code": code, "session_id": session_id})
+        self.execute_calls.append(
+            {"code": code, "session_id": session_id, "input_files": input_files or []}
+        )
         if self.execute_raises is not None:
             raise self.execute_raises
         return ExecutionResult(
@@ -77,6 +91,7 @@ class _FakeSandbox:
             exit_status=0,
             outcome=self.outcome,  # type: ignore[arg-type]
             duration_ms=12.3,
+            produced_files=self.produced_files,
         )
 
     async def create_session(
@@ -93,6 +108,15 @@ class _FakeSandbox:
 
     async def aclose(self) -> None:
         self.aclose_calls += 1
+
+    async def copy_produced_file_to(self, session_id: str, ref: str, target_path: Path) -> None:
+        self.copy_calls.append((session_id, ref, target_path))
+        if self.copy_raises is not None:
+            raise self.copy_raises
+
+    async def read_produced_file_bytes(self, session_id: str, ref: str) -> bytes:
+        self.read_calls.append((session_id, ref))
+        return b"fake-bytes"
 
 
 @pytest_asyncio.fixture
@@ -232,7 +256,9 @@ async def test_pool_tool_with_context_acquires_pool_and_deducts_credits(
             # Pool acquired: session_id "alice:c1" in pool.
             assert "alice:c1" in pool._sessions  # noqa: SLF001 — verify integration
             # Substrate execute called with the right session_id.
-            assert fake.execute_calls == [{"code": "print('hi')", "session_id": "alice:c1"}]
+            assert fake.execute_calls == [
+                {"code": "print('hi')", "session_id": "alice:c1", "input_files": []}
+            ]
             # Credits deducted exactly once with the right shape.
             mock_deduct.assert_called_once()
             kwargs = mock_deduct.call_args.kwargs
@@ -347,3 +373,456 @@ def test_contextvar_set_get_reset_round_trip() -> None:
     assert get_sandbox_request_context() is not None
     reset_sandbox_request_context(token)
     assert get_sandbox_request_context() is None
+
+
+# ====================== T04c — Spec 17 D-12-X-read-produced-file + D-17-X-bytes-persistence
+
+
+class TestProducedFilePersistence:
+    """Inner-factory ``produced_file_persister`` wiring (D-12-X-read-produced-file).
+
+    Verifies that ``make_code_execution_tool`` invokes the persister for each
+    entry in ``ExecutionResult.produced_files`` after a successful dispatch —
+    the bytes-persistence layer the V4/V5 verifications didn't trace.
+    """
+
+    @pytest.mark.asyncio
+    async def test_persister_called_for_each_produced_file(self) -> None:
+        produced = (
+            SandboxFile(path="charts/sales.png", size_bytes=12_345, media_type="image/png"),
+            SandboxFile(path="uploads/export.csv", size_bytes=4_096, media_type="text/csv"),
+        )
+        fake = _FakeSandbox(produced_files=produced)
+        calls: list[tuple[str, str]] = []
+
+        async def _persister(session_id: str, ref: str) -> None:
+            calls.append((session_id, ref))
+
+        tool = make_code_execution_tool(
+            fake,
+            session_id_provider=lambda: "user-1:conv-9",
+            produced_file_persister=_persister,
+        )
+        result = await tool.execute(code="plt.savefig('charts/sales.png')")
+        assert not result.is_error
+        # Both produced files persisted via the injected persister, in order.
+        assert calls == [
+            ("user-1:conv-9", "charts/sales.png"),
+            ("user-1:conv-9", "uploads/export.csv"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_persister_not_called_when_no_session_id(self) -> None:
+        """Stateless one-shot dispatches (no session) don't persist.
+
+        The persister contract is session-keyed (``copy_produced_file_to`` reads
+        from the session's host_out); without a session there's no source dir.
+        """
+        produced = (SandboxFile(path="charts/x.png", size_bytes=1, media_type="image/png"),)
+        fake = _FakeSandbox(produced_files=produced)
+        calls: list[tuple[str, str]] = []
+
+        async def _persister(session_id: str, ref: str) -> None:
+            calls.append((session_id, ref))
+
+        tool = make_code_execution_tool(
+            fake,
+            session_id_provider=lambda: None,  # stateless
+            produced_file_persister=_persister,
+        )
+        result = await tool.execute(code="print('hi')")
+        assert not result.is_error
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_size_cap_surfaces_as_structured_tool_error(self) -> None:
+        """ProducedFileSizeError flows through the existing SandboxError catch path.
+
+        D-12-X-read-produced-file contract: the model sees a structured error
+        (is_error=True + the cap info in data["context"]) so it can produce
+        a smaller file. Never a crashed stream.
+        """
+        produced = (
+            SandboxFile(path="charts/huge.png", size_bytes=200_000_000, media_type="image/png"),
+        )
+        fake = _FakeSandbox(produced_files=produced)
+
+        async def _persister_raises(session_id: str, ref: str) -> None:
+            raise ProducedFileSizeError(
+                f"produced file {ref!r} exceeds cap",
+                context={
+                    "ref": ref,
+                    "size_bytes": "200000000",
+                    "cap_bytes": "104857600",
+                    "session_id": session_id,
+                },
+            )
+
+        tool = make_code_execution_tool(
+            fake,
+            session_id_provider=lambda: "user-1:conv-9",
+            produced_file_persister=_persister_raises,
+        )
+        result = await tool.execute(code="plt.savefig('charts/huge.png')")
+        assert result.is_error is True
+        assert result.data is not None
+        assert result.data["error_type"] == "ProducedFileSizeError"
+        ctx = result.data["context"]
+        assert isinstance(ctx, dict)
+        assert ctx.get("ref") == "charts/huge.png"
+        assert ctx.get("cap_bytes") == "104857600"
+
+
+class TestWorkspaceRootPersisterWiring:
+    """Outer-wrapper ``workspace_root`` plumbing (D-17-X-bytes-persistence).
+
+    Verifies ``make_pool_code_execution_tool`` builds the right persister
+    closure: bytes land at ``workspace_root/owner_id/persona_id/<ref>``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_workspace_root_threads_to_persist_target(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+        tmp_path: Path,
+    ) -> None:
+        pool, fake = pool_with_fake
+        fake.produced_files = (
+            SandboxFile(path="charts/sales.png", size_bytes=10, media_type="image/png"),
+        )
+        rls_engine = object()
+        workspace_root = tmp_path / "workspaces"
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=workspace_root,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="c-7")
+        )
+        try:
+            result = await tool.execute(code="plt.savefig('charts/sales.png')")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        # Persister called with the per-tenant workspace target.
+        assert len(fake.copy_calls) == 1
+        session_id, ref, target = fake.copy_calls[0]
+        assert session_id == "alice:c-7"
+        assert ref == "charts/sales.png"
+        assert target == workspace_root / "alice" / "persona-A" / "charts/sales.png"
+
+    @pytest.mark.asyncio
+    async def test_no_persist_when_workspace_root_absent(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+    ) -> None:
+        """CLI / test path: workspace_root=None ⇒ no persist (back-compat)."""
+        pool, fake = pool_with_fake
+        fake.produced_files = (
+            SandboxFile(path="charts/x.png", size_bytes=10, media_type="image/png"),
+        )
+        rls_engine = object()
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=None,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="c-7")
+        )
+        try:
+            result = await tool.execute(code="plt.savefig('charts/x.png')")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        assert fake.copy_calls == []
+
+
+class TestCrossTurnIntermediateStaging:
+    """D-17-X-bytes-persistence inverse flow: ``intermediate/*`` staged before dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_intermediate_files_staged_into_input_files(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+        tmp_path: Path,
+    ) -> None:
+        pool, fake = pool_with_fake
+        # Pre-populate <workspace>/alice/persona-A/intermediate/df.parquet so the
+        # augmented input-files provider stages it on dispatch.
+        workspace_root = tmp_path / "workspaces"
+        persona_workspace = workspace_root / "alice" / "persona-A"
+        intermediate = persona_workspace / "intermediate"
+        intermediate.mkdir(parents=True)
+        (intermediate / "df.parquet").write_bytes(b"parquet-bytes-here")
+
+        rls_engine = object()
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=workspace_root,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="c-7")
+        )
+        try:
+            result = await tool.execute(code="df = pd.read_parquet('intermediate/df.parquet')")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        # Exactly one execute happened; its input_files carries the staged parquet.
+        assert len(fake.execute_calls) == 1
+        staged = fake.execute_calls[0]["input_files"]
+        assert isinstance(staged, list)
+        assert len(staged) == 1
+        sf = staged[0]
+        assert isinstance(sf, SandboxFile)
+        assert sf.path == "intermediate/df.parquet"
+        assert sf.content_bytes == b"parquet-bytes-here"
+
+    @pytest.mark.asyncio
+    async def test_no_staging_when_intermediate_absent(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+        tmp_path: Path,
+    ) -> None:
+        """First-turn dispatches with no prior intermediate ⇒ empty staged list."""
+        pool, fake = pool_with_fake
+        workspace_root = tmp_path / "workspaces"
+        # Don't create intermediate/.
+        rls_engine = object()
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=workspace_root,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="c-7")
+        )
+        try:
+            result = await tool.execute(code="print('first turn')")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        assert fake.execute_calls[0]["input_files"] == []
+
+
+# =================================== T02c — D-F4-X-bare-ref-resolution policy =====
+
+
+class TestPersisterPolicyBareRefResolution:
+    """Spec F4 T02c — three-branch persister target policy.
+
+    Pre-T02c, the persister at ``runtime_tool.py:231`` wrote every produced
+    file to ``persona_workspace / ref`` verbatim. Combined with the
+    slash-aware resolver at ``image_service.fetch:300`` (which prepends
+    ``uploads/`` on slash-less refs), this meant **Spec 16 docs
+    persisted at workspace root but the GET endpoint looked under
+    ``uploads/``** → every document download 404'd.
+
+    Post-T02c, ``_persist_produced_file`` applies a three-branch policy:
+
+      * ``charts/<id>.png`` (Spec 17 matplotlib) — stays at workspace root
+        (load-bearing for F4's inline-vs-download discriminator per
+        D-17-X-inline-hint-shape).
+      * ``intermediate/<name>.parquet`` (Spec 17 cross-turn cache) — stays
+        at workspace root (consumed by ``_augmented_input_files_provider``
+        on the next-turn dispatch).
+      * everything else — routes into ``uploads/<filename>.<ext>`` so the
+        slash-aware resolver's slash-less branch lands on the right path.
+
+    Each branch is a regression assertion (A + B preserve existing
+    behaviour) OR the primary fix assertion (C). All three must hold for
+    the catch from Phase 3 R-F4-1 to be considered closed.
+
+    10th entry in the additive-precedent chain (D-01-12 → ... → this).
+    """
+
+    @pytest.mark.asyncio
+    async def test_branch_a_charts_stays_at_workspace_root(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+        tmp_path: Path,
+    ) -> None:
+        """Branch A regression: ``charts/<id>.png`` keeps the ``charts/``
+        prefix on disk.
+
+        Moving charts into ``uploads/`` would break the F4 dispatcher's
+        ``path.startsWith("charts/")`` → InlineChart routing, breaking
+        D-17-X-inline-hint-shape and the visual taxonomy.
+        """
+        pool, fake = pool_with_fake
+        fake.produced_files = (
+            SandboxFile(path="charts/q1.png", size_bytes=10, media_type="image/png"),
+        )
+        rls_engine = object()
+        workspace_root = tmp_path / "workspaces"
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=workspace_root,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="c-7")
+        )
+        try:
+            result = await tool.execute(code="plt.savefig('charts/q1.png')")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        assert len(fake.copy_calls) == 1
+        _session_id, ref, target = fake.copy_calls[0]
+        assert ref == "charts/q1.png"
+        # Charts land verbatim at <workspace>/<owner>/<persona>/charts/<id>.png.
+        assert target == workspace_root / "alice" / "persona-A" / "charts" / "q1.png"
+
+    @pytest.mark.asyncio
+    async def test_branch_b_intermediate_stays_at_workspace_root(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+        tmp_path: Path,
+    ) -> None:
+        """Branch B regression: ``intermediate/<name>.parquet`` keeps the
+        ``intermediate/`` prefix on disk.
+
+        Consumed by ``_augmented_input_files_provider`` on the next-turn
+        dispatch (the SKILL.md parquet re-load pattern). Moving under
+        ``uploads/`` would break the next-turn re-load discipline.
+        """
+        pool, fake = pool_with_fake
+        fake.produced_files = (
+            SandboxFile(
+                path="intermediate/df_q1.parquet",
+                size_bytes=20,
+                media_type="application/octet-stream",
+            ),
+        )
+        rls_engine = object()
+        workspace_root = tmp_path / "workspaces"
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=workspace_root,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="c-7")
+        )
+        try:
+            result = await tool.execute(code="df.to_parquet('intermediate/df_q1.parquet')")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        assert len(fake.copy_calls) == 1
+        _session_id, ref, target = fake.copy_calls[0]
+        assert ref == "intermediate/df_q1.parquet"
+        # Intermediate lands verbatim at <workspace>/<owner>/<persona>/intermediate/.
+        assert target == workspace_root / "alice" / "persona-A" / "intermediate" / "df_q1.parquet"
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "report.docx",
+            "presentation.pptx",
+            "budget.xlsx",
+            "quarterly-summary.pdf",
+            "raw-output.txt",
+            "data.json",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_branch_c_bare_filename_routes_to_uploads(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+        tmp_path: Path,
+        filename: str,
+    ) -> None:
+        """Branch C — **THE PRIMARY assertion** that Spec 16 download 404 is fixed.
+
+        Pre-T02c: bare ``<filename>.<ext>`` persisted at workspace root;
+        ``image_service.fetch:300``'s slash-less branch prepended
+        ``uploads/`` → 404.
+
+        Post-T02c: bare files persist into ``uploads/<filename>.<ext>``;
+        the resolver lands on the right path; GET serves correctly.
+
+        Parametrised across the four Spec 16 doc formats + two general
+        bare cases — the policy is extension-agnostic.
+        """
+        pool, fake = pool_with_fake
+        fake.produced_files = (
+            SandboxFile(
+                path=filename,
+                size_bytes=10,
+                media_type="application/octet-stream",
+            ),
+        )
+        rls_engine = object()
+        workspace_root = tmp_path / "workspaces"
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=workspace_root,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="c-7")
+        )
+        try:
+            result = await tool.execute(code=f"doc.save('{filename}')")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        assert len(fake.copy_calls) == 1
+        _session_id, ref, target = fake.copy_calls[0]
+        assert ref == filename
+        # Bare ref routes to uploads/<filename> so the slash-aware resolver
+        # at image_service.fetch:300 lands on the right path.
+        assert target == workspace_root / "alice" / "persona-A" / "uploads" / filename
+
+    @pytest.mark.asyncio
+    async def test_charts_prefix_is_exact_match_not_substring(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+        tmp_path: Path,
+    ) -> None:
+        """Defensive: ``charts_archive/<id>.png`` does NOT match the
+        ``charts/`` rule.
+
+        The prefix check uses the trailing slash so a non-Spec-17 file
+        under an unrelated subdirectory isn't accidentally pinned at
+        workspace root.
+        """
+        pool, fake = pool_with_fake
+        fake.produced_files = (
+            SandboxFile(path="charts_archive/old.png", size_bytes=10, media_type="image/png"),
+        )
+        rls_engine = object()
+        workspace_root = tmp_path / "workspaces"
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=workspace_root,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="c-7")
+        )
+        try:
+            result = await tool.execute(code="open('charts_archive/old.png','w')")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        _session_id, ref, target = fake.copy_calls[0]
+        assert ref == "charts_archive/old.png"
+        # Routes to uploads/charts_archive/old.png — NOT to /charts_archive/old.png.
+        assert (
+            target
+            == workspace_root / "alice" / "persona-A" / "uploads" / "charts_archive" / "old.png"
+        )

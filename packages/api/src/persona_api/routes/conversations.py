@@ -196,6 +196,34 @@ async def post_message(
     # text; images travel as references on the side and are persisted on the
     # ``messages.images`` JSONB column per D-13-X-now option (c)).
     turn_has_image = bool(body.images)
+
+    # F3 follow-up — build the DocumentContext from the conversation's
+    # attached documents BEFORE streaming starts (so a sidecar-read failure
+    # surfaces as a clean 500 before SSE headers are sent). Looks up the
+    # persona_id from the conversation (the workspace path is
+    # persona-scoped); falls back to an empty context when nothing's
+    # attached — text-only behaviour is byte-for-byte unchanged.
+    document_store_builder = getattr(request.app.state, "build_document_store", None)
+    document_context = None
+    try:
+        conversation_row = chat_service.get_conversation(
+            rls_engine=request.app.state.rls_engine,
+            conversation_id=conversation_id,
+        )
+        persona_id_for_docs = str(conversation_row["persona_id"])
+        document_context = document_service.build_document_context(
+            sandbox_root=request.app.state.workspace_root,
+            persona_id=persona_id_for_docs,
+            conversation_id=conversation_id,
+            user_message=body.content,
+            document_store=(document_store_builder() if document_store_builder else None),
+        )
+    except Exception:  # noqa: BLE001 — document path is best-effort
+        # If document-context construction fails, log + continue with
+        # text-only behaviour. The persona just doesn't see the docs
+        # this turn; the chat flow stays usable rather than hard-erroring.
+        document_context = None
+
     generator = chat_service.stream_chat(
         rls_engine=request.app.state.rls_engine,
         loop_builder=request.app.state.build_conversation_loop,
@@ -207,6 +235,7 @@ async def post_message(
         title_builder=getattr(request.app.state, "title_builder", None),
         images=list(body.images) if body.images else None,
         turn_has_image=turn_has_image,
+        document_context=document_context,
     )
     # The rate-limit dependency's headers don't auto-merge into a route-built
     # StreamingResponse (FastAPI limitation) — copy them from the stashed
