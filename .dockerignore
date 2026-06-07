@@ -47,6 +47,14 @@ CHANGELOG.md
 LAUNCH_CHECKLIST.md
 README.md
 **/*.md
+# Re-include the bundled SKILL.md files + their supplements (architecture
+# §9.3, spec 13/16). These are package data the SkillScanner reads at
+# runtime via ``<base>/<name>/SKILL.md``; the broad ``**/*.md`` rule above
+# would strip them by default → /v1/skills returns empty → the authoring
+# wizard can't suggest any skill. Mirrors ``packages/core/pyproject.toml``
+# hatchling include = ["src/persona/skills/builtin/**/SKILL.md", ...].
+!packages/core/src/persona/skills/builtin/**/SKILL.md
+!packages/core/src/persona/skills/builtin/**/supplements/*.md
 
 # Tests are not needed by the runtime image
 packages/*/tests/
