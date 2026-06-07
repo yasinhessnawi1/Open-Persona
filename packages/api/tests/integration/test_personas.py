@@ -73,6 +73,11 @@ def client(
     with TestClient(app) as c:
         app.state.verify_token = _fake_verify
         app.state.embedder = embedder
+        # Drop the lifespan-installed TierRegistry so the persona-detail
+        # capabilities surface doesn't lazily instantiate a real chat backend
+        # (AuthenticationError("missing API key") on CI without ANTHROPIC_API_KEY).
+        if hasattr(app.state, "tier_registry"):
+            app.state.tier_registry = None
         # seed the user row (FK target for personas.owner_id) as superuser
         su = make_rls_engine(os.environ["DATABASE_URL"])
         with su.begin() as conn:

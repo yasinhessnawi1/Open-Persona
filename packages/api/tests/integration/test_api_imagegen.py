@@ -271,6 +271,11 @@ def client(
     with TestClient(app) as c:
         app.state.verify_token = _fake_verify
         app.state.embedder = embedder
+        # Drop the lifespan-installed TierRegistry so the persona-detail
+        # capabilities surface doesn't lazily instantiate a real chat backend
+        # (AuthenticationError("missing API key") on CI without ANTHROPIC_API_KEY).
+        if hasattr(app.state, "tier_registry"):
+            app.state.tier_registry = None
         # Default: install a happy backend so the route is wired even
         # when PERSONA_IMAGEGEN_API_KEY is unset in the test env. Per-
         # test overrides replace this with rejecting / failing / None.

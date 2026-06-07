@@ -196,14 +196,25 @@ async def sandbox_session(tmp_path: Path) -> AsyncIterator[tuple[Any, str]]:
     """Yield (sandbox, session_id) ready for execute. aclose on teardown."""
     try:
         from persona.sandbox.local_docker import (  # noqa: PLC0415
+            DEFAULT_IMAGE,
             LocalDockerSandbox,
             is_docker_available,
+            is_sandbox_image_available,
         )
     except ImportError:
         pytest.skip("[sandbox] extra not installed")
 
     if not is_docker_available():
         pytest.skip("Docker daemon not reachable")
+
+    # CI runners ship Docker but not the persona-sandbox image; skipping
+    # here keeps the failure mode environmental rather than a misleading
+    # SandboxUnavailableError at container-create time.
+    if not is_sandbox_image_available():
+        pytest.skip(
+            f"Sandbox image {DEFAULT_IMAGE!r} not built locally; "
+            "build it via the T06 Dockerfile or pull it before running this suite."
+        )
 
     from persona.sandbox.result import NetworkPolicy, ResourceLimits  # noqa: PLC0415
 

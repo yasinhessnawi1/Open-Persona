@@ -1174,5 +1174,31 @@ def is_docker_available() -> bool:
     return True
 
 
+def is_sandbox_image_available(tag: str = DEFAULT_IMAGE) -> bool:
+    """True if ``tag`` is locally pullable from the Docker daemon.
+
+    Integration fixtures that need a real sandbox container (chart-quality
+    suite, stateful-iteration suite, T04 security suite) should skip when
+    this returns ``False``: CI runners that have the Docker daemon but
+    no pre-built ``persona-sandbox:0.1.0`` image otherwise crash at
+    container-create time with ``SandboxUnavailableError`` (reason
+    ``image_missing``). Returns ``False`` if the SDK is absent, the
+    daemon is unreachable, or the image is not in the local registry.
+    """
+    if not _DOCKER_SDK_AVAILABLE:
+        return False
+    try:
+        client = docker.from_env()
+        try:
+            client.images.get(tag)
+        except ImageNotFound:
+            return False
+        finally:
+            client.close()
+    except DockerException:
+        return False
+    return True
+
+
 # Avoid unused-import warning on the timestamp re-export
 _ = _utcnow

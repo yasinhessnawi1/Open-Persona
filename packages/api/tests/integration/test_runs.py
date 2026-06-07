@@ -125,6 +125,11 @@ def client(
     with TestClient(app) as c:
         app.state.verify_token = _verify
         app.state.embedder = embedder
+        # Drop the lifespan-installed TierRegistry so the persona-detail
+        # capabilities surface doesn't lazily instantiate a real chat backend
+        # (AuthenticationError("missing API key") on CI without ANTHROPIC_API_KEY).
+        if hasattr(app.state, "tier_registry"):
+            app.state.tier_registry = None
 
         async def _build(persona_id: str) -> _ScriptedAgenticLoop:
             return _ScriptedAgenticLoop(persona_id, mode="plain")

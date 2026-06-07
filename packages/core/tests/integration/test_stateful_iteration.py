@@ -42,17 +42,27 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def docker_sandbox(tmp_path: Path) -> Iterator[object]:
     """Yield a real LocalDockerSandbox; aclose on test exit. Skips when
-    Docker is unavailable (CI / dev env without docker daemon)."""
+    Docker is unavailable (CI / dev env without docker daemon) OR when
+    the ``persona-sandbox:0.1.0`` image is not present locally — CI
+    runners have the daemon but not the image."""
     try:
         from persona.sandbox.local_docker import (  # noqa: PLC0415
+            DEFAULT_IMAGE,
             LocalDockerSandbox,
             is_docker_available,
+            is_sandbox_image_available,
         )
     except ImportError:
         pytest.skip("[sandbox] extra not installed")
 
     if not is_docker_available():
         pytest.skip("Docker daemon not reachable")
+
+    if not is_sandbox_image_available():
+        pytest.skip(
+            f"Sandbox image {DEFAULT_IMAGE!r} not built locally; "
+            "build it via the T06 Dockerfile or pull it before running this suite."
+        )
 
     sandbox = LocalDockerSandbox(workspace_root=tmp_path / "sandbox_workspace")
     try:

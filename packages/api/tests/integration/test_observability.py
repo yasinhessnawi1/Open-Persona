@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
 
     from persona.schema.conversation import Conversation
+    from persona_runtime.prompt import DocumentContext
     from sqlalchemy import Engine
     from tests.conftest import HashEmbedder384
 
@@ -59,6 +60,7 @@ class _Loop:
         on_event: object = None,  # noqa: ARG002 — accepted to match the loop signature
         *,
         turn_has_image: bool = False,  # noqa: ARG002 — spec-13 T20 compat
+        document_context: DocumentContext | None = None,  # noqa: ARG002 — spec-14 compat
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)
         conversation.messages.append(
@@ -122,6 +124,11 @@ def ctx(
     with TestClient(app) as c:
         app.state.verify_token = _verify
         app.state.embedder = embedder
+        # Drop the lifespan-installed TierRegistry so the persona-detail
+        # capabilities surface doesn't lazily instantiate a real chat backend
+        # (AuthenticationError("missing API key") on CI without ANTHROPIC_API_KEY).
+        if hasattr(app.state, "tier_registry"):
+            app.state.tier_registry = None
         su = make_rls_engine(os.environ["DATABASE_URL"])
         with su.begin() as conn:
             conn.execute(

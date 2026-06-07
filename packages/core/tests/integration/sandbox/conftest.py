@@ -22,30 +22,8 @@ from persona.sandbox.local_docker import (
     DEFAULT_IMAGE,
     LocalDockerSandbox,
     is_docker_available,
+    is_sandbox_image_available,
 )
-
-
-def _is_image_available(tag: str) -> bool:
-    """True if the sandbox image is locally available.
-
-    T06 builds ``persona-sandbox:0.1.0``. Until T06 ships (or the human
-    builds the image manually), the security tests skip rather than fail —
-    the failure mode is environmental, not a security regression."""
-    import docker
-    from docker.errors import DockerException, ImageNotFound
-
-    try:
-        client = docker.from_env()
-        try:
-            client.images.get(tag)
-        except ImageNotFound:
-            return False
-        finally:
-            client.close()
-    except DockerException:
-        return False
-    return True
-
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -76,7 +54,7 @@ async def sandbox(
                 "Docker daemon unreachable; LocalDockerSandbox security tests "
                 "require a running Docker daemon. Install Docker and rerun."
             )
-        if not _is_image_available(DEFAULT_IMAGE):
+        if not is_sandbox_image_available(DEFAULT_IMAGE):
             pytest.skip(
                 f"Sandbox image {DEFAULT_IMAGE!r} not built. "
                 "Build it via the T06 Dockerfile (or pull it) before running "
