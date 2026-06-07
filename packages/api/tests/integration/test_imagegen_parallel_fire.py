@@ -300,11 +300,19 @@ def _imagegen_audit_count(engine: Engine, user_id: str) -> int:
 
 
 def _count_workspace_image_files(workspace_root: Path, user_id: str, persona_id: str) -> int:
-    """Count files under ``{workspace_root}/{user_id}/{persona_id}/uploads/``."""
+    """Count IMAGE files under ``{workspace_root}/{user_id}/{persona_id}/uploads/``.
+
+    Skips F5 ``.f5.json`` + Spec 14 ``.meta.json`` sidecar files via
+    :func:`persona_api.services.artifact_metadata.is_any_sidecar` — the
+    blake2b-content-addressed image bytes are the primary deliverable; sidecars
+    are enrichment co-located with the bytes (F5 L6c — D-F5-X-artifact-metadata-convention).
+    """
+    from persona_api.services.artifact_metadata import is_any_sidecar
+
     uploads_dir = workspace_root / user_id / persona_id / "uploads"
     if not uploads_dir.exists():
         return 0
-    return sum(1 for _ in uploads_dir.iterdir() if _.is_file())
+    return sum(1 for f in uploads_dir.iterdir() if f.is_file() and not is_any_sidecar(f))
 
 
 # ---------------------------------------------------------------------------

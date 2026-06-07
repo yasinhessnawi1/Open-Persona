@@ -134,7 +134,8 @@ async def test_abrupt_disconnect_ends_session_and_releases_engine(
     rls_engine_mock.dispose.assert_called_once()
 
 
-def test_connection_state_observable_for_transient_drop() -> None:
+@pytest.mark.asyncio
+async def test_connection_state_observable_for_transient_drop() -> None:
     """Path (a): the LiveKit Room exposes the contract surface persona-voice
     depends on for transient-drop ICE-restart handling.
 
