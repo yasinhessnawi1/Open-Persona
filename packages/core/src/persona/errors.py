@@ -18,6 +18,7 @@ from __future__ import annotations
 
 __all__ = [
     "AuditWriteError",
+    "AuthenticationError",
     "BrokenVersionChainError",
     "MCPConnectionError",
     "MCPServerUnavailableError",
@@ -139,6 +140,16 @@ class MCPServerUnavailableError(PersonaError):
     Subclass of :class:`PersonaError` (flat hierarchy per D-03-1). Used by
     :class:`persona.tools.mcp.client.MCPClient` when ``strict=True`` and the
     underlying transport fails.
+    """
+
+
+class AuthenticationError(PersonaError):
+    """Raised when a request has no valid bearer token (→ 401 at the API edge).
+
+    Relocated from ``persona_api.errors`` to persona-core at spec V1 T03
+    (D-V1-X-jwt-verifier-extraction) so persona-voice can raise it from the
+    extracted :func:`persona.auth.jwt_verifier.make_jwt_verifier` without taking
+    a persona-api dependency. ``persona_api.errors`` re-exports for back-compat.
     """
 
 

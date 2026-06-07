@@ -35,6 +35,14 @@ dependencies = [
     # range). MIT-class (PSF) licensed; zero transitive surface; clean
     # for the Apache-2.0 stack per D-15-X-license-stack.
     "regex>=2024.0,<2027",
+    # Spec V1 T03 — JWT verifier extraction (D-V1-X-jwt-verifier-extraction).
+    # Relocated from packages/api/pyproject.toml so persona-voice can consume
+    # `persona.auth.jwt_verifier` without taking a persona-api dependency.
+    # persona-jose ships the algorithm-confusion-hardened JWT decode surface
+    # the spec 08 T05 security-reviewer pass locked. No new transitive surface
+    # vs the prior persona-api-only install (jose was already pulled in via
+    # the workspace dep chain).
+    "python-jose[cryptography]>=3.3,<4",
 ]
 
 [project.optional-dependencies]
