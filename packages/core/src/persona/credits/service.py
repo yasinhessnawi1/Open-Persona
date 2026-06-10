@@ -30,8 +30,10 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
+    Float,
     Integer,
     MetaData,
     Table,
@@ -96,6 +98,11 @@ _conversations_t = Table(
 )
 
 _turn_logs_t = Table(
+    # Local minimal view mirrors the api-owned canonical schema at
+    # packages/api/src/persona_api/db/models.py:244-272 (v0.1.1: column set
+    # restored to include latency_ms / cost_cents / tool_calls / skill_used /
+    # history_compacted so list_turn_usage's select() resolves all the
+    # fields the /v1/me/usage route consumes).
     "turn_logs",
     _md,
     Column("id", Text, primary_key=True),
@@ -106,6 +113,11 @@ _turn_logs_t = Table(
     Column("provider", Text, nullable=False),
     Column("prompt_tokens", Integer, nullable=False),
     Column("completion_tokens", Integer, nullable=False),
+    Column("latency_ms", Float, nullable=False),
+    Column("cost_cents", Float, nullable=False),
+    Column("tool_calls", Integer, nullable=False),
+    Column("skill_used", Text),
+    Column("history_compacted", Boolean, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 

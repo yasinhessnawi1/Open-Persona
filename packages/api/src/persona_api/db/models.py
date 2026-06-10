@@ -188,7 +188,14 @@ memory_chunks = Table(
     "memory_chunks",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("persona_id", Text, ForeignKey("personas.id", ondelete="CASCADE"), nullable=False),
+    # persona_id has discriminated semantics gated by ``kind`` (v0.1.1, migration 007):
+    # rows with kind in {identity,self_facts,worldview,episodic} carry a personas.id;
+    # rows with kind='document' carry a conversations.id (per migration 005's RLS aux
+    # policy). PostgreSQL cannot express conditional FKs natively; the integrity
+    # guarantee splits across the kind CHECK + RLS policy. Migration 007 drops the
+    # FK to personas.id; here we omit the ForeignKey so create_all() matches the
+    # post-migration shape.
+    Column("persona_id", Text, nullable=False),
     Column("kind", Text, nullable=False),
     Column("text", Text, nullable=False),
     Column("embedding", Vector(EMBEDDING_DIM), nullable=False),
