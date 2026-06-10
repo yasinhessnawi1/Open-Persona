@@ -66,6 +66,7 @@ from persona_voice.transport.room import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from persona_voice.stt.protocol import SpeechActivityListener
     from persona_voice.transport.room import VoiceRoom
 
 
@@ -204,17 +205,40 @@ class StreamingLoop:
         tts: TTSStream | None = None,
         model: ModelReplyProducer | None = None,
         echo_mode: PassThroughEchoMode = PassThroughEchoMode.ECHO,
+        speech_activity: SpeechActivityListener | None = None,
     ) -> None:
+        # Spec V2 D-V2-X-streaming-loop-additivity-shape — ADDITIVE
+        # ``speech_activity`` injected port; backwards-compatible default
+        # ``None``. The seam adapter (T06) merges Silero VAD + provider
+        # endpointing events and dispatches to this listener; V4 (future)
+        # is the listener. Pipecat issue #1323 production-bug precedent:
+        # keeping activity events on a separate Protocol from transcripts
+        # avoids the frame-reordering class of bugs.
         self._voice_room = voice_room
         self._session = session
         self._stt = stt
         self._tts = tts
         self._model = model
         self._echo_mode = echo_mode
+        self._speech_activity = speech_activity
         self._pipeline_task: asyncio.Task[None] | None = None
         # V1 wires the inbound dispatcher into the VoiceRoom at construction
         # so frames that arrive during connect are not dropped on the floor.
         voice_room.set_inbound_handler(self._on_inbound_frame)
+
+    @property
+    def speech_activity(self) -> SpeechActivityListener | None:
+        """V2 additive — the registered ``SpeechActivityListener``, if any.
+
+        Production composition wires the V4 listener once at construction
+        OR via this property's setter; downstream consumers (e.g.
+        observability harnesses, integration tests) read via the property.
+        """
+        return self._speech_activity
+
+    @speech_activity.setter
+    def speech_activity(self, value: SpeechActivityListener | None) -> None:
+        self._speech_activity = value
 
     # ----- inbound + echo --------------------------------------------
 

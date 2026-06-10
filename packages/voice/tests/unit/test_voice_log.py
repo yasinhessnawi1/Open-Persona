@@ -257,3 +257,60 @@ async def test_jsonl_writer_skips_blank_lines_on_replay(tmp_path: Path) -> None:
     await writer.write(_build_log(turn_index=1))
     replayed = writer.read_all()
     assert [log.turn_index for log in replayed] == [0, 1]
+
+
+# ---------- Spec V2 T08 additive STT fields ---------------------------------
+
+
+def test_voice_log_stt_partial_first_at_round_trips() -> None:
+    """T08 + D-V2-X-cost-discipline + D-05-9 — Jarvis-feel partial-onset anchor."""
+    ts = datetime.now(UTC)
+    log = _build_log(stt_partial_first_at=ts)
+    json_str = log.model_dump_json()
+    rehydrated = VoiceLog.model_validate_json(json_str)
+    assert rehydrated.stt_partial_first_at == ts
+
+
+def test_voice_log_stt_audio_pushed_at_round_trips() -> None:
+    ts = datetime.now(UTC)
+    log = _build_log(stt_audio_pushed_at=ts)
+    json_str = log.model_dump_json()
+    rehydrated = VoiceLog.model_validate_json(json_str)
+    assert rehydrated.stt_audio_pushed_at == ts
+
+
+def test_voice_log_stt_provider_cost_field_rejects_negative() -> None:
+    """ge=0.0 constraint validates."""
+    with pytest.raises(ValidationError):
+        _build_log(stt_provider_cost_cents_per_minute=-0.01)
+
+
+def test_voice_log_stt_total_cents_rejects_negative() -> None:
+    with pytest.raises(ValidationError):
+        _build_log(stt_total_cents=-1.0)
+
+
+def test_voice_log_all_t08_fields_default_to_none() -> None:
+    """Backwards-compatible — V1's existing 18 tests pass byte-for-byte."""
+    log = _build_log()
+    assert log.stt_partial_first_at is None
+    assert log.stt_audio_pushed_at is None
+    assert log.stt_provider_cost_cents_per_minute is None
+    assert log.stt_total_cents is None
+
+
+def test_voice_log_all_t08_fields_populated_round_trip() -> None:
+    """End-to-end JSON round-trip with all 4 T08 fields populated."""
+    ts = datetime.now(UTC)
+    log = _build_log(
+        stt_partial_first_at=ts,
+        stt_audio_pushed_at=ts,
+        stt_provider_cost_cents_per_minute=0.48,  # Deepgram PAYG cents/min
+        stt_total_cents=2.4,  # 5-min call at 0.48 cents/min
+    )
+    json_str = log.model_dump_json()
+    rehydrated = VoiceLog.model_validate_json(json_str)
+    assert rehydrated.stt_partial_first_at == ts
+    assert rehydrated.stt_audio_pushed_at == ts
+    assert rehydrated.stt_provider_cost_cents_per_minute == 0.48
+    assert rehydrated.stt_total_cents == 2.4

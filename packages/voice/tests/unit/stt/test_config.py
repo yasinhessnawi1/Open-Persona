@@ -1,0 +1,181 @@
+"""Unit tests for :class:`StreamingSTTConfig` — env-driven configuration
+mirroring Spec 02's :class:`BackendConfig` shape.
+
+Covers:
+
+* ``env_prefix="PERSONA_STT_"`` env reads (PERSONA_STT_PROVIDER /
+  PERSONA_STT_MODEL / PERSONA_STT_API_KEY).
+* :class:`SecretStr` ``api_key`` does NOT leak in ``repr(config)``.
+* Defaults: ``provider="deepgram"`` + ``model="nova-3"`` +
+  ``language_hint=None`` + ``vad_library="silero"``.
+* ``Field`` constraints on the Deepgram endpointing / utterance-end
+  windows + Silero tuning knobs validate at construction (fail-fast
+  per Spec 02 D-02-10).
+* ``extra="ignore"`` tolerates extra env vars (Pydantic Settings
+  convention — operators may export ``PERSONA_STT_FOO`` without it
+  breaking config construction).
+
+Mirrors :mod:`packages.core.tests.unit.imagegen.test_config` discipline:
+``monkeypatch`` is the per-test injection point; the autouse
+:func:`_strip_persona_stt_env` fixture below clears every ``PERSONA_STT_*``
+env var so tests start from defaults regardless of operator-shell state.
+"""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+from persona_voice.stt.config import StreamingSTTConfig
+from pydantic import SecretStr, ValidationError
+
+
+@pytest.fixture(autouse=True)
+def _strip_persona_stt_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip every ``PERSONA_STT_*`` env var so tests start from defaults."""
+    for key in list(os.environ):
+        if key.startswith("PERSONA_STT_"):
+            monkeypatch.delenv(key, raising=False)
+
+
+# ---------- env_prefix="PERSONA_STT_" reads ------------------------------
+
+
+def test_env_prefix_reads_provider_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PERSONA_STT_PROVIDER", "speechmatics")
+    monkeypatch.setenv("PERSONA_STT_MODEL", "ursa-2")
+    config = StreamingSTTConfig()
+    assert config.provider == "speechmatics"
+    assert config.model == "ursa-2"
+
+
+def test_env_prefix_reads_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PERSONA_STT_API_KEY", "sk-test-123")
+    config = StreamingSTTConfig()
+    assert config.api_key is not None
+    assert config.api_key.get_secret_value() == "sk-test-123"
+
+
+def test_env_prefix_reads_language_hint_and_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PERSONA_STT_LANGUAGE_HINT", "no")
+    monkeypatch.setenv("PERSONA_STT_BASE_URL", "https://proxy.example/v1/")
+    config = StreamingSTTConfig()
+    assert config.language_hint == "no"
+    assert config.base_url == "https://proxy.example/v1/"
+
+
+# ---------- SecretStr api_key never leaks in repr --------------------------
+
+
+def test_api_key_does_not_leak_in_repr() -> None:
+    config = StreamingSTTConfig(api_key=SecretStr("sk-very-secret-xyz"))
+    rendered = repr(config)
+    assert "sk-very-secret-xyz" not in rendered
+
+
+# ---------- defaults -------------------------------------------------------
+
+
+def test_default_provider_is_deepgram() -> None:
+    config = StreamingSTTConfig()
+    assert config.provider == "deepgram"
+
+
+def test_default_model_is_nova_3() -> None:
+    config = StreamingSTTConfig()
+    assert config.model == "nova-3"
+
+
+def test_default_language_hint_is_none() -> None:
+    config = StreamingSTTConfig()
+    assert config.language_hint is None
+
+
+def test_default_vad_library_is_silero() -> None:
+    config = StreamingSTTConfig()
+    assert config.vad_library == "silero"
+
+
+def test_default_request_timeout_is_60s() -> None:
+    config = StreamingSTTConfig()
+    assert config.request_timeout_s == 60.0
+
+
+def test_default_deepgram_endpointing_and_utterance_end() -> None:
+    config = StreamingSTTConfig()
+    assert config.deepgram_endpointing_ms == 300
+    assert config.deepgram_utterance_end_ms == 1000
+
+
+def test_default_silero_tuning_knobs() -> None:
+    config = StreamingSTTConfig()
+    assert config.silero_min_speech_duration_ms == 50
+    assert config.silero_min_silence_duration_ms == 200
+    assert config.silero_activation_threshold == 0.5
+
+
+# ---------- Field constraints (fail-fast at construction) ------------------
+
+
+def test_request_timeout_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(request_timeout_s=0.0)
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(request_timeout_s=-5.0)
+
+
+@pytest.mark.parametrize("value", [9, -10, 2001, 9999])
+def test_deepgram_endpointing_ms_out_of_range(value: int) -> None:
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(deepgram_endpointing_ms=value)
+
+
+@pytest.mark.parametrize("value", [99, 5001, -1])
+def test_deepgram_utterance_end_ms_out_of_range(value: int) -> None:
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(deepgram_utterance_end_ms=value)
+
+
+@pytest.mark.parametrize("value", [9, 501])
+def test_silero_min_speech_duration_out_of_range(value: int) -> None:
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(silero_min_speech_duration_ms=value)
+
+
+@pytest.mark.parametrize("value", [49, 2001])
+def test_silero_min_silence_duration_out_of_range(value: int) -> None:
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(silero_min_silence_duration_ms=value)
+
+
+@pytest.mark.parametrize("value", [-0.01, 1.01, 2.0])
+def test_silero_activation_threshold_out_of_range(value: float) -> None:
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(silero_activation_threshold=value)
+
+
+# ---------- extra="ignore" tolerates unknown env vars ----------------------
+
+
+def test_extra_env_vars_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pydantic Settings ``extra="ignore"`` convention — extra
+    ``PERSONA_STT_*`` env vars must NOT cause construction to fail."""
+    monkeypatch.setenv("PERSONA_STT_UNKNOWN_FUTURE_KNOB", "x")
+    monkeypatch.setenv("PERSONA_STT_ANOTHER_EXTRA", "y")
+    config = StreamingSTTConfig()
+    assert config.provider == "deepgram"
+
+
+# ---------- Provider Literal -----------------------------------------------
+
+
+def test_provider_literal_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(provider="cloud-fancy-stt-9000")  # type: ignore[arg-type]
+
+
+def test_vad_library_literal_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        StreamingSTTConfig(vad_library="custom-vad")  # type: ignore[arg-type]

@@ -18,6 +18,24 @@ dependencies = [
     # `POST /v1/voice/token` endpoint signs LiveKit JWTs with the API secret.
     # PyPI name is `livekit-api` (NOT `livekit-server-sdk-python`); v1.1.0.
     "livekit-api>=1.1,<2",
+    # Deepgram streaming-STT SDK per Spec V2 D-V2-1 LOCK launch provider
+    # (R-V2-1 audit: MIT-licensed; PEP 561 typed; transitive deps
+    # `httpx` BSD-3 / `websockets` BSD-3 / `aiohttp` Apache-2.0 / `pydantic` MIT
+    # / `dataclasses-json` MIT — all permissive per
+    # D-V1-X-livekit-sdk-license-stack precedent). Used only inside
+    # `persona_voice.stt.deepgram_backend` per Spec 02 ChatBackend
+    # adapter-boundary discipline.
+    "deepgram-sdk>=4.0,<5",
+    # Silero VAD ONNX-only path per Spec V2 D-V2-X-silero-implementation-shape
+    # LOCK (3 pillars: ONNX-only + SileroFramer mandatory + lazy-construct +
+    # explicit prewarm). `silero-vad-lite` is the preferred path — MIT-licensed,
+    # bundles the v5 `silero_vad.onnx` model weights + a C++ ONNX runtime
+    # wrapper, single transitive (pytest dev-only), no torch (avoids the 200-500
+    # MB transitive that the official `silero-vad` PyPI brings). 32 ms / 512-
+    # sample window pinned at 16 kHz. Used only inside
+    # `persona_voice.stt.vad_silero` per the Spec 02 ChatBackend adapter-
+    # boundary discipline.
+    "silero-vad-lite>=0.2,<1",
 ]
 
 [build-system]

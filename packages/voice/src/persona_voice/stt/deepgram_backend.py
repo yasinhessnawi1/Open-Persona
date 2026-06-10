@@ -1,0 +1,447 @@
+"""Deepgram Nova-3 concrete :class:`StreamingSTT` backend per D-V2-1 LOCK.
+
+This module is the only place the workspace touches the ``deepgram-sdk``
+SDK. Callers depend on :class:`persona_voice.stt.protocol.StreamingSTT`
++ :class:`persona_voice.stt.protocol.SpeechActivityListener` — never on
+``deepgram.*`` — per the Spec 02 ChatBackend adapter-boundary discipline.
+
+**Connection model.** The Deepgram streaming endpoint is
+``wss://api.deepgram.com/v1/listen`` with query parameters encoded from
+the :class:`StreamingSTTConfig`: ``encoding=linear16``, ``sample_rate=16000``,
+``channels=1``, ``interim_results=true``, ``endpointing=<deepgram_endpointing_ms>``,
+``utterance_end_ms=<deepgram_utterance_end_ms>``, ``vad_events=true``, and
+``language=<language_hint or "en">`` + ``model=<config.model>``. The
+``deepgram-sdk`` package wraps the WebSocket with an event-callback bus
+(``client.listen.asyncwebsocket.v("1")``); we register handlers for the
+``Transcript``, ``SpeechStarted``, ``UtteranceEnd``, ``Error``, and ``Close``
+events and translate them into our boundary records.
+
+**Lazy connection.** The WebSocket opens on the first
+:meth:`DeepgramStreamingSTT.push_audio` call — not in ``__init__`` — so
+construction stays cheap and the V1 inbound-frame dispatch loop drives the
+connection lifecycle. Authentication still fails-fast at construction
+(:class:`STTAuthenticationError` raised if ``PERSONA_STT_API_KEY`` is missing
+or empty) per Spec 02 D-02-10 + V2 D-V2-X-cost-discipline.
+
+**Two output streams.** :meth:`transcripts` yields
+:class:`persona_voice.loop.streaming.Transcript` records (partials with
+``is_final=False`` + finals with ``is_final=True``; ``eou_at`` set when
+Deepgram reports ``speech_final=True``). :meth:`speech_activity_events`
+yields :class:`persona_voice.stt.types.SpeechStartedEvent` and
+:class:`persona_voice.stt.types.SpeechEndedEvent` records with
+``source="provider"`` so the T06 seam adapter (R-V2-2 combination_design)
+can wire them through as corroborators alongside the Silero VAD primary
+stream. Keeping the two streams separate is the Pipecat issue #1323
+production-bug-precedent shape (D-V2-X-activity-listener-shape LOCK).
+
+**``close()`` semantics.** Deepgram's WebSocket close finalises in-flight
+buffers and may emit one last FINAL transcript before the close-frame; the
+implementation accepts this — callers MAY ``await stt.close()`` and continue
+to drain :meth:`transcripts` until the iterator terminates. A second
+``close()`` is a no-op (idempotency contract from the Protocol docstring).
+
+**Error mapping.** Provider exceptions raised by ``deepgram-sdk`` are
+caught at the adapter boundary and re-raised through the
+:class:`persona_voice.stt.errors.STTError` hierarchy so callers depend on
+our domain types:
+
+* ``DeepgramApiKeyError`` (401/403) → :class:`STTAuthenticationError`
+* HTTP 429 surfaced via ``DeepgramApiError`` → :class:`STTRateLimitError`
+* WebSocket disconnect / generic ``DeepgramError`` →
+  :class:`STTStreamFailureError`
+* Audio format rejection (HTTP 400 with ``encoding``/``sample_rate``
+  diagnostics) → :class:`STTAudioFormatError`
+
+The ``deepgram-sdk`` runtime surface (the event-bus ``connection.on(event,
+handler)`` callbacks + the ``LiveResultResponse`` dataclasses) is dynamically
+typed at the boundary mypy sees — concrete types are resolved at SDK-event
+dispatch time, NOT at function signatures. Mirroring the
+``persona_voice.tests._mock_backend`` discipline at the Spec 02 boundary,
+this module uses ``Any`` at the SDK boundary with the module-level
+``# ruff: noqa: ANN401`` carve-out (justifying comment per
+ENGINEERING_STANDARDS §1 — no bare Any without a reason). The
+``# ruff: noqa: ARG002`` carve-out covers the unused
+``_client`` / ``_close`` callback positional arguments the SDK requires
+in every handler signature even when our adapter ignores them.
+"""
+
+# ruff: noqa: ANN401, ARG002
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+from persona_voice.loop.streaming import Transcript
+from persona_voice.stt.errors import (
+    STTAudioFormatError,
+    STTAuthenticationError,
+    STTRateLimitError,
+    STTStreamFailureError,
+)
+from persona_voice.stt.types import SpeechEndedEvent, SpeechStartedEvent
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from persona_voice.stt.config import StreamingSTTConfig
+
+
+__all__ = ["DeepgramStreamingSTT"]
+
+
+_DEEPGRAM_INBOUND_SAMPLE_RATE_HZ: int = 16_000
+"""Sample rate Deepgram Nova-3 accepts natively. Matches V1's D-V1-6
+``AUDIO_INBOUND_SAMPLE_RATE`` — zero transcoding per R-V2-3."""
+
+
+class DeepgramStreamingSTT:
+    """Deepgram Nova-3 streaming-STT backend implementing :class:`StreamingSTT`.
+
+    Constructed from a :class:`StreamingSTTConfig` with
+    ``provider="deepgram"``. The first :meth:`push_audio` call opens the
+    WebSocket; subsequent calls forward PCM16 audio bytes verbatim.
+    :meth:`transcripts` and :meth:`speech_activity_events` are async
+    generators consumers iterate with ``async for``.
+
+    Construction validates the configuration but does NOT open the
+    WebSocket — :class:`STTAuthenticationError` is raised immediately if
+    the API key is missing or empty (Spec 02 D-02-10 fail-fast).
+    """
+
+    def __init__(self, config: StreamingSTTConfig) -> None:
+        """Validate config and prepare lazy WebSocket state.
+
+        Args:
+            config: V2 streaming-STT configuration. ``api_key`` must be a
+                non-empty :class:`~pydantic.SecretStr`.
+
+        Raises:
+            STTAuthenticationError: ``api_key`` is missing or empty.
+        """
+        if config.api_key is None or not config.api_key.get_secret_value():
+            raise STTAuthenticationError(
+                "PERSONA_STT_API_KEY required for deepgram",
+                context={"provider": "deepgram"},
+            )
+        self._config = config
+        self._transcript_queue: asyncio.Queue[Transcript | None] = asyncio.Queue()
+        self._activity_queue: asyncio.Queue[SpeechStartedEvent | SpeechEndedEvent | None] = (
+            asyncio.Queue()
+        )
+        self._client: Any | None = None
+        self._connection: Any | None = None
+        self._connected: bool = False
+        self._closed: bool = False
+
+    @property
+    def provider_name(self) -> str:
+        """Stable lowercase provider token — ``"deepgram"``."""
+        return "deepgram"
+
+    @property
+    def model_name(self) -> str:
+        """Configured Deepgram model identifier (e.g. ``"nova-3"``)."""
+        return self._config.model
+
+    async def push_audio(self, pcm: bytes, sample_rate: int) -> None:
+        """Forward one inbound PCM16 frame to the Deepgram WebSocket.
+
+        Lazily opens the connection on first call. Pre-connect calls
+        after :meth:`close` are no-ops (the iterator has terminated).
+
+        Args:
+            pcm: PCM16 little-endian bytes for one frame.
+            sample_rate: Frame sample rate (must be 16000 Hz per D-V1-6).
+
+        Raises:
+            STTAudioFormatError: ``sample_rate`` does not match
+                Deepgram's negotiated 16 kHz.
+            STTStreamFailureError: WebSocket disconnected mid-stream.
+            STTAuthenticationError: provider returned 401/403.
+            STTRateLimitError: provider returned 429.
+        """
+        if self._closed:
+            return
+        if sample_rate != _DEEPGRAM_INBOUND_SAMPLE_RATE_HZ:
+            raise STTAudioFormatError(
+                f"deepgram requires sample_rate={_DEEPGRAM_INBOUND_SAMPLE_RATE_HZ} "
+                f"Hz; got {sample_rate}",
+                context={
+                    "provider": "deepgram",
+                    "model": self._config.model,
+                    "sample_rate": str(sample_rate),
+                },
+            )
+        if not self._connected:
+            await self._open_connection()
+        try:
+            connection = self._connection
+            assert connection is not None  # guarded by self._connected
+            await connection.send(pcm)
+        except Exception as exc:  # noqa: BLE001 — adapter-boundary mapping
+            self._raise_mapped(exc)
+
+    def transcripts(self) -> AsyncIterator[Transcript]:
+        """Yield :class:`Transcript` records as Deepgram emits them.
+
+        The first yield arrives once the WebSocket is open and Deepgram
+        publishes a ``Results`` message. The iterator terminates when
+        :meth:`close` is called and the internal queue drains.
+        """
+        return self._iter_transcripts()
+
+    async def _iter_transcripts(self) -> AsyncIterator[Transcript]:
+        while True:
+            item = await self._transcript_queue.get()
+            if item is None:
+                return
+            yield item
+
+    def speech_activity_events(
+        self,
+    ) -> AsyncIterator[SpeechStartedEvent | SpeechEndedEvent]:
+        """Yield provider-sourced speech-activity events.
+
+        Deepgram's ``SpeechStarted`` messages become
+        :class:`SpeechStartedEvent` records with ``source="provider"``;
+        ``UtteranceEnd`` messages become :class:`SpeechEndedEvent` records
+        with ``source="provider"`` + ``corroborates=False`` (the T06 seam
+        adapter sets ``corroborates`` per R-V2-2 conflict-resolution
+        rules when Silero's primary stream has already fired).
+        """
+        return self._iter_activity()
+
+    async def _iter_activity(
+        self,
+    ) -> AsyncIterator[SpeechStartedEvent | SpeechEndedEvent]:
+        while True:
+            item = await self._activity_queue.get()
+            if item is None:
+                return
+            yield item
+
+    async def close(self) -> None:
+        """Close the WebSocket gracefully. Idempotent.
+
+        Sends sentinel ``None`` values into both output queues so the
+        :meth:`transcripts` and :meth:`speech_activity_events` iterators
+        terminate cleanly after draining any in-flight events.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        connection = self._connection
+        if connection is not None:
+            # Best-effort close per the Protocol docstring contract — provider
+            # exceptions during close are swallowed (not re-raised); the
+            # VoiceLog audit hop records success/failure for observability.
+            with contextlib.suppress(Exception):
+                await connection.finish()
+        await self._transcript_queue.put(None)
+        await self._activity_queue.put(None)
+
+    # ------------------------------------------------------------------
+    # private — connection lifecycle + event handlers
+    # ------------------------------------------------------------------
+
+    async def _open_connection(self) -> None:
+        """Open the Deepgram WebSocket and wire event handlers.
+
+        Imported lazily so the module stays importable in environments
+        without ``deepgram-sdk`` extras installed (matches the V1 substrate
+        lazy-import discipline at composition root).
+        """
+        from deepgram import (
+            DeepgramClient,
+            DeepgramClientOptions,
+            LiveOptions,
+            LiveTranscriptionEvents,
+        )
+
+        assert self._config.api_key is not None  # validated in __init__
+        api_key_value = self._config.api_key.get_secret_value()
+
+        # SDK accepts a base_url override via DeepgramClientOptions.url.
+        # When unset, the SDK defaults to api.deepgram.com over wss://.
+        client_options = (
+            DeepgramClientOptions(url=self._config.base_url)
+            if self._config.base_url is not None
+            else None
+        )
+        try:
+            self._client = DeepgramClient(api_key_value, config=client_options)
+            connection = self._client.listen.asyncwebsocket.v("1")
+        except Exception as exc:  # noqa: BLE001 — adapter-boundary mapping
+            self._raise_mapped(exc)
+
+        connection.on(LiveTranscriptionEvents.Transcript, self._on_transcript)
+        connection.on(LiveTranscriptionEvents.SpeechStarted, self._on_speech_started)
+        connection.on(LiveTranscriptionEvents.UtteranceEnd, self._on_utterance_end)
+        connection.on(LiveTranscriptionEvents.Error, self._on_error)
+        connection.on(LiveTranscriptionEvents.Close, self._on_close)
+
+        live_options = LiveOptions(
+            model=self._config.model,
+            language=self._config.language_hint or "en",
+            encoding="linear16",
+            sample_rate=_DEEPGRAM_INBOUND_SAMPLE_RATE_HZ,
+            channels=1,
+            interim_results=True,
+            endpointing=self._config.deepgram_endpointing_ms,
+            utterance_end_ms=self._config.deepgram_utterance_end_ms,
+            vad_events=True,
+        )
+
+        try:
+            started = await connection.start(live_options)
+        except Exception as exc:  # noqa: BLE001 — adapter-boundary mapping
+            self._raise_mapped(exc)
+        if not started:
+            raise STTStreamFailureError(
+                "deepgram websocket failed to start",
+                context={"provider": "deepgram", "model": self._config.model},
+            )
+        self._connection = connection
+        self._connected = True
+
+    async def _on_transcript(self, _client: Any, result: Any, **_kwargs: Any) -> None:
+        """Convert a Deepgram ``Results`` message into a :class:`Transcript`."""
+        try:
+            channel = result.channel
+            alternative = channel.alternatives[0]
+            text = alternative.transcript
+            confidence = float(alternative.confidence)
+            is_final = bool(result.is_final)
+            speech_final = bool(result.speech_final)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return
+        if not text:
+            return
+        eou = datetime.now(UTC) if speech_final else None
+        transcript = Transcript(
+            is_final=is_final,
+            text=text,
+            confidence=max(0.0, min(1.0, confidence)),
+            eou_at=eou,
+        )
+        await self._transcript_queue.put(transcript)
+
+    async def _on_speech_started(self, _client: Any, speech_started: Any, **_kwargs: Any) -> None:
+        """Convert a Deepgram ``SpeechStarted`` event into a boundary record."""
+        ts_audio_s = self._safe_timestamp(speech_started)
+        event = SpeechStartedEvent(
+            ts_audio_s=ts_audio_s,
+            ts_emit=datetime.now(UTC),
+            source="provider",
+        )
+        await self._activity_queue.put(event)
+
+    async def _on_utterance_end(self, _client: Any, utterance_end: Any, **_kwargs: Any) -> None:
+        """Convert a Deepgram ``UtteranceEnd`` event into a boundary record."""
+        ts_audio_s = self._safe_timestamp(utterance_end)
+        event = SpeechEndedEvent(
+            ts_audio_s=ts_audio_s,
+            ts_emit=datetime.now(UTC),
+            source="provider",
+            transcript_settled=False,
+            corroborates=False,
+        )
+        await self._activity_queue.put(event)
+
+    async def _on_error(self, _client: Any, error: Any, **_kwargs: Any) -> None:
+        """Translate provider-stream errors into the domain hierarchy."""
+        try:
+            self._raise_mapped(error)
+        except Exception:  # noqa: BLE001 — surface via close, not raise (callback context)
+            await self.close()
+
+    async def _on_close(self, _client: Any, _close: Any, **_kwargs: Any) -> None:
+        """Server-side close — terminate the output iterators cleanly."""
+        await self.close()
+
+    @staticmethod
+    def _safe_timestamp(message: Any) -> float:
+        """Read ``timestamp`` / ``start`` off a Deepgram message defensively."""
+        for attr in ("timestamp", "start"):
+            value = getattr(message, attr, None)
+            if isinstance(value, (int, float)):
+                return float(value)
+        return 0.0
+
+    def _raise_mapped(self, exc: BaseException) -> None:
+        """Re-raise a provider exception through the STT domain hierarchy.
+
+        The mapping mirrors Spec 02's :func:`persona.backends.openai_compat`
+        adapter-boundary discipline:
+
+        * Status 401 / 403 / API-key errors → :class:`STTAuthenticationError`
+        * Status 429 → :class:`STTRateLimitError` (with ``retry_after_s``
+          context when the provider surfaces it)
+        * Status 400 with audio-format diagnostics → :class:`STTAudioFormatError`
+        * Anything else with a Deepgram identity → :class:`STTStreamFailureError`
+
+        Domain exceptions raised by the backend itself pass through
+        unchanged.
+        """
+        if isinstance(
+            exc,
+            (
+                STTAuthenticationError,
+                STTRateLimitError,
+                STTStreamFailureError,
+                STTAudioFormatError,
+            ),
+        ):
+            raise exc
+
+        message = str(exc) or exc.__class__.__name__
+        status = self._extract_status(exc)
+        context: dict[str, str] = {
+            "provider": "deepgram",
+            "model": self._config.model,
+        }
+        if status is not None:
+            context["status"] = status
+
+        if self._is_auth_error(exc, status):
+            raise STTAuthenticationError(message, context=context) from exc
+        if status == "429":
+            retry_after = self._extract_retry_after(exc)
+            if retry_after is not None:
+                context["retry_after_s"] = retry_after
+            raise STTRateLimitError(message, context=context) from exc
+        if status == "400" and self._is_format_error(message):
+            raise STTAudioFormatError(message, context=context) from exc
+        raise STTStreamFailureError(message, context=context) from exc
+
+    @staticmethod
+    def _extract_status(exc: BaseException) -> str | None:
+        status = getattr(exc, "status", None)
+        if status is None:
+            status = getattr(exc, "status_code", None)
+        if status is None:
+            return None
+        return str(status)
+
+    @staticmethod
+    def _extract_retry_after(exc: BaseException) -> str | None:
+        retry = getattr(exc, "retry_after", None)
+        if retry is None:
+            return None
+        return str(retry)
+
+    @staticmethod
+    def _is_auth_error(exc: BaseException, status: str | None) -> bool:
+        if exc.__class__.__name__ == "DeepgramApiKeyError":
+            return True
+        return status in {"401", "403"}
+
+    @staticmethod
+    def _is_format_error(message: str) -> bool:
+        lowered = message.lower()
+        return any(
+            token in lowered for token in ("encoding", "sample_rate", "channels", "audio format")
+        )
