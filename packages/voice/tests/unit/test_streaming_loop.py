@@ -347,3 +347,49 @@ async def test_stop_cancels_pipeline_task() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert task.cancelled()
+
+
+# ---------- T07 (Spec V2 additive port) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_streaming_loop_speech_activity_default_is_none() -> None:
+    """V1 backwards-compat — speech_activity defaults to None when omitted."""
+    vr = _build_voice_room_fake()
+    sm = _build_session()
+    loop = StreamingLoop(voice_room=vr, session=sm)
+    assert loop.speech_activity is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_loop_speech_activity_ctor_param_stored() -> None:
+    """V2 D-V2-X-streaming-loop-additivity-shape — listener accessible via property."""
+
+    class _Listener:
+        async def on_speech_started(self, event: Any) -> None: ...  # noqa: ANN401
+        async def on_speech_ended(self, event: Any) -> None: ...  # noqa: ANN401
+
+    listener = _Listener()
+    vr = _build_voice_room_fake()
+    sm = _build_session()
+    loop = StreamingLoop(voice_room=vr, session=sm, speech_activity=listener)  # type: ignore[arg-type]
+    assert loop.speech_activity is listener
+
+
+@pytest.mark.asyncio
+async def test_streaming_loop_speech_activity_setter_wires_post_construction() -> None:
+    """Production composition path — wire the listener after construction."""
+
+    class _Listener:
+        async def on_speech_started(self, event: Any) -> None: ...  # noqa: ANN401
+        async def on_speech_ended(self, event: Any) -> None: ...  # noqa: ANN401
+
+    listener = _Listener()
+    vr = _build_voice_room_fake()
+    sm = _build_session()
+    loop = StreamingLoop(voice_room=vr, session=sm)
+    assert loop.speech_activity is None
+    loop.speech_activity = listener  # type: ignore[assignment]
+    assert loop.speech_activity is listener
+    loop.speech_activity = None
+    assert loop.speech_activity is None

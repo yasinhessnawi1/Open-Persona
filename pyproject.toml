@@ -172,6 +172,41 @@ ignore_missing_imports = true
 module = ["livekit", "livekit.*"]
 ignore_missing_imports = true
 
+# deepgram-sdk (persona-voice [packages/voice], spec V2 T04) — D-V2-1 LOCK
+# launch streaming-STT provider. The PyPI `deepgram-sdk` package is MIT-licensed
+# and ships a py.typed marker per R-V2-1 audit; however the dataclass / runtime-
+# typed surface around `client.listen.asyncwebsocket.v('1').on(event, handler)`
+# uses untyped event-bus callbacks (Callable without parameter types) that
+# strict mypy cannot resolve cleanly across the handler boundary. Mirror the
+# livekit / docker / pgvector / jose / e2b / openpyxl / pypdfium2 / regex
+# discipline — ignore missing imports at the boundary so the V2 backend
+# implementation stays untouched by partial third-party stubs.
+[[tool.mypy.overrides]]
+module = ["deepgram", "deepgram.*"]
+ignore_missing_imports = true
+
+# silero-vad-lite (persona-voice [packages/voice], spec V2 T05) — D-V2-X-silero-
+# implementation-shape LOCK primary path. The PyPI `silero-vad-lite` package is
+# MIT-licensed and bundles the v5 ONNX weights + a C++ ONNX runtime wrapper as
+# a `ctypes` shim — no py.typed marker, no inline type hints on the
+# `SileroVAD(sample_rate)` / `.process(data) -> float` surface. Mirror the
+# livekit / deepgram / docker / pgvector / jose / e2b / openpyxl / pypdfium2 /
+# regex discipline — ignore missing imports at the boundary so the VAD adapter
+# implementation stays untouched by partial third-party stubs.
+[[tool.mypy.overrides]]
+module = ["silero_vad_lite", "silero_vad_lite.*"]
+ignore_missing_imports = true
+
+# onnxruntime fallback path (persona-voice [packages/voice], spec V2 T05). The
+# PyPI `onnxruntime` package is MIT-licensed and ships a partial py.typed marker
+# but the `InferenceSession` constructor + run() surface is dynamically typed
+# at the boundary mypy sees. Documented even though the T05 implementation
+# defaults to silero-vad-lite — the override covers the v0.2 fallback path
+# where an operator bundles the ONNX file directly.
+[[tool.mypy.overrides]]
+module = ["onnxruntime", "onnxruntime.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["packages/core/tests", "packages/runtime/tests", "packages/api/tests", "packages/voice/tests"]
 markers = [

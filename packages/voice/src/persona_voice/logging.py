@@ -100,6 +100,28 @@ class VoiceLog(BaseModel):
     transport_out_ms: float | None = Field(default=None, ge=0.0)
     loop_overhead_ms: float | None = Field(default=None, ge=0.0)
 
+    # Spec V2 D-V2-X-cost-discipline + D-05-9 + D-V1-X-first-token-measurement-
+    # coordination additive STT fields (T08). The shape mirrors V1's hop
+    # vocabulary so observability backends round-trip cleanly; per
+    # decisions.md D-V2-X-cost-discipline:
+    #   - ``stt_partial_first_at`` — the Jarvis-feel governing partial-onset
+    #     anchor (V2 reports the FIRST partial transcript timestamp; sub-
+    #     ~100 ms target per R-V2-2 wall-clock framing).
+    #   - ``stt_audio_pushed_at`` — V2's first push_audio() entry timestamp
+    #     for the turn; pairs with stt_partial_first_at to surface the V2
+    #     STT-slice latency in tandem with V1's transport_in_ms.
+    #   - ``stt_provider_cost_cents_per_minute`` — per-session cost knob
+    #     (Phase-3 critic gate corrected: Deepgram streaming PAYG
+    #     $0.0048/min = 0.48 cents/min; $0.0042/min Growth = 0.42 cents/min).
+    #     Population at session-start from StreamingSTTConfig.
+    #   - ``stt_total_cents`` — session-end roll-up = call_duration_minutes
+    #     * stt_provider_cost_cents_per_minute. Spec 08 credits-ledger
+    #     consumer post-V5 surfaces this to the operator.
+    stt_partial_first_at: datetime | None = None
+    stt_audio_pushed_at: datetime | None = None
+    stt_provider_cost_cents_per_minute: float | None = Field(default=None, ge=0.0)
+    stt_total_cents: float | None = Field(default=None, ge=0.0)
+
 
 def compute_e2e_ms(log: VoiceLog) -> float | None:
     """End-to-end round-trip in ms, from ``eou_at`` → ``audio_first_play_at``.
