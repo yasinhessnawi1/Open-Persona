@@ -47,6 +47,27 @@ __all__ = [
 
 _FOOTER = "Stay in character. Cite sources when using tool results."
 
+# Produced-files verification block (D-19-X-prompt-builder-produced-files-verification).
+# Capability-gated — emitted only when the persona has ``code_execution`` in
+# its tool allow-list. Provider-agnostic by construction (one instruction
+# covers DeepSeek + Anthropic + any frontier tier), and intentionally short
+# so it stays inside any reasonable token budget. Subsumes Anthropic native
+# tool-result soak-verification — the model is taught to (1) end every
+# code_execution call with an ``os.listdir("/workspace/out")`` print,
+# (2) never fabricate save messages, (3) reconcile reported paths against
+# the actual listdir output BEFORE reporting success.
+_PRODUCED_FILES_VERIFICATION = (
+    "When you call code_execution:\n"
+    '1. End every call by printing os.listdir("/workspace/out") so the '
+    "tool result shows the real produced files.\n"
+    "2. Never fabricate or paraphrase save confirmations. Only claim a file "
+    "was saved if it appears in that listdir output.\n"
+    "3. Before reporting success to the user, match every file path you "
+    "mention against the listdir output from the most recent call. If a "
+    "path is missing, fix it in another code_execution call — do not "
+    "report success."
+)
+
 
 class DocumentInjection(BaseModel):
     """A single attached document's whole-text payload for prompt injection.
@@ -326,6 +347,17 @@ class PromptBuilder:
         # scope" synopsis as a structural defence for Dominant Concern #2.
         if document_context and document_context.whole_inject_docs:
             parts.append(self._render_whole_inject_documents(document_context))
+
+        # 8a. Produced-files verification (D-19-X-prompt-builder-produced-files-
+        # verification). Capability-gated on the ``code_execution`` allow-list
+        # entry: teaches the model — provider-agnostically — to end every
+        # code_execution call with a listdir print, never fabricate save
+        # confirmations, and reconcile reported paths against the actual
+        # listdir output before claiming success. Sits between the optional
+        # document section and the footer so the footer remains the final
+        # line of the system block.
+        if "code_execution" in persona.tools:
+            parts.append(_PRODUCED_FILES_VERIFICATION)
 
         # 9. Footer.
         parts.append(_FOOTER)

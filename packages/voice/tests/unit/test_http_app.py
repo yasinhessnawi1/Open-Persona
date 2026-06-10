@@ -12,13 +12,17 @@ import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
 from persona.auth.jwt_verifier import AuthenticatedUser
-from persona.errors import AuthenticationError
+from persona.errors import AuthenticationError, CreditsExhaustedError
 from persona_voice.config import VoiceConfig
 from persona_voice.http.app import build_app
 from pydantic import SecretStr
 
 
-def _build_test_client(*, owns_persona_result: bool = True) -> TestClient:
+def _build_test_client(
+    *,
+    owns_persona_result: bool = True,
+    credits_balance: int = 100,
+) -> TestClient:
     cfg = VoiceConfig(
         livekit_url="ws://localhost:7880",
         livekit_api_key=SecretStr("lk_key_test"),
@@ -39,6 +43,15 @@ def _build_test_client(*, owns_persona_result: bool = True) -> TestClient:
         return owns_persona_result
 
     app.state.owns_persona = _owns
+
+    def _require_credits(*, user_id: str) -> None:  # noqa: ARG001
+        if credits_balance <= 0:
+            raise CreditsExhaustedError(
+                "Your free credits are used up.",
+                context={"balance": str(credits_balance)},
+            )
+
+    app.state.require_credits = _require_credits
     return TestClient(app)
 
 
@@ -96,6 +109,37 @@ def test_token_endpoint_happy_path_returns_signed_token() -> None:
     assert decoded["sub"] == "user_test"
     assert decoded["video"]["room"] == body["room_name"]
     assert decoded["video"]["roomJoin"] is True
+
+
+def test_token_endpoint_402_when_credits_exhausted() -> None:
+    """Mirrors the persona-api chat 402 contract (D-11-12 / D-19-X-voice-token-credit-gate).
+
+    The voice token must NOT be minted when the caller is out of credits —
+    otherwise the LiveKit Room joins succeed and the deduct-per-turn path
+    can't recover the wasted signaling round-trip. Per-turn deductions during
+    the call are a separate concern (not asserted here).
+    """
+    client = _build_test_client(credits_balance=0)
+    resp = client.post(
+        "/v1/voice/token",
+        headers={"Authorization": "Bearer good"},
+        json={"persona_id": "p_astrid", "conversation_id": "c_42"},
+    )
+    assert resp.status_code == 402
+    body = resp.json()
+    assert body["error"] == "credits_exhausted"
+    assert body["context"]["balance"] == "0"
+
+
+def test_token_endpoint_200_when_credits_positive() -> None:
+    """Balance > 0 lets the mint proceed (the deduct happens per-turn, not here)."""
+    client = _build_test_client(credits_balance=1)
+    resp = client.post(
+        "/v1/voice/token",
+        headers={"Authorization": "Bearer good"},
+        json={"persona_id": "p_astrid", "conversation_id": "c_42"},
+    )
+    assert resp.status_code == 200
 
 
 def test_token_endpoint_rejects_body_with_extra_fields() -> None:

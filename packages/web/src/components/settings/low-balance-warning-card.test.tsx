@@ -1,0 +1,56 @@
+/**
+ * Spec F? L6a — LowBalanceWarningCard tests.
+ *
+ * Verifies the three branches:
+ *   - low_balance=false → no warning rendered (null);
+ *   - low_balance=true, balance>0 → warning visible;
+ *   - low_balance=true, balance=0 → no warning (the credits-exhausted cliff is
+ *     a separate surface on the page).
+ */
+
+import { render } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { LowBalanceWarningCard } from "./low-balance-warning-card";
+
+const COPY = { title: "Credits running low", hint: "Top up soon." };
+
+describe("LowBalanceWarningCard", () => {
+  it("renders nothing when low_balance is false", () => {
+    const { container } = render(
+      <LowBalanceWarningCard
+        credits={{ balance: 50_000, low_balance: false }}
+        {...COPY}
+      />,
+    );
+    expect(
+      container.querySelector('[data-slot="settings-low-balance-warning"]'),
+    ).toBeNull();
+  });
+
+  it("renders the warning when low_balance is true and balance > 0", () => {
+    const { container } = render(
+      <LowBalanceWarningCard
+        credits={{ balance: 5_000, low_balance: true }}
+        {...COPY}
+      />,
+    );
+    const card = container.querySelector(
+      '[data-slot="settings-low-balance-warning"]',
+    );
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("Credits running low");
+    expect(card?.textContent).toContain("Top up soon.");
+  });
+
+  it("renders nothing when balance is 0 (credits-exhausted cliff is handled elsewhere)", () => {
+    const { container } = render(
+      <LowBalanceWarningCard
+        credits={{ balance: 0, low_balance: true }}
+        {...COPY}
+      />,
+    );
+    expect(
+      container.querySelector('[data-slot="settings-low-balance-warning"]'),
+    ).toBeNull();
+  });
+});

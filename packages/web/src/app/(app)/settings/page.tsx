@@ -2,6 +2,7 @@ import { currentUser } from "@clerk/nextjs/server";
 import { getTranslations } from "next-intl/server";
 import { PageBody, PageHeader, Stack } from "@/components/layout";
 import { ErrorState } from "@/components/patterns/error-state";
+import { LowBalanceWarningCard } from "@/components/settings/low-balance-warning-card";
 import { PreferencesCard } from "@/components/settings/preferences-card";
 import { Card } from "@/components/ui/card";
 import { unwrap } from "@/lib/api";
@@ -17,12 +18,10 @@ import { serverApi } from "@/lib/api/server";
  *     branch below);
  *   - `<PreferencesCard>` consumer of `useTheme` + `useBoolSetting` + `LOCALE_COOKIE`.
  *
- * Note: the audit referenced a `credits.low_balance` flag (D-11-12) but the
- * generated `CreditsResponse` schema currently exposes only `balance` (see
- * `src/lib/api/schema.ts` line 531). T31 wires the credits-exhausted (balance
- * === 0) surface via T22 `<ErrorState status={402}>` today; the `lowBalance` +
- * `creditsExhausted*` i18n keys land here so a future API field (or a client
- * threshold) can flip a low-balance inline warning on without an i18n round-trip.
+ * Low-balance (D-11-12): `credits.low_balance` is surfaced inline via
+ * `<LowBalanceWarningCard>` above the credits card when the backend flips the
+ * flag and balance > 0. The credits-exhausted (balance === 0) cliff stays on
+ * the existing T22 `<ErrorState status={402}>` branch below.
  *
  * REPLACED:
  *   - hand-rolled `mx-auto max-w-3xl` → T20 `<PageBody>`;
@@ -120,6 +119,12 @@ export default async function SettingsPage() {
               {t("accountHint")}
             </p>
           </Card>
+
+          <LowBalanceWarningCard
+            credits={credits}
+            title={t("lowBalance")}
+            hint={t("creditsHint")}
+          />
 
           {exhausted ? (
             <ErrorState

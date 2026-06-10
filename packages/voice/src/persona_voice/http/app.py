@@ -36,7 +36,8 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from persona.auth.jwt_verifier import AuthenticatedUser, make_jwt_verifier
-from persona.errors import AuthenticationError
+from persona.credits import require_credits as _require_credits_core
+from persona.errors import AuthenticationError, CreditsExhaustedError
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import create_engine, text
 
@@ -102,6 +103,27 @@ async def get_current_user(
     return await verify(_bearer_token(request))
 
 
+def _require_credits(request: Request, *, user_id: str) -> None:
+    """Pre-flight credit gate for ``POST /v1/voice/token`` (D-19-X-voice-token-credit-gate).
+
+    Mirrors the persona-api chat 402 contract (D-11-12): raises
+    :class:`CreditsExhaustedError` when ``balance <= 0`` so the LiveKit Room
+    token is never minted for a user out of credits. The check runs at token
+    issue (call-start); per-turn deductions during the call are a separate
+    concern. Tests can override via ``app.state.require_credits`` to skip the
+    DB hop entirely (same pattern as ``owns_persona``).
+    """
+    override = getattr(request.app.state, "require_credits", None)
+    if override is not None:
+        override(user_id=user_id)
+        return
+    engine = getattr(request.app.state, "ownership_engine", None)
+    if engine is None:
+        msg = "ownership_engine not configured on app.state"
+        raise RuntimeError(msg)
+    _require_credits_core(rls_engine=engine, user_id=user_id)
+
+
 def _check_persona_ownership(
     request: Request,
     *,
@@ -156,6 +178,20 @@ def build_app(config: VoiceConfig) -> FastAPI:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    @app.exception_handler(CreditsExhaustedError)
+    async def _credits_error_handler(_req: Request, exc: CreditsExhaustedError) -> object:
+        # Mirrors the persona-api 402 contract (D-11-12) so the web client's
+        # existing credits_exhausted handling works for voice too.
+        from fastapi.responses import JSONResponse
+
+        payload: dict[str, object] = {
+            "error": "credits_exhausted",
+            "detail": exc.message or "insufficient credits",
+        }
+        if exc.context:
+            payload["context"] = exc.context
+        return JSONResponse(status_code=402, content=payload)
+
     @app.post("/v1/voice/token", response_model=TokenResponse)
     async def issue_voice_token(
         body: TokenRequest,
@@ -163,6 +199,7 @@ def build_app(config: VoiceConfig) -> FastAPI:
         user: AuthenticatedUser = Depends(get_current_user),
     ) -> TokenResponse:
         _check_persona_ownership(request, persona_id=body.persona_id, user_id=user.id)
+        _require_credits(request, user_id=user.id)
         cfg = get_voice_config(request)
         session_id = uuid.uuid4().hex
         token: RoomAccessToken = mint_room_access_token(

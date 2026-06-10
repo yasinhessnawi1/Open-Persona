@@ -11,6 +11,23 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+(empty — future post-v0.1 work lands here)
+
+---
+
+## [v0.1.0] — 2026-06-07
+
+> **Project v0.1.0 release.** The first demoable system release per architecture §10 + D-11-8 (library 1.0.0 = stable public API under Apache 2.0; product v0.1.0 = first demoable system). Aggregates the Phase 2 close-outs (Spec V1 voice trunk, Spec F4 rich-output UI, Spec 18 unified router, Spec F3 file-input UI) and the Spec 19 amendment set (10 additive chain entries 13–22 + the memory_chunks.kind CHECK migration L9) landed during the v0.1 close-out window.
+>
+> **Per-package version pins at v0.1.0 cut:**
+> - `persona-core 1.0.0` (first public Apache-2.0 stable per D-11-8) — see [`packages/core/CHANGELOG.md`](packages/core/CHANGELOG.md).
+> - `persona-runtime 0.18.0` — see [`packages/runtime/CHANGELOG.md`](packages/runtime/CHANGELOG.md).
+> - `persona-api 0.16.0` — see [`packages/api/CHANGELOG.md`](packages/api/CHANGELOG.md).
+> - `persona-web 0.15.0` — see [`packages/web/CHANGELOG.md`](packages/web/CHANGELOG.md).
+> - `persona-voice 0.1.0` (first release per V1 close) — see [`packages/voice/CHANGELOG.md`](packages/voice/CHANGELOG.md).
+>
+> **Spec 19 amendment chain (10 entries):** L1 (chain 13) D-19-X-prompt-builder-produced-files-verification (persona-runtime); L2 (chain 14) D-19-X-file-write-produced-files (persona-core); L4 (chain 15) D-19-X-host-out-debug-logging (persona-core); L3 (chain 16) D-19-X-imagegen-env-documentation (docs); L5 (chain 17) D-19-X-hosting-topology-amendment (docs); L6a (chain 18) D-19-X-low-balance-warning-ui (persona-web); L6b (chain 19) D-19-X-voice-token-credit-gate (persona-voice); L6c (chain 20) D-19-X-credits-service-domain-relocation (persona-core + persona-api); L7 (chain 21) D-19-X-spec14-integration-test (persona-api/tests); L8 (chain 22) D-19-X-mypy-path-pin (scripts/ + README); L9 (chain 23) D-19-X-memory-chunks-kind-check-migration (persona-api).
+
 ### Added (Spec V1 — Real-Time Voice Service and WebRTC Transport, Phase 6 complete)
 
 > **`persona-voice 0.1.0` (new workspace member).** The voice trunk — a 4th uv workspace package + LiveKit OSS substrate + WebRTC transport facade + session lifecycle + streaming-loop skeleton with V2/V3/V4/V5 Protocol seams + advisory-lock per-user concurrency + VoiceLog instrumentation. Branch (A) per D-V1-1 (R-V1-1 ruled out aiortc on documented 17–20× latency overhead). **2712 default tests passing, 0 regressions** (+178 from Spec V1 work alone — 84 voice unit + 5 voice integration against live LiveKit Server + Postgres + 10 persona-core auth tests from the T03 extraction). Binary criterion #3 (full-duplex) **structurally proven** via live LiveKit Server.

@@ -210,8 +210,13 @@ memory_chunks = Table(
     Column("written_by", Text),
     Column("reason", Text),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # Spec 19 D-19-X-memory-chunks-kind-check-migration (chain entry 23):
+    # ``'document'`` is the fifth accepted kind so the DocumentStore path
+    # (migration 005 RLS aux policy) survives the CHECK. Migration 006 is the
+    # migration of record for existing deployments; this canonical declaration
+    # is the source of truth for fresh DBs via ``001_initial`` create_all.
     CheckConstraint(
-        "kind IN ('identity', 'self_facts', 'worldview', 'episodic')",
+        "kind IN ('identity', 'self_facts', 'worldview', 'episodic', 'document')",
         name="memory_chunks_kind_check",
     ),
     CheckConstraint(
