@@ -27,7 +27,7 @@ def _chunk(
     )
 
 
-def _persona(*, constraints: list[str] | None = None) -> Persona:
+def _persona(*, constraints: list[str] | None = None, tools: list[str] | None = None) -> Persona:
     return Persona(
         persona_id="astrid",
         identity=PersonaIdentity(
@@ -36,6 +36,7 @@ def _persona(*, constraints: list[str] | None = None) -> Persona:
             background="Knows husleieloven.",
             constraints=constraints if constraints is not None else ["Never give binding advice."],
         ),
+        tools=tools if tools is not None else [],
     )
 
 
@@ -235,3 +236,67 @@ class TestAcceptance12ContextWindow:
         )
         total = sum(count_tokens(m.content) for m in prompt)
         assert total < 8000, f"30-turn prompt was {total} tokens (expected < 8000)"
+
+
+class TestProducedFilesVerification:
+    """D-19-X-prompt-builder-produced-files-verification (chain entry 13).
+
+    Capability-gated provider-agnostic instruction teaching the model to
+    end every ``code_execution`` call with ``os.listdir("/workspace/out")``,
+    never fabricate save confirmations, and reconcile reported paths
+    against the listdir output before claiming success.
+    """
+
+    def test_block_emitted_when_code_execution_in_tools(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona(tools=["code_execution"]),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+        assert "code_execution" in system
+        assert 'os.listdir("/workspace/out")' in system
+        assert "Never fabricate" in system
+        assert "match every file path" in system
+
+    def test_block_omitted_when_code_execution_not_in_tools(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona(tools=[]),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+        assert 'os.listdir("/workspace/out")' not in system
+        assert "Never fabricate" not in system
+
+    def test_block_omitted_for_unrelated_tools(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona(tools=["web_search", "use_skill"]),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+        assert 'os.listdir("/workspace/out")' not in system
+
+    def test_block_appears_before_footer(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona(tools=["code_execution"]),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+        listdir_pos = system.index('os.listdir("/workspace/out")')
+        footer_pos = system.index("Stay in character.")
+        assert listdir_pos < footer_pos, (
+            "produced-files verification block must come before the footer"
+        )
+        # And the footer remains the final non-empty line of the system block.
+        assert system.rstrip().endswith("Stay in character. Cite sources when using tool results.")

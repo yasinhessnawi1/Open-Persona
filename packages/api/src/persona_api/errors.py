@@ -17,6 +17,7 @@ from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from persona.errors import (
+    CreditsExhaustedError,
     PersonaError,
     PersonaNotFoundError,
     RuntimeWriteForbiddenError,
@@ -55,9 +56,13 @@ __all__ = [
 # persona-api import sites (``from persona_api.errors import AuthenticationError``).
 from persona.errors import AuthenticationError  # noqa: E402, F401
 
-
-class CreditsExhaustedError(PersonaError):
-    """Raised when a user's credit balance cannot cover an operation (→ 402)."""
+# CreditsExhaustedError was relocated to ``persona.errors`` at Spec 19 L6c
+# (D-19-X-credits-service-domain-relocation) alongside the credits_service
+# move so persona-voice can raise it from
+# :func:`persona.credits.service.require_credits` without taking a persona-api
+# dependency. Imported above (``from persona.errors import ...``) and listed
+# in ``__all__`` for back-compat with the existing persona-api import sites
+# (``from persona_api.errors import CreditsExhaustedError``).
 
 
 class ConversationNotFoundError(PersonaError):

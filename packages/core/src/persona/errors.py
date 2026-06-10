@@ -20,6 +20,7 @@ __all__ = [
     "AuditWriteError",
     "AuthenticationError",
     "BrokenVersionChainError",
+    "CreditsExhaustedError",
     "MCPConnectionError",
     "MCPServerUnavailableError",
     "PersonaError",
@@ -150,6 +151,17 @@ class AuthenticationError(PersonaError):
     (D-V1-X-jwt-verifier-extraction) so persona-voice can raise it from the
     extracted :func:`persona.auth.jwt_verifier.make_jwt_verifier` without taking
     a persona-api dependency. ``persona_api.errors`` re-exports for back-compat.
+    """
+
+
+class CreditsExhaustedError(PersonaError):
+    """Raised when a user's credit balance cannot cover an operation (→ 402).
+
+    Relocated from ``persona_api.errors`` to persona-core at Spec 19 L6c
+    (D-19-X-credits-service-domain-relocation) so persona-voice can raise it
+    from :func:`persona.credits.service.require_credits` without taking a
+    persona-api dependency (voice surface is latency-critical per R-V1-1 — no
+    HTTP/RPC hop). ``persona_api.errors`` re-exports for back-compat.
     """
 
 

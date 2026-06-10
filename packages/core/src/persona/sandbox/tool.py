@@ -207,6 +207,19 @@ def make_code_execution_tool(
             if produced_file_persister is not None and session_id is not None:
                 for sf in result.produced_files:
                     await produced_file_persister(session_id, sf.path)
+                # F4 operator-pass diagnostic: surface what was just persisted
+                # so a downstream "no chart in chat" investigation has the
+                # discovered-file inventory without needing extra tracing.
+                _logger.debug(
+                    "code_execution produced files persisted",
+                    persona_id=persona_id or "<unknown>",
+                    session_id=session_id,
+                    produced_count=len(result.produced_files),
+                    produced=[
+                        {"path": sf.path, "media_type": sf.media_type}
+                        for sf in result.produced_files
+                    ],
+                )
         except SandboxError as exc:
             # D-12-6 catch-and-convert: any sandbox-family error surfaces as
             # a structured failure result so the model can recover. The
@@ -259,6 +272,19 @@ def make_code_execution_tool(
             code=code,
             code_sha256=code_sha256,
             result=result,
+        )
+        # F4 operator-pass diagnostic: log what is about to enter the
+        # ToolResult.data envelope so the rich-output investigation has the
+        # final shape (paths + media types) without re-running the sandbox.
+        _logger.debug(
+            "code_execution result materialised",
+            persona_id=persona_id or "<unknown>",
+            session_id=session_id or "",
+            outcome=result.outcome,
+            produced_count=len(result.produced_files),
+            produced=[
+                {"path": sf.path, "media_type": sf.media_type} for sf in result.produced_files
+            ],
         )
         return ToolResult(
             tool_name="code_execution",

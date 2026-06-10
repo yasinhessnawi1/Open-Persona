@@ -17,6 +17,7 @@ write — a symlink swap of the final path component is rejected.
 
 from __future__ import annotations
 
+import mimetypes
 import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -157,10 +158,25 @@ def make_file_write_tool(
                 )
             )
 
+        # Populate produced_files for parity with sandbox/tool.py's code_execution
+        # result shape, so downstream consumers (Spec 19 file-output surfaces) can
+        # treat both code-execution outputs and direct writes uniformly.
+        media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        produced_files = [
+            {
+                "path": path,
+                "size_bytes": str(len(encoded)),
+                "media_type": media_type,
+            }
+        ]
         return ToolResult(
             tool_name="file_write",
             content=f"Wrote {len(encoded)} bytes to {path}",
-            data={"path": path, "bytes_written": str(len(encoded))},
+            data={
+                "path": path,
+                "bytes_written": str(len(encoded)),
+                "produced_files": produced_files,
+            },
         )
 
     return file_write

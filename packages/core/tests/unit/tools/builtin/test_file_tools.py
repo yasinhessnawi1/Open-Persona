@@ -233,6 +233,71 @@ class TestFileWriteErrors:
         assert call_count["n"] >= 1
 
 
+# Section: produced_files on file_write (Spec 19 L2 — D-19-X-file-write-produced-files)
+
+
+class TestFileWriteProducedFiles:
+    """``produced_files`` mirrors the sandbox/tool.py code_execution shape."""
+
+    @pytest.mark.asyncio
+    async def test_populated_on_success_with_correct_shape(self, tmp_path: Path) -> None:
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path)
+        result = await tool_inst.execute(path="report.txt", content="hello")
+        assert result.is_error is False
+        assert result.data is not None
+        produced = result.data["produced_files"]
+        assert isinstance(produced, list)
+        assert len(produced) == 1
+        entry = produced[0]
+        assert set(entry.keys()) == {"path", "size_bytes", "media_type"}
+        assert entry["path"] == "report.txt"
+        assert entry["size_bytes"] == str(len(b"hello"))
+        assert entry["media_type"] == "text/plain"
+
+    @pytest.mark.asyncio
+    async def test_not_populated_on_path_traversal_rejection(self, tmp_path: Path) -> None:
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path)
+        result = await tool_inst.execute(path="../../etc/passwd", content="evil")
+        assert result.is_error is True
+        # Failed writes do NOT carry produced_files (the data envelope is absent
+        # on the error branch — only the success branch populates ToolResult.data).
+        assert result.data is None or "produced_files" not in (result.data or {})
+
+    @pytest.mark.asyncio
+    async def test_media_type_inference_txt(self, tmp_path: Path) -> None:
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path)
+        result = await tool_inst.execute(path="notes.txt", content="x")
+        assert result.data is not None
+        assert result.data["produced_files"][0]["media_type"] == "text/plain"
+
+    @pytest.mark.asyncio
+    async def test_media_type_inference_docx(self, tmp_path: Path) -> None:
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path)
+        result = await tool_inst.execute(path="brief.docx", content="x")
+        assert result.data is not None
+        # mimetypes maps .docx to the OOXML word media type on stdlib.
+        assert (
+            result.data["produced_files"][0]["media_type"]
+            == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    @pytest.mark.asyncio
+    async def test_media_type_inference_png(self, tmp_path: Path) -> None:
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path)
+        # PNG bytes are fine to pass as text here — file_write writes whatever it
+        # gets; only media_type inference under test (we check the data envelope).
+        result = await tool_inst.execute(path="chart.png", content="not really png")
+        assert result.data is not None
+        assert result.data["produced_files"][0]["media_type"] == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_media_type_inference_unknown_falls_back(self, tmp_path: Path) -> None:
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path)
+        result = await tool_inst.execute(path="blob.zzunknown", content="x")
+        assert result.data is not None
+        assert result.data["produced_files"][0]["media_type"] == "application/octet-stream"
+
+
 # Section: audit emission on file_write
 
 

@@ -477,3 +477,89 @@ class TestNarrowCatch:
         from persona.errors import PersonaError
 
         assert issubclass(SandboxError, PersonaError)
+
+
+# ---------------------------------------------------------------------------
+# D-19-X-host-out-debug-logging — F4 operator-pass diagnostic debug emit
+# ---------------------------------------------------------------------------
+
+
+def _bind_debug_sink() -> None:
+    """Reset + bind a DEBUG json-format sink so the .debug() emits render
+    their structured kwargs into the capsys stderr buffer."""
+    from persona import logging as plog
+    from persona.config import PersonaCoreConfig
+
+    plog.reset_for_testing()
+    plog.get_logger(
+        "sandbox.tool",
+        config=PersonaCoreConfig(log_level="DEBUG", log_format="json"),
+    )
+
+
+class TestProducedFileDebugLogging:
+    """F4 operator-pass diagnostic: produced-file inventory (count, paths,
+    media types) emits at DEBUG on both the persister-loop tail and the
+    pre-ToolResult materialisation point so a "no chart rendered in chat"
+    investigation has the discovered files without re-running the sandbox."""
+
+    @pytest.mark.asyncio
+    async def test_persister_post_iteration_logs_produced_inventory(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from persona import logging as plog
+
+        _bind_debug_sink()
+        files = (
+            SandboxFile(path="out/chart.png", size_bytes=2048, media_type="image/png"),
+            SandboxFile(path="out/data.csv", size_bytes=42, media_type="text/csv"),
+        )
+        sandbox = FakeSandbox(
+            default_result=ExecutionResult(
+                stdout="done\n", stderr="", exit_status=0, outcome="ok", produced_files=files
+            )
+        )
+
+        async def _persister(session_id: str, ref: str) -> None:  # noqa: ARG001
+            return None
+
+        tool = make_code_execution_tool(
+            sandbox,
+            session_id_provider=lambda: "user-1:conv-A",
+            produced_file_persister=_persister,
+            persona_id="astrid",
+        )
+        await tool.execute(code="...")
+        plog.reset_for_testing()
+        output = capsys.readouterr().err
+
+        assert "code_execution produced files persisted" in output
+        assert "out/chart.png" in output
+        assert "image/png" in output
+        assert "out/data.csv" in output
+        assert "text/csv" in output
+
+    @pytest.mark.asyncio
+    async def test_result_materialisation_logs_produced_inventory(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from persona import logging as plog
+
+        _bind_debug_sink()
+        files = (SandboxFile(path="out/report.pdf", size_bytes=8192, media_type="application/pdf"),)
+        sandbox = FakeSandbox(
+            default_result=ExecutionResult(
+                stdout="", stderr="", exit_status=0, outcome="ok", produced_files=files
+            )
+        )
+        # No persister wired → only the materialisation emit fires; the two
+        # emit points are independently triggered.
+        tool = make_code_execution_tool(sandbox, persona_id="astrid")
+        await tool.execute(code="...")
+        plog.reset_for_testing()
+        output = capsys.readouterr().err
+
+        assert "code_execution result materialised" in output
+        assert "out/report.pdf" in output
+        assert "application/pdf" in output
+        assert "code_execution produced files persisted" not in output
