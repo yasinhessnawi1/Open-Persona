@@ -188,18 +188,40 @@ class MultiModelChatBackend:
 
     @property
     def supports_native_tools(self) -> bool:
-        """``True`` iff EVERY backend supports native tools.
+        """``True`` iff ANY backend in the chain supports native tools.
 
-        Conservative floor: mixed-capability lists degrade to the prompt
-        shim per D-02-7 — the wrapper cannot promise native tools if any
-        fallback slot lacks them.
+        Permissive ceiling: at call time the wrapper dispatches to whichever
+        backend serves the request (primary on success; any of the secondaries
+        if fallback fires). If ANY backend supports native tools, the wrapper
+        can deliver native tool_calls — so the runtime must treat the wrapper
+        as native-capable and append the ``assistant`` message carrying
+        ``tool_calls`` to history per the OpenAI/Anthropic protocol.
+
+        Earlier ``all(...)`` semantics surfaced a production bug 2026-06-10
+        19:44 UTC: in a mixed chain (e.g., nvidia + deepseek + openai where
+        one specific model wasn't in the native-tools allow-list), the wrapper
+        reported False; the runtime skipped the ``assistant_with_tool_calls``
+        append; ``format_tool_result`` still emitted ``role="tool"``; the next
+        round's history had an orphaned tool message → DeepSeek 400
+        ("Messages with role 'tool' must be a response to a preceding message
+        with 'tool_calls'"). The active backend's own ``supports_native_tools``
+        still gates whether THAT backend uses native vs shim for the call;
+        the wrapper just promises "at least one of us can".
         """
-        return all(getattr(b, "supports_native_tools", False) for b in self._backends)
+        return any(getattr(b, "supports_native_tools", False) for b in self._backends)
 
     @property
     def supports_vision(self) -> bool:
-        """``True`` iff EVERY backend supports vision (same floor as above)."""
-        return all(getattr(b, "supports_vision", False) for b in self._backends)
+        """``True`` iff ANY backend in the chain supports vision.
+
+        Same permissive-ceiling rationale as :attr:`supports_native_tools` —
+        the wrapper dispatches to whichever backend serves the request; if any
+        one supports vision, the wrapper can serve a vision-bearing turn (via
+        fallback if the primary doesn't). Callers requesting vision still get
+        a fail-loud :class:`BackendVisionNotSupportedError` from the active
+        backend if NONE of the chain supports it.
+        """
+        return any(getattr(b, "supports_vision", False) for b in self._backends)
 
     # ------------------------------------------------------------------ #
     # ChatBackend Protocol — non-streaming chat.

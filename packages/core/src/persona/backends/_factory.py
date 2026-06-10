@@ -1,7 +1,8 @@
 """``load_backend()`` factory — dispatches a :class:`BackendConfig` to the
 right concrete :class:`ChatBackend`.
 
-Anthropic / OpenAI / DeepSeek / Groq / Together → :class:`OpenAICompatibleBackend`.
+Anthropic / OpenAI / DeepSeek / Groq / Together / **NVIDIA** (Spec 20) →
+:class:`OpenAICompatibleBackend`.
 Ollama → :class:`OllamaBackend`.
 Local HuggingFace → :class:`HFLocalBackend` (lazy import; raises a clear
 :class:`AuthenticationError` if ``[local]`` extras are missing).
@@ -22,14 +23,24 @@ if TYPE_CHECKING:
 __all__ = ["load_backend"]
 
 
-_OPENAI_COMPAT_PROVIDERS = frozenset({"anthropic", "openai", "deepseek", "groq", "together"})
+# D-20-X-nvidia-allow-set-extend: NVIDIA dispatches through the openai SDK
+# (with custom base_url at integrate.api.nvidia.com/v1/) — same path as
+# deepseek/groq/together. The atomic-four-touch invariant per Spec 20 T09
+# (Provider Literal + DEFAULT_BASE_URLS + capability matrices + this
+# allow-set) is in fact a FIVE-touch including this factory's allow-set
+# (omission would surface at app startup as ProviderError "unknown provider
+# 'nvidia'"). Production startup at 2026-06-10 19:11 UTC caught this gap
+# before commit.
+_OPENAI_COMPAT_PROVIDERS = frozenset(
+    {"anthropic", "openai", "deepseek", "groq", "together", "nvidia"}
+)
 
 
 def load_backend(config: BackendConfig) -> ChatBackend:
     """Construct the concrete :class:`ChatBackend` for ``config.provider``.
 
     Args:
-        config: Backend configuration. Provider must be one of the seven
+        config: Backend configuration. Provider must be one of the eight
             supported values; otherwise :class:`ProviderError` is raised.
 
     Returns:
@@ -55,6 +66,6 @@ def load_backend(config: BackendConfig) -> ChatBackend:
         return HFLocalBackend(config)
     raise ProviderError(
         f"unknown provider {provider!r}; expected one of "
-        "anthropic, openai, deepseek, groq, together, ollama, local",
+        "anthropic, openai, deepseek, groq, together, nvidia, ollama, local",
         context={"provider": provider},
     )

@@ -194,7 +194,8 @@ class OpenAICompatibleBackend:
 
         Args:
             config: Backend configuration. ``provider`` must be one of
-                ``anthropic | openai | deepseek | groq | together``.
+                ``anthropic | openai | deepseek | groq | together | nvidia``
+                (Spec 20 added nvidia per D-20-X-nvidia-allow-set-extend).
             workspace_root: Optional persona workspace root used by the
                 Spec 13 multimodal serialisers (T05/T06) to resolve
                 :class:`ImageContent` workspace-path refs to bytes. Most
@@ -971,6 +972,13 @@ def _message_to_openai(
                 }
                 for tc in msg.tool_calls
             ]
+            # Normalise empty/blank list content to None per OpenAI spec —
+            # same DeepSeek strict-vs-OpenAI lenient gap as the str path
+            # below. See comment in the str path for full rationale.
+            if not out_parts or all(
+                p.get("type") == "text" and not str(p.get("text", "")).strip() for p in out_parts
+            ):
+                base["content"] = None
         return base
 
     # str path — unchanged from Phase 1.
@@ -989,6 +997,17 @@ def _message_to_openai(
             }
             for tc in msg.tool_calls
         ]
+        # OpenAI spec: tool-call-only assistant messages MUST have content=None
+        # (or omitted), NOT empty string. OpenAI itself is lenient about
+        # content="", but DeepSeek strict-rejects ("Messages with role 'tool'
+        # must be a response to a preceding message with 'tool_calls'" — the
+        # API silently drops a malformed assistant message then orphans the
+        # next tool message). NVIDIA Nemotron + tool-call-only emissions
+        # (common; the model often emits zero narration before invoking) hit
+        # this every turn under Spec 20's MultiModelChatBackend cross-provider
+        # fallback. Normalise content="" -> None for OpenAI-spec strictness.
+        if not msg.content.strip():
+            base["content"] = None
     return base
 
 

@@ -59,7 +59,13 @@ class TestAnthropicShape:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("provider", ["openai", "deepseek", "groq", "together"])
+# D-20-X-nvidia-allow-set-extend: nvidia added 2026-06-10 after a production
+# run-time crash surfaced the formatter's allow-set gap (the atomic invariant
+# is a SIX-touch: Provider Literal + DEFAULT_BASE_URLS + _NATIVE_TOOLS_
+# CAPABILITY + _VISION_CAPABILITY + _factory.py's _OPENAI_COMPAT_PROVIDERS +
+# this provider_name switch). NVIDIA uses the same OpenAI-compat tool-result
+# shape as the other openai-SDK providers.
+@pytest.mark.parametrize("provider", ["openai", "deepseek", "groq", "together", "nvidia"])
 class TestOpenAIFamilyShape:
     """OpenAI-compat providers use role=tool with tool_call_id + content."""
 

@@ -63,6 +63,6 @@ docs/specs/phase2/spec_16/inspection/
 # Spec 17 T09 chart-inspection artifacts (.png) are binary; same discipline —
 # scorecards in state.md are the close-out evidence, not the PNG files.
 docs/specs/phase2/spec_17/inspection/
-
-docs/
+packages/web/evidence/
+docs/*
 CLAUDE.md

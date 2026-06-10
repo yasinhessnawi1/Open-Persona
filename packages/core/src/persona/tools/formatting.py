@@ -13,9 +13,12 @@ Provider shapes (research.md §7):
   ``role="tool"`` with the raw result text and let ``_message_to_anthropic``
   build the structured block from ``metadata`` — same shape as the OpenAI
   branch (spec 11 launch fix).
-- **OpenAI / DeepSeek / Groq / Together**: a separate message with
-  ``role="tool"``, ``tool_call_id``, ``name``, ``content``. The error flag is
-  conveyed by prefixing ``content`` with ``"Error: "``.
+- **OpenAI / DeepSeek / Groq / Together / NVIDIA** (Spec 20): a separate
+  message with ``role="tool"``, ``tool_call_id``, ``name``, ``content``. The
+  error flag is conveyed by prefixing ``content`` with ``"Error: "``. NVIDIA
+  uses the same OpenAI-compat tool-result shape as the rest of the openai-SDK
+  providers per D-20-X-nvidia-allow-set-extend (the atomic invariant is a
+  SIX-touch including this formatter).
 - **Ollama / local (HF) shim**: plain-text message with ``role="user"``
   formatted as ``"<tool_name> returned: <content>"``. The shim's bookkeeping
   picks tool-call ids from ``metadata``.
@@ -49,7 +52,7 @@ def format_tool_result(
         tool_call: The originating :class:`ToolCall` (carries ``call_id``).
         result: The :class:`ToolResult` returned by the tool dispatch.
         provider_name: One of ``anthropic``, ``openai``, ``deepseek``,
-            ``groq``, ``together``, ``ollama``, ``local``.
+            ``groq``, ``together``, ``nvidia`` (Spec 20), ``ollama``, ``local``.
 
     Returns:
         A :class:`ConversationMessage` with the correct ``role`` and
@@ -58,7 +61,7 @@ def format_tool_result(
         ``is_error``, ``provider_format``).
 
     Raises:
-        ValueError: If ``provider_name`` is not one of the seven supported
+        ValueError: If ``provider_name`` is not one of the eight supported
             providers. This is a programmer-error boundary (D-03-6), not a
             domain exception.
     """
@@ -84,7 +87,7 @@ def format_tool_result(
                 },
             )
 
-        case "openai" | "deepseek" | "groq" | "together":
+        case "openai" | "deepseek" | "groq" | "together" | "nvidia":
             content = result.content
             if result.is_error and not content.startswith("Error:"):
                 content = f"Error: {content}"

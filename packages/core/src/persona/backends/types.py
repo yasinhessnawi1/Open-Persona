@@ -119,7 +119,7 @@ class ChatResponse(BaseModel):
         usage: Token accounting (always populated).
         model: Echo of the model name the backend used.
         provider: Provider identifier ("anthropic", "openai", "deepseek",
-            "groq", "together", "ollama", "local").
+            "groq", "together", "nvidia", "ollama", "local").
         latency_ms: Wall-clock time from request send to response complete,
             measured client-side via :func:`time.perf_counter`.
     """

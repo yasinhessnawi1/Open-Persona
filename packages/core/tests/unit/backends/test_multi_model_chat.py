@@ -172,7 +172,21 @@ class TestConstruction:
         wrapper = MultiModelChatBackend([backend])
         assert isinstance(wrapper, ChatBackend)
 
-    def test_capability_properties_conservative_all(self) -> None:
+    def test_capability_properties_permissive_any(self) -> None:
+        """``supports_native_tools`` + ``supports_vision`` use ``any()``
+        semantics (permissive ceiling), NOT ``all()`` (conservative floor).
+
+        Earlier ``all(...)`` semantics broke the runtime tool-call protocol on
+        mixed-capability chains (production bug 2026-06-10 19:44 UTC): the
+        wrapper claimed False when one slot's specific model wasn't in the
+        native-tools allow-list; the runtime skipped the
+        ``assistant_with_tool_calls`` append; ``format_tool_result`` still
+        emitted ``role="tool"``; orphaned-tool-message on the next round →
+        DeepSeek 400. Fix: at call time the wrapper dispatches to whichever
+        backend serves the request — if ANY supports the capability, the
+        wrapper can deliver it (via fallback if needed). The active backend's
+        own property still gates whether THAT backend uses native vs shim.
+        """
         a = _ScriptedBackend(
             "openai", "gpt-4o", [], supports_native_tools=True, supports_vision=True
         )
@@ -180,9 +194,28 @@ class TestConstruction:
             "anthropic", "claude", [], supports_native_tools=False, supports_vision=True
         )
         wrapper = MultiModelChatBackend([a, b])
-        # Mixed → degrades to False per the D-02-7 floor.
-        assert wrapper.supports_native_tools is False
+        # ANY supports native → wrapper reports True (was False under all()).
+        assert wrapper.supports_native_tools is True
+        # ANY supports vision → wrapper reports True.
         assert wrapper.supports_vision is True
+
+    def test_capability_properties_all_false_when_none_support(self) -> None:
+        """When NO backend supports the capability, the wrapper reports False.
+
+        Regression gate: ``any([False, False])`` is False — the wrapper
+        correctly fail-loud propagates this so callers requesting an
+        unsupported capability hit fail-loud at the wrapper, not a confusing
+        400 from one specific backend mid-fallback.
+        """
+        a = _ScriptedBackend(
+            "openai", "gpt-4o", [], supports_native_tools=False, supports_vision=False
+        )
+        b = _ScriptedBackend(
+            "anthropic", "claude", [], supports_native_tools=False, supports_vision=False
+        )
+        wrapper = MultiModelChatBackend([a, b])
+        assert wrapper.supports_native_tools is False
+        assert wrapper.supports_vision is False
 
 
 # --------------------------------------------------------------------------- #

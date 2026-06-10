@@ -143,6 +143,51 @@ class TestToolCallMessageProtocol:
         assert "tool_calls" not in out
         assert out == {"role": "assistant", "content": "hi"}
 
+    def test_openai_tool_call_only_assistant_emits_content_none_not_empty(self) -> None:
+        """OpenAI spec strictness: when assistant message has tool_calls and no
+        narration text, content MUST be None (or omitted) — NOT empty string.
+
+        DeepSeek strict-rejects ``content=""`` + ``tool_calls=[...]`` ("Messages
+        with role 'tool' must be a response to a preceding message with
+        'tool_calls'" — the API silently drops the malformed assistant message,
+        then orphans the next tool message). OpenAI itself is lenient. Hidden
+        before Spec 20 because no cross-provider fallback existed; surfaces
+        now that MultiModelChatBackend can hand off mid-turn from NVIDIA
+        (lenient; Nemotron emits tool-call-only frequently) to DeepSeek
+        (strict).
+        """
+        msg = ConversationMessage(
+            role="assistant",
+            content="",  # tool-call-only emission (common with Nemotron)
+            created_at=self._now(),
+            tool_calls=[ToolCall(name="web_search", args={"q": "x"}, call_id="c1")],
+        )
+        out = _message_to_openai(msg)
+        assert out["content"] is None, "content must be None (not '') per OpenAI spec"
+        assert out["tool_calls"][0]["id"] == "c1"
+
+    def test_openai_whitespace_only_assistant_with_tool_calls_normalized(self) -> None:
+        """Variant: whitespace-only content also normalizes to None."""
+        msg = ConversationMessage(
+            role="assistant",
+            content="   \n  ",
+            created_at=self._now(),
+            tool_calls=[ToolCall(name="web_search", args={"q": "x"}, call_id="c1")],
+        )
+        out = _message_to_openai(msg)
+        assert out["content"] is None
+
+    def test_openai_narration_plus_tool_calls_preserves_content(self) -> None:
+        """Narration text + tool_calls keeps content as-is (no normalization)."""
+        msg = ConversationMessage(
+            role="assistant",
+            content="Searching the web…",
+            created_at=self._now(),
+            tool_calls=[ToolCall(name="web_search", args={"q": "x"}, call_id="c1")],
+        )
+        out = _message_to_openai(msg)
+        assert out["content"] == "Searching the web…"
+
     def test_openai_tool_result_id_matches_the_call(self) -> None:
         # the whole pairing: assistant.tool_calls[].id == tool message tool_call_id
         call = ToolCall(name="web_search", args={"query": "x"}, call_id="call_42")

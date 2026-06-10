@@ -27,7 +27,15 @@ def _config(provider: str, **kwargs: Any) -> BackendConfig:
 
 
 class TestFactory:
-    @pytest.mark.parametrize("provider", ["anthropic", "openai", "deepseek", "groq", "together"])
+    @pytest.mark.parametrize(
+        "provider",
+        # D-20-X-nvidia-allow-set-extend: nvidia added 2026-06-10 after a
+        # production app-startup crash surfaced the factory's allow-set gap
+        # (the atomic invariant is actually a FIVE-touch: Provider Literal +
+        # DEFAULT_BASE_URLS + _NATIVE_TOOLS_CAPABILITY + _VISION_CAPABILITY +
+        # _factory.py's _OPENAI_COMPAT_PROVIDERS).
+        ["anthropic", "openai", "deepseek", "groq", "together", "nvidia"],
+    )
     def test_openai_compat_providers(self, provider: str) -> None:
         backend = load_backend(_config(provider, api_key=SecretStr("k")))
         assert isinstance(backend, OpenAICompatibleBackend)
