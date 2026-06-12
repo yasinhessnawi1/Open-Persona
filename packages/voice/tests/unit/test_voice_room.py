@@ -88,6 +88,22 @@ async def test_connect_calls_substrate_with_url_and_token() -> None:
     # because the SDK's own defaults (auto_subscribe=True) are what we want.
 
 
+def test_clear_outbound_clears_the_source_queue() -> None:
+    # Spec V3 T10 / D-V3-5 step 4 — barge-in flushes queued outbound audio.
+    room = _FakeRoom()
+    vr = VoiceRoom(room)
+    fake_source = MagicMock()
+    vr._outbound_source = fake_source  # noqa: SLF001 — test setup
+    vr.clear_outbound()
+    fake_source.clear_queue.assert_called_once_with()
+
+
+def test_clear_outbound_is_a_noop_before_publish() -> None:
+    # No source published yet → clear_outbound is a safe no-op (no raise).
+    vr = VoiceRoom(_FakeRoom())
+    vr.clear_outbound()
+
+
 @pytest.mark.asyncio
 async def test_disconnect_tears_down_outbound_source_and_calls_substrate() -> None:
     room = _FakeRoom()

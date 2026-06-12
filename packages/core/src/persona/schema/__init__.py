@@ -20,12 +20,14 @@ from persona.schema.conversation import (
 )
 from persona.schema.persona import (
     SUPPORTED_SCHEMA_VERSIONS,
+    CatalogueVoice,
     EmbeddingConfig,
     EpisodicEntry,
     Persona,
     PersonaIdentity,
     RoutingConfig,
     SelfFact,
+    VoiceSpec,
     WorldviewClaim,
 )
 from persona.schema.skills import SkillSpec
@@ -34,6 +36,7 @@ from persona.schema.tools import Tool, ToolCall, ToolResult
 __all__ = [
     "CHUNK_ID_INDEX_WIDTH",
     "SUPPORTED_SCHEMA_VERSIONS",
+    "CatalogueVoice",
     "ChunkProvenance",
     "Conversation",
     "ConversationHistory",
@@ -49,6 +52,7 @@ __all__ = [
     "Tool",
     "ToolCall",
     "ToolResult",
+    "VoiceSpec",
     "WorldviewClaim",
     "WriteSource",
     "make_chunk_id",

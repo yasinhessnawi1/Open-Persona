@@ -284,6 +284,19 @@ class VoiceRoom:
             raise RuntimeError(msg)
         await self._outbound_source.capture_frame(frame)
 
+    def clear_outbound(self) -> None:
+        """Drop any queued-but-unplayed outbound audio (Spec V3 D-V3-5 step 4).
+
+        The barge-in transport-queue clear: ``rtc.AudioSource`` buffers up to
+        ``queue_size_ms`` of submitted audio, so cancelling synthesis alone
+        leaves hundreds of ms of already-queued "ghost" audio playing (R-V3-5).
+        Clearing the source queue makes the persona go quiet near-immediately.
+        Additive — no reshape of the outbound seam; a no-op before
+        :meth:`publish_outbound`.
+        """
+        if self._outbound_source is not None:
+            self._outbound_source.clear_queue()
+
 
 def build_voice_room(*, outbound_audio_track_name: str = "voice_out") -> VoiceRoom:
     """Production constructor — wires a fresh :class:`livekit.rtc.Room`.

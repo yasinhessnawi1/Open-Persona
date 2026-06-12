@@ -105,9 +105,11 @@ def stub_backends(monkeypatch: pytest.MonkeyPatch) -> dict[str, types.ModuleType
     """
     openai_mod = _make_fake_backend_module("openai", "OpenAIImageBackend")
     fal_mod = _make_fake_backend_module("fal", "FalImageBackend")
+    openrouter_mod = _make_fake_backend_module("openrouter", "OpenRouterImageBackend")
     monkeypatch.setitem(sys.modules, "persona.imagegen.openai_image", openai_mod)
     monkeypatch.setitem(sys.modules, "persona.imagegen.fal_image", fal_mod)
-    return {"openai": openai_mod, "fal": fal_mod}
+    monkeypatch.setitem(sys.modules, "persona.imagegen.openrouter_image", openrouter_mod)
+    return {"openai": openai_mod, "fal": fal_mod, "openrouter": openrouter_mod}
 
 
 class TestDispatch:
@@ -126,6 +128,14 @@ class TestDispatch:
         assert isinstance(backend, stub_backends["fal"].FalImageBackend)
         assert backend.provider_name == "fal"
         assert backend.model_name == "fal-ai/flux-pro/v1.1"
+
+    def test_openrouter_dispatch(self, stub_backends: dict[str, types.ModuleType]) -> None:
+        # Spec 22 T09b — OpenRouter image-gen provider dispatch.
+        config = ImageBackendConfig(provider="openrouter", model="google/gemini-2.5-flash-image")
+        backend = load_image_backend(config)
+        assert isinstance(backend, stub_backends["openrouter"].OpenRouterImageBackend)
+        assert backend.provider_name == "openrouter"
+        assert backend.model_name == "google/gemini-2.5-flash-image"
 
     def test_dispatch_passes_config_through(
         self, stub_backends: dict[str, types.ModuleType]

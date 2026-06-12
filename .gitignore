@@ -65,4 +65,5 @@ docs/specs/phase2/spec_16/inspection/
 docs/specs/phase2/spec_17/inspection/
 packages/web/evidence/
 docs/*
+deploy/*
 CLAUDE.md

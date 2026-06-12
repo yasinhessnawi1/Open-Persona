@@ -40,6 +40,7 @@ def _build_voice_room_fake() -> Any:  # noqa: ANN401
     vr.set_disconnect_handler = MagicMock()
     vr.publish_outbound = AsyncMock(return_value=MagicMock())
     vr.capture_outbound_frame = AsyncMock(return_value=None)
+    vr.clear_outbound = MagicMock(return_value=None)  # Spec V3 T10 (D-V3-5 step 4)
     return vr
 
 
@@ -311,6 +312,29 @@ async def test_interrupt_cancels_tts_and_notifies_session() -> None:
     await loop.interrupt()
     tts.cancel.assert_awaited_once()
     assert notified == [SessionLifecycleEvent.AGENT_STOPPED_SPEAKING]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_clears_outbound_queue() -> None:
+    # Spec V3 T10 / D-V3-5 step 4: barge-in flushes the outbound rail so
+    # queued "ghost" frames don't keep playing after the cancel.
+    vr = _build_voice_room_fake()
+    sm = _build_session()
+    tts = MagicMock(spec=TTSStream)
+    tts.cancel = AsyncMock(return_value=None)
+    loop = StreamingLoop(voice_room=vr, session=sm, tts=tts)
+    await loop.interrupt()
+    vr.clear_outbound.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_without_tts_still_clears_outbound() -> None:
+    # No TTS wired (echo mode) — interrupt still flushes the rail and notifies.
+    vr = _build_voice_room_fake()
+    sm = _build_session()
+    loop = StreamingLoop(voice_room=vr, session=sm)
+    await loop.interrupt()
+    vr.clear_outbound.assert_called_once()
 
 
 @pytest.mark.asyncio

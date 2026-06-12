@@ -135,8 +135,21 @@ export interface TierData {
 export interface ReasoningData {
   content: string;
 }
+/** One predefined answer option for a proactive question (spec 21 T04, D-21-9). */
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
 export interface AskingUserData {
   question: string;
+  /**
+   * Spec 21 (D-21-9): the 3+1 proactive-question options. Additive — absent on
+   * the pre-spec-21 / model-initiated free-text ask, present (exactly 3) when
+   * the persona offers predefined options. The renderer shows option buttons +
+   * a free-form field when present, and the plain free-text field when absent.
+   */
+  options?: QuestionOption[];
+  allow_free_form?: boolean;
 }
 export interface CompletedData {
   output: string;

@@ -24,6 +24,8 @@ from persona.backends.errors import (
     LocalProviderInModelsListError,
     MalformedTierModelsError,
     ModelNotFoundError,
+    OpenRouterBalanceProbeError,
+    OpenRouterCatalogError,
     ProviderCredentialMissingError,
     ProviderError,
     RateLimitError,
@@ -36,6 +38,10 @@ PROVIDER_LAYER: list[type[ProviderError]] = [
     BackendTimeoutError,
     ModelNotFoundError,
     RateLimitError,
+    # Spec 22 D-22-1 + D-22-3: OpenRouter catalog/probe failures are
+    # provider-layer (live HTTP calls), so they root at ProviderError.
+    OpenRouterCatalogError,
+    OpenRouterBalanceProbeError,
     # ``ProviderError`` itself excluded — it IS the partition root.
 ]
 
@@ -206,3 +212,12 @@ class TestContextShape:
         err = cls("smoke message")
         assert "smoke message" in str(err)
         assert err.context == {}
+
+    @pytest.mark.parametrize("cls", [OpenRouterCatalogError, OpenRouterBalanceProbeError])
+    def test_openrouter_provider_error_context_shape(self, cls: type[ProviderError]) -> None:
+        # Spec 22 D-22-1 / D-22-3 canonical shape: {provider, reason}.
+        exc = cls("probe failed", context={"provider": "openrouter", "reason": "timeout"})
+        assert exc.context["provider"] == "openrouter"
+        assert exc.context["reason"] == "timeout"
+        # Provider-layer: caught by ``except ProviderError``.
+        assert isinstance(exc, ProviderError)

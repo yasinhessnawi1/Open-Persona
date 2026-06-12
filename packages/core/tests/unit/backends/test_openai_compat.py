@@ -28,11 +28,13 @@ from persona.backends.errors import (
 )
 from persona.backends.openai_compat import (
     _NATIVE_TOOLS_CAPABILITY,
+    _VISION_CAPABILITY,
     OpenAICompatibleBackend,
     _message_to_anthropic,
     _message_to_openai,
     _native_tools_supported,
     _strip_reasoning_for_provider,
+    _vision_supported,
 )
 from persona.backends.protocol import ChatBackend
 from persona.backends.types import ChatResponse, StreamChunk, ToolSpec
@@ -109,6 +111,102 @@ class TestCapabilityMatrix:
         # OpenAICompatibleBackend uses the prompt-based shim instead of
         # asking the provider for native tool calls it can't service.
         assert _native_tools_supported("nvidia", "nvidia/some-unknown-model") is False
+
+
+class TestOpenRouterCapabilityInference:
+    """Spec 22 D-22-4 + D-22-10 — three-tier resolver (explicit > catalog >
+    underlying-model). T08 ships tier 1 (explicit override) + tier 3
+    (underlying-model inference); these exercise both plus the suffix
+    taxonomy (D-22-6), the dual match key, and ``:free`` asymmetric
+    conservatism (D-22-10c)."""
+
+    def test_openrouter_rows_ship_empty(self) -> None:
+        # D-22-10f: empty override rows; no pre-seeded entries to go stale.
+        assert _NATIVE_TOOLS_CAPABILITY["openrouter"] == frozenset()
+        assert _VISION_CAPABILITY["openrouter"] == frozenset()
+
+    # --- tier 3: underlying-model inference ---
+
+    def test_tools_inferred_from_anthropic_underlying(self) -> None:
+        assert _native_tools_supported("openrouter", "anthropic/claude-3.5-sonnet") is True
+
+    def test_vision_inferred_from_anthropic_underlying(self) -> None:
+        assert _vision_supported("openrouter", "anthropic/claude-3.5-sonnet") is True
+
+    def test_tools_inferred_deepseek_bare_name_match(self) -> None:
+        # Dual match key — the deepseek row holds the BARE name "deepseek-chat".
+        assert _native_tools_supported("openrouter", "deepseek/deepseek-chat") is True
+
+    def test_tools_inferred_nvidia_full_slug_match(self) -> None:
+        # Dual match key — the nvidia row holds the FULL slug.
+        assert (
+            _native_tools_supported("openrouter", "nvidia/llama-3.3-nemotron-super-49b-v1.5")
+            is True
+        )
+
+    def test_vision_free_suffix_falls_back_to_base(self) -> None:
+        # D-22-10c: vision for a :free slug infers from the base slug.
+        assert _vision_supported("openrouter", "anthropic/claude-3.5-sonnet:free") is True
+
+    def test_tools_free_suffix_forces_false(self) -> None:
+        # D-22-10c asymmetric conservatism — tools→False for :free in tier 3.
+        assert _native_tools_supported("openrouter", "anthropic/claude-3.5-sonnet:free") is False
+
+    def test_dynamic_variant_stripped_for_inference(self) -> None:
+        # D-22-6: :nitro is a routing transform — strip to base for inference.
+        assert _native_tools_supported("openrouter", "anthropic/claude-3.5-sonnet:nitro") is True
+
+    def test_unknown_variant_strips_to_base(self) -> None:
+        # D-22-10d: unknown suffix strips to base (+ WARN side effect).
+        assert _native_tools_supported("openrouter", "anthropic/claude-3.5-sonnet:weird") is True
+
+    def test_unmapped_author_defaults_to_shim(self) -> None:
+        # meta-llama / google have no matrix row → conservative shim/no-vision.
+        assert _native_tools_supported("openrouter", "meta-llama/llama-3.3-70b-instruct") is False
+        assert _vision_supported("openrouter", "google/gemini-2.0-flash-001") is False
+
+    # --- tier 1: explicit operator override ---
+
+    def test_explicit_override_wins_over_inference(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An operator-listed full slug forces True even for an unmapped author.
+        monkeypatch.setitem(
+            _NATIVE_TOOLS_CAPABILITY,
+            "openrouter",
+            frozenset({"meta-llama/llama-3.3-70b-instruct"}),
+        )
+        assert _native_tools_supported("openrouter", "meta-llama/llama-3.3-70b-instruct") is True
+
+
+class TestOpenRouterProvider:
+    """Spec 22 T06 — OpenRouter as a first-class OpenAI-compatible provider."""
+
+    def test_openrouter_in_default_base_urls(self) -> None:
+        from persona.backends.config import DEFAULT_BASE_URLS
+
+        assert DEFAULT_BASE_URLS["openrouter"] == "https://openrouter.ai/api/v1/"
+
+    def test_construct_openrouter_backend(self) -> None:
+        # D-20-X-allow-set-extend: the allow-set must include openrouter or
+        # construction raises ProviderError. A successful build proves it.
+        backend = OpenAICompatibleBackend(
+            _config("openrouter", model="anthropic/claude-3.5-sonnet")
+        )
+        assert backend.provider_name == "openrouter"
+        assert backend.model_name == "anthropic/claude-3.5-sonnet"
+
+    def test_openrouter_backend_infers_capabilities_at_construction(self) -> None:
+        backend = OpenAICompatibleBackend(
+            _config("openrouter", model="anthropic/claude-3.5-sonnet")
+        )
+        assert backend.supports_native_tools is True
+        assert backend.supports_vision is True
+
+    def test_openrouter_free_slug_tools_false_at_construction(self) -> None:
+        backend = OpenAICompatibleBackend(
+            _config("openrouter", model="anthropic/claude-3.5-sonnet:free")
+        )
+        assert backend.supports_native_tools is False
+        assert backend.supports_vision is True
 
 
 class TestToolCallMessageProtocol:

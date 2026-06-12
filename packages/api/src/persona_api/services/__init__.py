@@ -8,7 +8,9 @@ from persona_api.services import (
     authoring_service,
     catalog_service,
     chat_service,
+    consent_service,
     credits_service,
+    dispatch_service,
     image_service,
     persona_service,
     run_service,
@@ -22,6 +24,8 @@ __all__ = [
     "chat_service",
     "credits_service",
     "image_service",
+    "consent_service",
+    "dispatch_service",
     "persona_service",
     "run_service",
 ]

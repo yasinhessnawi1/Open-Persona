@@ -11,6 +11,135 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Spec 21 — Proactive Autonomy: Question Asking + Task Auto-Dispatch (Phase 6 complete 2026-06-13, pending sign-off)
+
+> **Two coupled autonomy features, one spec:** (1) **proactive clarifying questions** (3 predefined options + 1 free-form) across chat *and* agentic-loop contexts, tuned by a new per-persona **autonomy preference** (`cautious | balanced | decisive`, YAML-default + `persona_self`-learnable); and (2) **consent-gated task auto-dispatch** — a request mapping to the persona's declared tools/skills can auto-start a Run, with a one-time per-persona consent gate. **20 decisions locked** (Phase 4) per [`docs/specs/phase2/spec_21/decisions.md`](docs/specs/phase2/spec_21/decisions.md); zero new dependencies.
+>
+> **Gates at close:** 10 acceptance criteria — **8 ✅ MET + 2 🟦 MECHANISM-MET** (consent gate live `post_message` SSE wiring + the web edit-page OpenAPI-client regen are named fast-follow wirings; all underlying mechanisms are unit + integration tested). Default pytest **3488 passed, 25 skipped / 0 Spec 05/06/09/19 regressions**; Spec 21 integration **11 passed, 1 skipped** (RLS skip without `persona_app`, D-07-5); web **644 vitest** + tsc clean; `mypy --strict` core (112) + `mypy` runtime/api (85) clean; `ruff` clean. All surfaces additive; existing personas/tests byte-for-byte unaffected.
+
+#### Added (persona-core)
+- **`Persona.autonomy`** ([`schema/persona.py`](packages/core/src/persona/schema/persona.py)) — `Literal["cautious","balanced","decisive"]`, default `"cautious"`; additive per the D-01-12 / `visual_style` precedent (existing YAMLs unaffected; resolved at load time, never mutated — D-21-11).
+- **`persona.autonomy`** module — `AutonomyLevel`, `AmbiguityClass` (4 classes, defined in core for downward import), frozen `AutonomyPolicy` + per-level table (D-21-5 caps: cautious 5/run, balanced 3/run, decisive 1/run; class-D-always / class-C-never gating), `resolve_autonomy` (load-time self_facts overlay), and `record_autonomy_update` (persona_self force-write + stateless day/session cooldown D-21-4 + audit). New `InvalidAutonomyLevelError` / `AutonomyCooldownError`.
+
+#### Added (persona-runtime)
+- **`questions.py`** — frozen `QuestionOption`/`ProactiveQuestion` (exactly-3 validator, D-21-9), `QuestionRegistry` (sha256-normalized dedup + answer reuse, D-21-6), `validate_answer` boundary validation, `normalize_question`. New `InvalidQuestionAnswerError`.
+- **`ambiguity.py`** — pure `detect_ambiguity` (4 classes, hard suppressors, EN + Norwegian Bokmål patterns, deictic referent gating, long-message windowing) + `should_ask` gating + `AmbiguityEscalator` tier-2 Protocol seam (D-21-1, unimplemented).
+- **`question_author.py`** — `QuestionAuthor` port + deterministic `TemplateQuestionAuthor` (D-21-14 mandatory fallback; model-author is the injectable seam).
+- **`task_detector.py`** — data-driven `TaskTriggerRegistry` (20-entry seed, constructor-injected, allow-set-filtered, `\b`-anchored regex, dual-knob scoring + guards, D-21-3); margin-tie → clarify.
+- **Loop wiring:** `ConversationLoop.turn` gains a PRE-generation question decision point (D-05-12 ordering; ask → end turn, or stated-assumption nudge D-21-18); `AgenticLoop` `[ASK_USER]` gains 3+1 options + autonomy-scaled per-run cap + dedup (consumes a step, D-21-15). Additive `options`/`allow_free_form` on `RunEvent.asking_user` (absent = byte-identical back-compat).
+
+#### Added (persona-api)
+- **Migration `008_persona_consent_dispatch`** — tri-state `personas.consent_to_auto_dispatch BOOLEAN NULL` + `consent_updated_at TIMESTAMPTZ NULL` (D-21-7; `ADD COLUMN IF NOT EXISTS` per the 003/004 precedent).
+- **`consent_service.py`** — pure tri-state machine (`can_auto_dispatch` / `should_prompt_for_consent`, D-21-17 stable-decline) + DB read/set (re-read per dispatch). **`PATCH /v1/personas/{id}/consent`** (grant/decline/revoke) + AuditEvent per transition; `PersonaDetail` carries the consent fields.
+- **`dispatch_service.py`** — auto-dispatch trigger (D-21-10 layer split): pure `decide` truth table, `consent_question` (3+1, D-21-16), `parse_consent_answer` (modify = safe default), `detect_task` bridge, async `auto_dispatch`.
+
+#### Added (persona-web)
+- **`AutonomyConsentSection`** ([`components/persona/autonomy-consent-section.tsx`](packages/web/src/components/persona/autonomy-consent-section.tsx)) — autonomy selector (3 levels) + consent toggle with inline revocation warning (D-21-2: toggle + warning, no modal; off → revoke-to-ask).
+- **3+1 question rendering** — `AskUserPrompt` renders 3 option buttons + free-form when present, free-text fallback when absent (D-21-9); `AskingUserData`/`RunStep` carry the additive `options`/`allow_free_form`.
+
+#### Notes
+- **Operator-pass:** EXEMPT (§6.3 — no model-callable tool/provider/sandbox/imagegen/voice surface added or rewired); recorded in [`closeout.md`](docs/specs/phase2/spec_21/closeout.md).
+- **Chain numbering:** 11 additive-amendment surfaces deferred to R-19-1 (no self-numbering).
+- **Fast-follow wirings:** live `post_message` consent-question SSE + answer-parse; web OpenAPI-client regen + edit-page wiring of `AutonomyConsentSection`.
+
+### Spec V3 — Streaming Text-to-Speech + Per-Persona Voice (persona-voice 0.V3.0 — Phase 6 complete 2026-06-12, pending sign-off)
+
+> **Two coupled deliverables, one spec:** (1) a provider-independent **`StreamingTTS`** Protocol + concrete **Cartesia Sonic 3.5** streaming backend (the outbound voice path's last hop: V5 reply text → V3 synthesis → V1 transport), and (2) **per-persona `voice` as a first-class identity attribute** with a cloning-seam resolution indirection (catalogue selection at v1; **cloning explicitly NOT implemented** — biometric-adjacent serious-harm surface). Mirrors V2's `stt/` subpackage verbatim (Spec 02 ChatBackend discipline). **16 decisions locked** (6 spec-standard D-V3-1..6 + 8 surfaced micros + 2 implementation-invariant) per [`docs/specs/phase2/spec_V3/decisions.md`](docs/specs/phase2/spec_V3/decisions.md).
+>
+> **🎯 Architectural bet VALIDATED at ~9 LOC** — V1 pre-built the V2→V5→V3 pipeline + barge-in path, so V3's seam adapter slotted in with **zero seam reshape**; the only V1 source delta is the D-V3-5 step-4 outbound-queue flush (**1 functional LOC** in `streaming.py` + ~8-LOC additive `VoiceRoom.clear_outbound()`). Far under the ≤21 budget; V1's `TTSStream` seam proven correctly shaped.
+>
+> **Headline gates:** 12 acceptance criteria — **10 ✅ MET-in-CI + 2 ✅/🟦 splits** (live prosody + live latency, operator-passed informally at T14 per CSA-3, since Spec 25's canonical gate post-dates V3 Phase 5; reconciles at R-19-1). Default pytest **3735 passed / 0 V3 regressions**; integration **216 passed** (6 V3 in-process, criterion-2 BINARY proven); external 5 gates skip cleanly without creds; `mypy --strict` clean (173 files); `ruff` clean. All surfaces additive; existing personas/tests byte-for-byte unaffected.
+
+#### Added (persona-voice `tts/` subpackage)
+- **`StreamingTTS` Protocol** ([`tts/protocol.py`](packages/voice/src/persona_voice/tts/protocol.py)) — `synthesize(text_stream, voice) -> AsyncIterator[AudioChunk]` (`def -> AsyncIterator` per D-02-5) + `cancel()` + `close()` + `provider_name`/`model_name`/`consumes_raw_text`. Verbatim Spec 02 / V2 mirror.
+- **`CartesiaStreamingTTS`** ([`tts/cartesia_backend.py`](packages/voice/src/persona_voice/tts/cartesia_backend.py)) — Sonic 3.5 WebSocket *contexts* API (the ONLY module importing `cartesia`); native raw `pcm_s16le` @ 24 kHz; `max_buffer_delay_ms=0` (client chunker load-bearing); SDK-exception → `TTSError` mapping; idempotent cancel/close; `list_voices` (catalogue); cost estimate. ElevenLabs Flash v2.5 documented as the alternative behind the same seam (D-V3-1).
+- **Rule-based sentence/clause chunker** ([`tts/chunking.py`](packages/voice/src/persona_voice/tts/chunking.py)) — first-chunk-shorter + lookahead guard + abbreviation/decimal/initial protection + flush-on-end/discard-on-cancel (D-V3-2 + D-V3-X-sentence-tokenizer; pysbd is the named falsification upgrade).
+- **`PCM16Reframer` + `assert_rail_format`** ([`tts/audio.py`](packages/voice/src/persona_voice/tts/audio.py)) — deterministic, no-pacing (D-V3-X-no-pacing-t06); odd-byte carry; progressive first-frame ramp. All providers native 24 kHz → re-framing not transcoding (R-V3-4).
+- **Voice resolution (the cloning seam)** ([`tts/voice_resolution.py`](packages/voice/src/persona_voice/tts/voice_resolution.py)) — fallible `resolve_voice() -> ResolvedVoice` (D-V3-X-cloning-seam-shape); `TTSVoiceNotFoundError` on unknown provider / catalogue miss / no-default. Cloning NOT implemented (reserved `consent`/`addressing` hooks only).
+- **Voice catalogue + boundary types** — `VoiceCatalogue` Protocol + `normalize_gender` ([`tts/catalogue.py`](packages/voice/src/persona_voice/tts/catalogue.py)); `ResolvedVoice` / `VoiceCatalogueEntry` / `VoiceGender` ([`tts/types.py`](packages/voice/src/persona_voice/tts/types.py), frozen + `extra="forbid"`); `TTSError` hierarchy ([`tts/errors.py`](packages/voice/src/persona_voice/tts/errors.py), rooted at `PersonaError`); `StreamingTTSConfig` (`env_prefix="PERSONA_TTS_"`, `SecretStr`, D-V3-2 chunk knobs) + `load_streaming_tts` factory.
+- **V1 `TTSStream` seam adapter** ([`tts/seam_adapter.py`](packages/voice/src/persona_voice/tts/seam_adapter.py)) — `V1TTSStreamSeamAdapter` (chunker + backend; iterator-sentinel cancel + generation-id guard; D-V3-5 steps 1-3) + `build_seam_adapter` composition root.
+- **`EU AI Act Art. 50` provenance flag** — `ResolvedVoice.ai_generated=True` (D-V3-X-ai-provenance-flag; binds 2026-08-02, catalogue voices included).
+- **4 additive `VoiceLog` TTS fields** ([`logging.py`](packages/voice/src/persona_voice/logging.py)) — `tts_text_first_at` / `tts_first_audio_at` / `tts_provider_cost_cents_per_minute` / `tts_total_cents` (D-V3-X-cost + D-05-9).
+- **`PERSONA_TTS_*` env block** in `.env.example` + **MAINTENANCE.md Cluster C** (4 V3 operator-commitment rows).
+
+#### Added (persona-core)
+- **`voice: VoiceSpec | None` on `PersonaIdentity`** ([`schema/persona.py`](packages/core/src/persona/schema/persona.py)) — additive (D-01-12; existing personas byte-for-byte unaffected, criterion 4); `CatalogueVoice` / `VoiceSpec` with the `"provider:voice_id"` string shorthand, the `kind` discriminator pre-positioned for v0.2 cloning, and the reserved always-`None` `consent` hook. Re-exported from `persona.schema`.
+
+#### Changed (Spec V1 — additive, the architectural bet)
+- **`VoiceRoom.clear_outbound()`** ([`transport/room.py`](packages/voice/src/persona_voice/transport/room.py)) — additive `rtc.AudioSource.clear_queue()` wrapper (~8 LOC); and **1 functional line** in `StreamingLoop.interrupt()` ([`loop/streaming.py`](packages/voice/src/persona_voice/loop/streaming.py)) calling it for D-V3-5 step-4 barge-in flush. V1's 31 existing streaming/room tests pass byte-for-byte.
+
+#### Dependencies
+- **`cartesia[websockets]>=3,<4`** (Apache-2.0; v3.2.0; ships py.typed — no mypy override needed, D-V3-X-mypy-tts-sdk-override resolved). Transitive surface (anyio / distro / httpx / pydantic / sniffio / typing-extensions / websockets) all permissive, mostly already in-workspace via deepgram/livekit.
+
+### Spec 25 — Tool UX + Sandbox Reliability Hardening + Operator-Pass Acceptance Gate (Phase 6 complete 2026-06-13)
+
+> **Three coupled deliverables, one spec** — all produced by the same production-reality gap the 2026-06-10 operator-pass surfaced: (1) **ten tool-surface fixes**, (2) **`CloudflareImageBackend`** (the truly-free image-gen path; NVIDIA free tier has no text-to-image — §2.10), and (3) the **operator-pass canonical close-out gate** in `SPEC_IMPLEMENTATION_PROMPT.md` §6.3 that all downstream tool-touching specs inherit. **22 decisions locked** (D-25-1..14 numbered + 8 `D-25-X-*` named) per [`docs/specs/phase2/spec_25/decisions.md`](docs/specs/phase2/spec_25/decisions.md). The gate applied to itself: [`evidence/operator_pass_2026_06_12.log`](docs/specs/phase2/spec_25/evidence/operator_pass_2026_06_12.log) = **10 PASS · 1 KNOWN-LIMITATION · 0 FAIL**.
+>
+> **Headline gates (scoped per the multi-session shared-checkout discipline):** consolidated Spec-25 tests = 253 passed / 20 skipped (T07 unlocked pkgs) / 3 deselected (web_fetch external); Spec-25 integration (`-m integration`) = 11 passed; web_fetch live `-m external` = 3 passed; `mypy --strict` (core) + standard (runtime/api) clean on touched files; `ruff check` + `format --check` clean. Backward compat: all surfaces additive; existing configs unaffected.
+
+#### Added
+- **`CloudflareImageBackend`** ([`packages/core/src/persona/imagegen/cloudflare_image.py`](packages/core/src/persona/imagegen/cloudflare_image.py)) — Workers AI text-to-image; content-type-branched decode (flux JSON-base64 / SDXL binary PNG); error-code→domain mapping; single-image posture (count>1 → `unsupported_option`). Allow-set: flux-1-schnell (GA, primary) + SDXL-base + dreamshaper-8-lcm (D-25-11).
+- **Cloudflare wiring** — `ImageProvider` Literal `+cloudflare`, `DEFAULT_BASE_URLS`, separate `cloudflare_account_id` config field (D-25-12, NOT base_url-embedded), factory dispatch, `.env.example` default-recommended block (D-25-13). Added alongside the concurrent OpenRouter work without overwrite.
+- **TurnLog telemetry fields** ([`packages/runtime/src/persona_runtime/logging.py`](packages/runtime/src/persona_runtime/logging.py)) — `cost_basis`, `fallback_rate_alert`, `tool_refusal_detected`, `refusal_retry_engaged`, `sandbox_session_recreated` (all additive; D-18-1 not reopened).
+- **NVIDIA price-table entries** + `cost_basis_for()` + `nvidia/` catalog-prefix normalization (D-25-7; the §2.6 silent-miss fix).
+- **Refusal observability + (default-OFF) auto-retry** — `detect_tool_refusals()` + `PERSONA_REFUSAL_RETRY_ENABLED` guardrail (T11/T21).
+- **`SPEC_IMPLEMENTATION_PROMPT.md` §6.3 operator-pass gate** + **MAINTENANCE.md Cluster F** (7 operator-commitment rows).
+
+#### Changed / Fixed
+- **Sandbox image** ([`packages/core/src/persona/sandbox/image/`](packages/core/src/persona/sandbox/image/)) — full 31-package sci-Python stack (3 drops: plotly/opencv/toml; ≤500 MB build-gate).
+- **Dual wall-clock policy** (30s exec / 120s env-setup, env-tunable) + **session auto-recovery** (retry-once on `no_session`) in the sandbox path — now also covers the **E2B idle-reap variant** (operator-pass 2026-06-13): a server-side-reaped sandbox ("sandbox not found"/502) is evicted + re-surfaced as `no_session` so the wrapper auto-recovers instead of the model retrying the dead sandbox (D-25-X-emergent-e2b-reap-recovery).
+- **`web_fetch`** — descriptive default User-Agent (fixes Wikimedia 403) + empty-extraction UX message.
+- **Sandbox path-hint UX** — all 7 `SandboxViolationError` raise sites carry a valid relative-path example.
+- **multi_model fallback-rate alert** — rolling 10-turn window in the runtime turn loop (>30% → ERROR + `fallback_rate_alert`); **D-20-9 classifier unchanged** (R-25-1: rate-limit, not mis-categorization).
+- **API `_compose_image_backend`** — now reads `PERSONA_IMAGEGEN_MODELS` (D-20-17 four-case parser); fixed a Cloudflare `account_id` env-namespace bug found mid-operator-pass (now accepts `PERSONA_CLOUDFLARE_ACCOUNT_ID`).
+- **§2.9 generate_image hotfix verified** — `RuntimeFactory` wires `make_generate_image_tool` (the tool is now persona-callable; 6/6 integration tests).
+- **D-13-3 reframed** ("estimate + flag", not "skip cost"); **D-20-1 footnoted** (catalog-vs-vendor naming + NVIDIA imagegen Enterprise-only). Editorial, no reopen.
+
+#### Known limitation (named follow-up — deferred to an operator-authored rich-output rendering spec)
+- **Chat-path rich-output delivery** (image / file / diagram inline render): persona-driven `generate_image` dispatches + produces bytes, but the chat-tool path has no bytes-persister, so the image isn't served/rendered inline (the HTTP `/v1/imagegen` path persists correctly). Named in `decisions.md` D-25-X-emergent-rich-output-delivery-deferred + MAINTENANCE.md Cluster F.
+
+### Spec 22 — OpenRouter Integration + Auto-Detected Subscription Mode (Phase 6 complete 2026-06-11)
+
+> **Two coupled deliverables, one spec:** (1) OpenRouter as a first-class Persona provider across chat / reasoning / vision / image-gen — 300+ aggregated models behind one OpenAI-compatible surface at `https://openrouter.ai/api/v1/`, slotting into Spec 20's `MultiModelChatBackend` / `MultiModelImageBackend` cross-provider fallback **unchanged** (native `<provider>/<model>` slash names match D-20-13 exactly). (2) Auto-detected free/paid subscription mode resolved once at startup via `GET /api/v1/key` (`is_free_tier`) — free-mode drops non-`:free` chat entries (D-22-2) and all OpenRouter image entries (D-22-20); paid-mode opens the full catalog. **20 production-merit decisions locked at Phase 4** (D-22-1..20: 11 spec/Phase-1-queued + 9 research-emergent) + 9 spec-body folds per [`docs/specs/phase2/spec_22/decisions.md`](docs/specs/phase2/spec_22/decisions.md). Phase 3 research (4 parallel workflows, live-verified against the public catalog) overturned three spec leans: probe is `/api/v1/key` not `/credits` (management-key gate, D-22-3); `:nitro`/`:floor` are dynamic routing transforms not separate models (D-22-6); image-gen rides chat-completions with no DALL-E (new `OpenRouterImageBackend`, D-22-8). **Additive-precedent chain entries** (D-22-1..20) claimed; R-19-1 canonicalizes at next audit per [`closeout.md §5`](docs/specs/phase2/spec_22/closeout.md).
+>
+> **Headline gates:** `pytest packages/core/ packages/runtime/` = 2964 passed / 26 skipped / 176 deselected; OpenRouter cross-spec integration = 11 passed (`packages/api/tests/integration/test_openrouter_integration.py`); `mypy --strict` on persona-core (112 files) + persona-runtime (resolver + tier) clean; standard `mypy` on persona-api `app.py` clean; `ruff check` + `ruff format --check` clean across all touched files. Backward compat: OpenRouter is opt-in (no key → unused); all existing Spec-20 configurations pass unchanged.
+
+#### Added — Spec 02 (chat backends; OpenRouter provider surface)
+
+- **OpenRouter `Provider` Literal entry** at [`packages/core/src/persona/backends/config.py:22-32`](packages/core/src/persona/backends/config.py) — `Provider` Literal extended to 9 entries (… / nvidia / **openrouter** / ollama / local).
+- **OpenRouter `DEFAULT_BASE_URLS` entry** at `config.py` — `"openrouter": "https://openrouter.ai/api/v1/"` (the openai SDK appends `/chat/completions`; `/v1/` suffix kept per the openai-compat convention).
+- **`OpenAICompatibleBackend` allow-set extension** + **`backends/_factory.py` `_OPENAI_COMPAT_PROVIDERS` extension** per the D-20-X-nvidia-allow-set-extend invariant — Spec 22 confirms it is a **FIVE-touch** (Provider Literal + DEFAULT_BASE_URLS + 2 capability matrices + in-`__init__` allow-set + factory-dispatch allow-set); the T15 integration test caught the factory-allow-set omission before commit (same class of gap as Spec 20's production-startup catch).
+- **OpenRouter capability matrix rows + three-tier inference** at `openai_compat.py` (`_NATIVE_TOOLS_CAPABILITY` + `_VISION_CAPABILITY`) — empty operator-override rows (D-22-10f) plus the tier-1 (`_explicit_openrouter_entry`) / tier-3 (`_infer_openrouter_capability`) resolver: suffix taxonomy (D-22-6), author-prefix→provider map, dual match key, `:free` asymmetric conservatism (tools→False / vision→base, D-22-10c). Catalog metadata (tier-2) is the Spec-23 metadata source, not wired into per-construction resolution in v0.1 (YAGNI; AC9 met by tier-1+tier-3).
+- **2 error classes** at `backends/errors.py` — `OpenRouterCatalogError` + `OpenRouterBalanceProbeError`, both under `ProviderError` (live-HTTP, D-20-16 partition); 401 reuses `AuthenticationError` (D-22-9, no `OpenRouterAuthError`).
+- **`OpenRouterCatalogClient` + subscription state** at new `backends/openrouter_catalog.py` — sync `httpx` (D-22-11), `list_models()` (in-process cache D-22-5; `~`-alias filter + per-entry skip-WARN; D-22-14) + `get_key_info()` (the D-22-3 probe). Frozen response models with `extra="ignore"` (documented deviation, D-22-12) + Decimal-from-string pricing (D-22-13). `OpenRouterModelEntry.is_free`/`.supports_tools`/`.supports_vision` capability props (D-22-10b). `OpenRouterSubscriptionState` (our frozen `extra="forbid"` boundary type) + pure mappers `subscription_state_from_key_info` / `free_mode_fallback`. **Public read surface pinned by a stability contract test for Spec 23.**
+- **`filter_openrouter_free_mode`** at `backends/credentials.py` — shared pure helper (mode injected as a string → persona-core stays free of a persona-runtime dependency); `keep_free_suffix` selects the chat (D-22-2, keep `:free`) vs image (D-22-20, drop all) posture.
+
+#### Added — Spec 05 (TierRegistry; chat free-mode filter)
+
+- **`tier_registry_from_env(openrouter_subscription_mode=...)`** at [`packages/runtime/src/persona_runtime/tier.py`](packages/runtime/src/persona_runtime/tier.py) — in free-mode, drops non-`:free` `openrouter/X` entries per tier with a WARN (D-22-2); a tier whose MODELS list empties is left unregistered (fail-soft → registry fallback chain). `None` default = no-op (full backward compat).
+- **`resolve_openrouter_subscription`** at new `persona_runtime/openrouter_subscription.py` — startup resolver: no key → `None` (zero-touch); `PERSONA_OPENROUTER_SUBSCRIPTION_MODE` env override skips the probe (D-22-7); probe `OpenRouterBalanceProbeError` → conservative free-mode fallback (D-22-3); `AuthenticationError` → fail-loud propagate (D-22-9); client closed in `finally`.
+
+#### Added — Spec 15 (image generation; OpenRouter image surface)
+
+- **`OpenRouterImageBackend`** at new `imagegen/openrouter_image.py` — image-gen rides `POST /chat/completions` with `extra_body={"modalities": ["image","text"], "image_config": {...}}`; base64 data-URL unpack from the untyped `message.images` extra (D-22-8). `ImageGenOptions → image_config` nearest-aspect-ratio coercion + `count>1` raise (D-22-19); 403-moderation disambiguation → `ContentRejectedError` (D-22-16); text residue discarded. Reuses the existing `ImageBackend` protocol / options / errors / multi-model fallback unchanged.
+- **OpenRouter `ImageProvider` Literal + factory dispatch** at `imagegen/config.py` + `imagegen/_factory.py` — `load_image_backend_from_env(openrouter_subscription_mode=...)` drops ALL `openrouter/X` image entries in free-mode (D-22-20: zero `:free` image-output models exist; fail-fast over a call-time 402). Acceptance criterion #2 model corrected to `openrouter/google/gemini-2.5-flash-image` (DALL-E does not exist on OpenRouter).
+
+#### Added — Spec 08 (composition root; subscription wiring)
+
+- **OpenRouter subscription resolution wired at startup** in [`packages/api/src/persona_api/app.py`](packages/api/src/persona_api/app.py) — `_resolve_openrouter_subscription_mode()` runs the probe once and threads the mode into both `_compose_image_backend()` (D-22-20) and `tier_registry_from_env()` (D-22-2). Composition-root degradation: a probe `AuthenticationError` is ERROR-logged and swallowed so one optional provider's bad key does not block API startup (consistent with the image-backend / E2B-less-pool graceful-absence pattern).
+
+#### Added — `.env.example` (operator surface)
+
+- **OpenRouter block** — `PERSONA_OPENROUTER_API_KEY` + optional `PERSONA_OPENROUTER_BASE_URL` + `PERSONA_OPENROUTER_SUBSCRIPTION_MODE` override + verified-2026 `:free` example ids (Nemotron-3 / gpt-oss / Gemma-4 / Qwen3-Next) with the 20 RPM / 50-or-1000 RPD / no-SLA operator note + a paid-mode image-gen example.
+
+#### Cross-spec editorial (additive; no closed-spec re-open)
+
+- **Spec 20** — OpenRouter slots into `MultiModelChatBackend` / `MultiModelImageBackend` as an ordinary provider (no wrapper change); the cross-provider-extension MAINTENANCE row is amended to a FIVE-touch invariant (the `_factory.py` allow-set). **Spec 13** — OpenRouter vision inherits underlying-model capability via the tier-3 inference. **Spec 15** — `OpenRouterImageBackend` is a NEW adapter (not the editorial base_url-reuse the spec assumed).
+
+#### Operator commitments added to MAINTENANCE.md (T16, Cluster B; 12 → 15 rows)
+
+- Subscription-probe operator awareness + `/credits` management-key open question (D-22-3); catalog + `:free`-roster + capability-matrix staleness (D-22-1 / D-22-10); free-tier daily-cap degradation (D-22-2 / D-22-17).
+
 ### Spec 20 — NVIDIA Provider Integration + Cross-Provider Multi-Model-Per-Tier Fallback (Phase 6 complete 2026-06-10)
 
 > **Two coupled deliverables, one spec:** (1) NVIDIA as a first-class Persona provider across chat (Nemotron family) / reasoning (`enable_thinking` + `delta.reasoning_content`) / vision (NVIDIA VILA + Cosmos VLMs) / image-gen (FLUX.2-klein-4b via OpenAI-compat + SDXL via legacy GenAI) — all behind one `OpenAICompatibleBackend` adapter at `https://integrate.api.nvidia.com/v1/`. (2) Cross-provider multi-model-per-tier fallback (`PERSONA_<TIER>_MODELS=<provider>/<model>,<provider>/<model>,...`) across all text tiers AND image generation via `MultiModelChatBackend` + `MultiModelImageBackend` wrappers + per-provider `ProviderCredentialResolver`. **Co-shipped because NVIDIA's free-tier 40 RPM cap makes cross-provider fallback a v0.1 production-resilience prerequisite, not a v0.2 nicety.** 25 production-merit decisions locked at Phase 4 (12 LOCK + 5 emergent micros + 7 research-confirmed defaults + 1 closeout-editorial-only) per [`docs/specs/phase2/spec_20/decisions.md`](docs/specs/phase2/spec_20/decisions.md). **Test growth:** baseline 2643 → 2972 default + 44 conditional (40 integration + 4 external 🟦 operator-pass per CSA-3) = +329 default tests. **9 additive-precedent chain entries** claimed (T09-T17; anticipated chain ~23-31; R-19-1 canonicalizes at next audit per [`closeout.md §7`](docs/specs/phase2/spec_20/closeout.md)).

@@ -39,6 +39,7 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from persona.autonomy import policy_for, resolve_autonomy
 from persona.logging import get_logger
 from persona.schema.chunks import ChunkProvenance, PersonaChunk, WriteSource, make_chunk_id
 from persona.schema.conversation import ConversationMessage
@@ -52,6 +53,8 @@ from persona_runtime.agentic.run import CancelToken, Run, RunStatus
 from persona_runtime.agentic.step import Step, StepType
 from persona_runtime.errors import TierNotConfiguredError
 from persona_runtime.prompt import RetrievedContext
+from persona_runtime.question_author import TemplateQuestionAuthor
+from persona_runtime.questions import QuestionRegistry
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -71,6 +74,7 @@ if TYPE_CHECKING:
     # untouched per D-18-X-agentic-loop-routing-coupling (step-tier is
     # task-decomposition driven via _tier_for_step, NOT consulted via
     # Router.route). The chat ``Router`` is untouched at this seam.
+    from persona_runtime.question_author import QuestionAuthor
     from persona_runtime.routing import Router
     from persona_runtime.tier import TierRegistry
 
@@ -128,10 +132,19 @@ class AgenticLoop:
         compactor: StepHistoryCompactor | None = None,
         max_steps: int = 20,
         force_frontier_tier: bool = False,
+        question_author: QuestionAuthor | None = None,
     ) -> None:
         self._persona = persona
         self._stores = stores
         self._toolbox = toolbox
+        # Spec 21 T07: proactive-question scaffold + caps (D-21-9/5/6). The
+        # author wraps the model's [ASK_USER] question with 3+1 options; the
+        # per-run cap + dedup registry are reset per run() (mirrors the
+        # deferred_input_files per-run reset — one run per loop instance).
+        self._question_author = question_author or TemplateQuestionAuthor()
+        self._question_registry = QuestionRegistry()
+        self._questions_asked = 0
+        self._question_cap = 0
         self._injector = skill_injector
         self._scanned_skills = scanned_skills
         self._skills_by_name = {s.name: s for s in scanned_skills}
@@ -173,6 +186,17 @@ class AgenticLoop:
         persona_id = self._require_persona_id()
         started_at = datetime.now(UTC)
         self.deferred_input_files.clear()  # M1a per-run reset (D-16-2)
+        # Spec 21 T07: per-run proactive-question state. Cap is autonomy-scaled
+        # (D-21-5: cautious 5 / balanced 3 / decisive 1); resolved from the
+        # self_facts learning chain overlay (D-21-8/11). Questions consume a
+        # step regardless (D-21-15).
+        self._question_registry = QuestionRegistry()
+        self._questions_asked = 0
+        level = resolve_autonomy(
+            self._persona,
+            self._stores["self_facts"].get_all(persona_id, include_superseded=True),
+        )
+        self._question_cap = policy_for(level).questions_per_run
         run_id = ""  # set once we build the Run below
         steps: list[Step] = []
         status = RunStatus.RUNNING
@@ -348,15 +372,60 @@ class AgenticLoop:
         user_respond: Callable[[str], Awaitable[str]] | None,
         on_event: Callable[[RunEvent], Awaitable[None]] | None,
     ) -> tuple[Step, list[ConversationMessage]]:
-        """Ask the user a question and fold their answer back into context (§4.2)."""
+        """Ask the user a question and fold their answer back into context (§4.2).
+
+        Spec 21 T07: the question carries 3+1 options (D-21-9), and is bounded by
+        the autonomy-scaled per-run cap (D-21-5) + per-run dedup (D-21-6). When
+        the cap is exhausted or the question repeats, the loop does NOT pause —
+        it proceeds with best judgment (the D-21-18 stated-assumption analogue) —
+        but still records an ``ASK_USER`` step (a question consumes a step,
+        D-21-15). The model-initiated ``[ASK_USER]`` marker path is preserved.
+        """
         question = self._strip_marker(response.content, _ASK_USER_MARKER)
-        await self._emit(on_event, RunEvent.asking_user(step_num, question))
+        suppressed = self._questions_asked >= self._question_cap or self._question_registry.seen(
+            question
+        )
+        if suppressed:
+            _logger.info(
+                "agentic proactive question suppressed asked={n} cap={cap}",
+                n=self._questions_asked,
+                cap=self._question_cap,
+            )
+            new_context = [
+                *context,
+                self._assistant(response.content),
+                self._user(_NO_CALLBACK_REPLY),
+            ]
+            return (
+                Step(
+                    type=StepType.ASK_USER,
+                    question=question,
+                    user_answer=None,
+                    tier_used=tier,
+                    tokens=tokens,
+                    latency_ms=latency_ms,
+                ),
+                new_context,
+            )
+
+        pq = await self._question_author.default(
+            question, language=self._persona.identity.language_default
+        )
+        await self._emit(
+            on_event,
+            RunEvent.asking_user(
+                step_num, question, options=pq.options, allow_free_form=pq.allow_free_form
+            ),
+        )
+        self._questions_asked += 1
+        self._question_registry.record(question)
         new_context = [*context, self._assistant(response.content)]
         answer: str | None = None
         if user_respond is not None:
             answer = await user_respond(question)
             new_context.append(self._user(answer))
             await self._emit(on_event, RunEvent.user_responded(step_num))
+            self._question_registry.record(question, answer)
         else:
             new_context.append(self._user(_NO_CALLBACK_REPLY))
         step = Step(

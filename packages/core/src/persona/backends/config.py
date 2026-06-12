@@ -26,6 +26,7 @@ Provider = Literal[
     "groq",
     "together",
     "nvidia",
+    "openrouter",
     "ollama",
     "local",
 ]
@@ -44,6 +45,12 @@ DEFAULT_BASE_URLS: dict[str, str] = {
     "groq": "https://api.groq.com/openai/v1/",
     "together": "https://api.together.xyz/v1/",
     "nvidia": "https://integrate.api.nvidia.com/v1/",
+    # OpenRouter (Spec 22 D-22-3 + surface #2): OpenAI-compatible aggregator;
+    # the openai SDK appends /chat/completions so the /v1/ suffix is kept,
+    # matching the openai/deepseek/together/nvidia convention above. Native
+    # model names are already <provider>/<model> slash-format (D-20-13), so
+    # OpenRouter slots into MultiModelChatBackend MODELS lists unchanged.
+    "openrouter": "https://openrouter.ai/api/v1/",
     "ollama": "http://localhost:11434",
 }
 

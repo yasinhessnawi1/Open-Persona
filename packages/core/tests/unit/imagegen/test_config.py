@@ -130,6 +130,25 @@ class TestFieldConstraints:
             ImageBackendConfig(provider="stability")  # type: ignore[arg-type]
 
 
+class TestOpenRouterProvider:
+    """Spec 22 T09b — OpenRouter image-gen provider surface."""
+
+    def test_openrouter_in_image_provider_literal(self) -> None:
+        assert "openrouter" in get_args(ImageProvider)
+
+    def test_openrouter_accepted_by_config(self) -> None:
+        config = ImageBackendConfig(
+            provider="openrouter",
+            model="google/gemini-2.5-flash-image",
+            api_key=SecretStr("sk-or-v1-test"),
+        )
+        assert config.provider == "openrouter"
+        assert config.model == "google/gemini-2.5-flash-image"
+
+    def test_openrouter_default_base_url(self) -> None:
+        assert DEFAULT_BASE_URLS["openrouter"] == "https://openrouter.ai/api/v1/"
+
+
 class TestFromEnv:
     def test_default_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PERSONA_IMAGEGEN_PROVIDER", "fal")
@@ -174,10 +193,16 @@ class TestFromEnv:
 
 class TestImageProviderLiteral:
     def test_image_provider_literal_values(self) -> None:
-        # D-15-1 (v0.1: openai + fal) + Spec 20 D-20-1 adds nvidia. Adding
-        # a fourth provider requires a decisions-doc update + a new
-        # factory entry.
-        assert set(get_args(ImageProvider)) == {"openai", "fal", "nvidia"}
+        # D-15-1 (v0.1: openai + fal) + Spec 20 D-20-1 adds nvidia + Spec 22
+        # D-22-8 adds openrouter + Spec 25 D-25-11 adds cloudflare. Adding a
+        # provider requires a decisions-doc update + a new factory entry.
+        assert set(get_args(ImageProvider)) == {
+            "openai",
+            "fal",
+            "nvidia",
+            "openrouter",
+            "cloudflare",
+        }
 
     def test_default_base_urls_cover_all_providers(self) -> None:
         for provider in get_args(ImageProvider):

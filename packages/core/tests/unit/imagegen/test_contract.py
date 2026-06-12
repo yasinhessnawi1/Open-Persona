@@ -48,6 +48,7 @@ References:
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager, ExitStack, contextmanager
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -62,9 +63,11 @@ from persona.imagegen import (
     ImageGenUnavailableError,
     ImageProviderError,
 )
+from persona.imagegen.cloudflare_image import CloudflareImageBackend
 from persona.imagegen.fal_image import _FAL_IMAGE_CAPABILITY, FalImageBackend
 from persona.imagegen.nvidia_image import NvidiaImageBackend
 from persona.imagegen.openai_image import OpenAIImageBackend
+from persona.imagegen.openrouter_image import OpenRouterImageBackend
 from persona.imagegen.result import ImageMediaType
 from pydantic import SecretStr
 
@@ -157,6 +160,23 @@ class _BackendHarness:
     #: with ``reason="unsupported_model"`` so the operator sees the
     #: stop-block at startup. The contract assertion adapts accordingly.
     unsupported_fails_at_construction: bool = False
+
+    #: True if the backend supports ``count > 1`` per call. Spec 22's
+    #: OpenRouterImageBackend sets this False — its chat-completions
+    #: image-gen surface returns exactly one image per call, so ``count > 1``
+    #: fails closed with ``reason="unsupported_option"`` (D-22-19). The
+    #: count=2 coherence assertion and the unsupported-option assertion
+    #: adapt to this single-image posture. All other v0.1 providers default
+    #: True (multi-image up to ``ImageGenOptions.count`` ≤ 4).
+    supports_multi_image: bool = True
+
+    #: True if the provider exposes a synchronous content-moderation
+    #: rejection that the adapter maps to :class:`ContentRejectedError`.
+    #: Spec 25's Cloudflare Workers AI sets this False (R-25-6 OQ-R6-4): the
+    #: REST surface has no moderation status code, so a refused prompt would
+    #: arrive as a generic 400 → ``reason="transient"``, not a content
+    #: rejection. The moderation contract assertion skips when False.
+    supports_moderation: bool = True
 
     def unsupported_reason(self) -> str:
         """The ``context["reason"]`` discriminator the backend emits.
@@ -446,10 +466,164 @@ class _NvidiaHarness(_BackendHarness):
         return "unsupported_model"
 
 
+class _OpenRouterHarness(_BackendHarness):
+    """OpenRouter harness — mocks ``backend._client.chat.completions.create``.
+
+    Spec 22 T09a. OpenRouter has no ``/images/generations`` route — image-gen
+    rides chat-completions, with the image returned as a base64 data URL on
+    the assistant message's untyped ``images`` extra (R-22-3). The SDK
+    boundary is therefore ``chat.completions.create`` (not ``images.generate``
+    like the OpenAI / NVIDIA Branch-B harnesses). ``supports_multi_image`` is
+    False — the surface returns one image per call (D-22-19).
+    """
+
+    provider = "openrouter"
+    model = "google/gemini-2.5-flash-image"
+    supports_multi_image = False
+
+    def build(self, *, api_key: str | None = "test-key", model: str | None = None) -> Any:
+        config = ImageBackendConfig(
+            provider="openrouter",
+            model=model or self.model,
+            api_key=SecretStr(api_key) if api_key is not None else None,
+            request_timeout_s=30.0,
+        )
+        return OpenRouterImageBackend(config)
+
+    def _image_response(self) -> SimpleNamespace:
+        # One image as a base64 data URL on the untyped ``images`` extra,
+        # plus text residue in ``content`` (the adapter discards it). The
+        # message must be a real object (not MagicMock) so the adapter's
+        # ``model_extra`` dict probe + dict-shaped ``image_url`` access hit
+        # the intended branches.
+        message = SimpleNamespace(
+            model_extra={
+                "images": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{_OPENAI_B64}"},
+                    }
+                ]
+            },
+            content="here is your image",
+        )
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    @contextmanager
+    def happy_path(self, backend: Any, *, count: int = 1) -> Iterator[None]:  # noqa: ARG002 — single-image surface ignores count
+        # OpenRouter returns one image per call (count>1 fails closed before
+        # the SDK), so the happy-path mock always yields a single image.
+        with patch.object(
+            backend._client.chat.completions,
+            "create",
+            new=AsyncMock(return_value=self._image_response()),
+        ):
+            yield
+
+    @contextmanager
+    def moderation_mock(self, backend: Any) -> Iterator[None]:
+        # OpenRouter relays upstream moderation as a 400 BadRequestError; the
+        # adapter (T09a) classifies a moderation rationale as
+        # ContentRejectedError per the Spec 15 SURFACE invariant (D-22-16).
+        http_response = MagicMock()
+        http_response.status_code = 400
+        http_response.headers = {}
+        http_response.request = MagicMock()
+        exc = openai.BadRequestError(
+            "flagged by the moderation system",
+            response=http_response,
+            body={"error": {"code": "moderation", "message": "rejected"}},
+        )
+        with patch.object(
+            backend._client.chat.completions,
+            "create",
+            new=AsyncMock(side_effect=exc),
+        ):
+            yield
+
+    @contextmanager
+    def auth_failure_mock(self, backend: Any) -> Iterator[None]:
+        http_response = MagicMock()
+        http_response.status_code = 401
+        http_response.headers = {}
+        http_response.request = MagicMock()
+        exc = openai.AuthenticationError("invalid api key", response=http_response, body=None)
+        with patch.object(
+            backend._client.chat.completions,
+            "create",
+            new=AsyncMock(side_effect=exc),
+        ):
+            yield
+
+    def unsupported_size_target(self) -> tuple[str, str]:
+        # Not reached: the unsupported-option assertion skips single-image
+        # providers (their unsupported_option path is count>1, exercised by
+        # the count-coherence assertion). Provided for interface symmetry.
+        return (self.model, "1024x1024")
+
+
+class _CloudflareHarness(_BackendHarness):
+    """Cloudflare Workers AI harness (Spec 25 T15) — mocks ``httpx.AsyncClient.post``.
+
+    The backend is raw httpx (no SDK), so the boundary is the class-level
+    ``post``. ``supports_multi_image`` is False (one image per ``/ai/run``
+    call → count>1 fails closed with ``unsupported_option``, D-22-19 posture)
+    and ``supports_moderation`` is False (no synchronous moderation status —
+    R-25-6 OQ-R6-4). The default model is the GA flux-1-schnell JSON+base64
+    response shape (D-25-11).
+    """
+
+    provider = "cloudflare"
+    model = "@cf/black-forest-labs/flux-1-schnell"
+    supports_multi_image = False
+    supports_moderation = False
+
+    def build(self, *, api_key: str | None = "test-key", model: str | None = None) -> Any:
+        config = ImageBackendConfig(
+            provider="cloudflare",
+            model=model or self.model,
+            api_key=SecretStr(api_key) if api_key is not None else None,
+            cloudflare_account_id="acc123",
+            request_timeout_s=30.0,
+        )
+        return CloudflareImageBackend(config)
+
+    @contextmanager
+    def happy_path(self, backend: Any, *, count: int = 1) -> Iterator[None]:  # noqa: ARG002 — single-image surface ignores count
+        resp = httpx.Response(
+            200,
+            json={"result": {"image": _OPENAI_B64}, "success": True},
+            headers={"content-type": "application/json"},
+        )
+        with patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=resp)):
+            yield
+
+    @contextmanager
+    def moderation_mock(self, backend: Any) -> Iterator[None]:  # noqa: ARG002
+        # Not reached — supports_moderation is False so the assertion skips.
+        yield
+
+    @contextmanager
+    def auth_failure_mock(self, backend: Any) -> Iterator[None]:  # noqa: ARG002
+        resp = httpx.Response(
+            403,
+            json={"success": False, "errors": [{"code": 5018, "message": "no access"}]},
+        )
+        with patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=resp)):
+            yield
+
+    def unsupported_size_target(self) -> tuple[str, str]:
+        # Not reached: single-image provider skips the unsupported-size
+        # assertion (its unsupported_option path is count>1). For symmetry.
+        return (self.model, "1024x1024")
+
+
 _HARNESSES: dict[str, _BackendHarness] = {
     "openai": _OpenAIHarness(),
     "fal": _FalHarness(),
     "nvidia": _NvidiaHarness(),
+    "openrouter": _OpenRouterHarness(),
+    "cloudflare": _CloudflareHarness(),
 }
 
 
@@ -528,6 +702,11 @@ class TestContractModerationSurfacesContentRejected:
 
     @pytest.mark.asyncio
     async def test_moderation_raises_content_rejected(self, harness: _BackendHarness) -> None:
+        if not harness.supports_moderation:
+            pytest.skip(
+                "provider has no synchronous moderation status (Spec 25 Cloudflare, "
+                "R-25-6 OQ-R6-4): a refused prompt surfaces as a generic transient error"
+            )
         backend = harness.build()
         async with _async_cm(harness.moderation_mock(backend)):
             with pytest.raises(ContentRejectedError) as info:
@@ -579,6 +758,17 @@ class TestContractUnsupportedOptionSymmetry:
         harness: _BackendHarness,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # Single-image providers (Spec 22 OpenRouter) have no per-call
+        # size-unsupported path — ``ImageGenOptions.size`` is a closed
+        # 3-value Literal the adapter maps wholesale. Their only
+        # ``unsupported_option`` trigger is ``count > 1``, which the
+        # count-coherence assertion below exercises directly.
+        if not harness.supports_multi_image:
+            pytest.skip(
+                "single-image provider: unsupported_option is exercised via the "
+                "count>1 path in TestContractOptionMappingCoherence"
+            )
+
         target_model, target_size = harness.unsupported_size_target()
         expected_reason = harness.unsupported_reason()
 
@@ -645,6 +835,20 @@ class TestContractOptionMappingCoherence:
     async def test_count_two_yields_two_images(self, harness: _BackendHarness) -> None:
         backend = harness.build()
         options = ImageGenOptions(size="1024x1024", count=2, quality="standard")
+
+        # Single-image providers (Spec 22 OpenRouter, D-22-19) fail closed on
+        # count>1 with reason="unsupported_option" BEFORE the SDK boundary —
+        # the honest contract for a chat-completions image surface that
+        # returns one image per call. This is the count-coherence assertion
+        # AND the unsupported-option assertion for that provider.
+        if not harness.supports_multi_image:
+            with pytest.raises(ImageProviderError) as info:
+                await backend.generate("a red bicycle", options=options)
+            assert info.value.context.get("reason") == "unsupported_option"
+            assert info.value.context.get("provider") == harness.provider
+            assert info.value.context.get("count") == "2"
+            return
+
         async with _async_cm(harness.happy_path(backend, count=2)):
             result = await backend.generate("a red bicycle", options=options)
         assert len(result.images) == 2
@@ -667,7 +871,8 @@ class TestContractParametrisationSymmetry:
     """Sanity checks that catch parametrisation drift (e.g. a harness removed)."""
 
     def test_both_providers_have_harness(self) -> None:
-        # Mirrors the D-15-1 closed set ``Literal["openai", "fal"]``.
+        # Every provider in the ImageProvider Literal must carry a contract
+        # harness: D-15-1 (openai, fal) + D-20-1 (nvidia) + D-22-8 (openrouter).
         from persona.imagegen.config import ImageProvider
 
         literal_providers: tuple[str, ...] = get_args(ImageProvider)

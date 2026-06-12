@@ -11,6 +11,7 @@ from persona_api.schemas.requests import (
     PostMessageRequest,
     RefinePersonaRequest,
     RespondToRunRequest,
+    SetConsentRequest,
     StartRunRequest,
     UpdatePersonaRequest,
 )
@@ -64,6 +65,7 @@ __all__ = [
     "ToolCallEvent",
     "ToolResultEvent",
     "ToolSummary",
+    "SetConsentRequest",
     "UpdatePersonaRequest",
     "UsageEntry",
 ]

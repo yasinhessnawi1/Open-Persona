@@ -20,6 +20,7 @@ from persona.backends.credentials import (
     ProviderCredentialResolver,
     ProviderCredentials,
     TierResolution,
+    filter_openrouter_free_mode,
     parse_models_list,
     resolve_tier_config,
 )
@@ -349,3 +350,57 @@ class TestResolveTierConfigPrecedence:
         }
         with pytest.raises(LocalProviderInModelsListError):
             resolve_tier_config("frontier", env=env)
+
+
+class TestFilterOpenRouterFreeMode:
+    """Spec 22 D-22-2 (chat) + D-22-20 (image) free-mode MODELS filter."""
+
+    _MIXED: list[tuple[str, str]] = [
+        ("openrouter", "anthropic/claude-3.5-sonnet"),
+        ("openrouter", "meta-llama/llama-3.3-70b-instruct:free"),
+        ("nvidia", "nvidia/llama-3.3-nemotron-super-49b-v1.5"),
+    ]
+
+    def test_paid_mode_is_noop(self) -> None:
+        out = filter_openrouter_free_mode(
+            self._MIXED, mode="paid", tier_name="frontier", keep_free_suffix=True
+        )
+        assert out == self._MIXED
+
+    def test_none_mode_is_noop(self) -> None:
+        out = filter_openrouter_free_mode(
+            self._MIXED, mode=None, tier_name="frontier", keep_free_suffix=True
+        )
+        assert out == self._MIXED
+
+    def test_chat_free_mode_keeps_free_suffix_drops_others(self) -> None:
+        # D-22-2: drop non-:free openrouter, keep :free + non-openrouter.
+        out = filter_openrouter_free_mode(
+            self._MIXED, mode="free", tier_name="frontier", keep_free_suffix=True
+        )
+        assert out == [
+            ("openrouter", "meta-llama/llama-3.3-70b-instruct:free"),
+            ("nvidia", "nvidia/llama-3.3-nemotron-super-49b-v1.5"),
+        ]
+
+    def test_image_free_mode_drops_all_openrouter(self) -> None:
+        # D-22-20: keep_free_suffix=False drops EVERY openrouter entry
+        # (no :free image models exist), keeps non-openrouter.
+        out = filter_openrouter_free_mode(
+            self._MIXED, mode="free", tier_name="imagegen", keep_free_suffix=False
+        )
+        assert out == [("nvidia", "nvidia/llama-3.3-nemotron-super-49b-v1.5")]
+
+    def test_non_openrouter_never_touched(self) -> None:
+        models = [("nvidia", "nvidia/x"), ("openai", "gpt-4o")]
+        out = filter_openrouter_free_mode(
+            models, mode="free", tier_name="frontier", keep_free_suffix=True
+        )
+        assert out == models
+
+    def test_empty_result_when_all_dropped(self) -> None:
+        models = [("openrouter", "anthropic/claude-3.5-sonnet")]
+        out = filter_openrouter_free_mode(
+            models, mode="free", tier_name="frontier", keep_free_suffix=True
+        )
+        assert out == []

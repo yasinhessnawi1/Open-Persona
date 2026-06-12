@@ -412,3 +412,71 @@ class TestPreconstructedBackend:
         )
         reg = TierRegistry({"frontier": cfg})
         assert reg.get("frontier") is sentinel
+
+
+# --------------------------------------------------------------------------- #
+# Spec 22 D-22-2 — OpenRouter free-mode MODELS filter (T14)
+# --------------------------------------------------------------------------- #
+
+
+class TestOpenRouterFreeModeFilter:
+    """``tier_registry_from_env(openrouter_subscription_mode=...)`` applies the
+    D-22-2 free-mode filter: non-:free openrouter entries drop; a fully-emptied
+    tier is left unregistered (fail-soft)."""
+
+    def test_free_mode_drops_non_free_keeps_free_and_other_provider(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        patched_load: list[BackendConfig],
+    ) -> None:
+        _clear_tier_env(monkeypatch)
+        monkeypatch.setenv(
+            "PERSONA_FRONTIER_MODELS",
+            "openrouter/anthropic/claude-3.5-sonnet,"  # non-:free → dropped
+            "openrouter/meta-llama/llama-3.3-70b-instruct:free,"  # :free → kept
+            "nvidia/nemotron-3-super-120b-a12b",  # non-openrouter → kept
+        )
+        monkeypatch.setenv("PERSONA_OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("PERSONA_NVIDIA_API_KEY", "nvapi-test")
+
+        reg = tier_registry_from_env(openrouter_subscription_mode="free")
+        assert isinstance(reg.get("frontier"), MultiModelChatBackend)
+        # Two slots survived the filter — the :free openrouter + nvidia.
+        assert [c.provider for c in patched_load] == ["openrouter", "nvidia"]
+        # The parser splits on the FIRST slash, so the nvidia model carries no
+        # "nvidia/" prefix; the openrouter model keeps its full vendor/model slug.
+        assert [c.model for c in patched_load] == [
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "nemotron-3-super-120b-a12b",
+        ]
+
+    def test_paid_mode_keeps_non_free_openrouter(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        patched_load: list[BackendConfig],
+    ) -> None:
+        _clear_tier_env(monkeypatch)
+        monkeypatch.setenv("PERSONA_MID_MODELS", "openrouter/anthropic/claude-3.5-sonnet")
+        monkeypatch.setenv("PERSONA_OPENROUTER_API_KEY", "sk-or-v1-test")
+
+        reg = tier_registry_from_env(openrouter_subscription_mode="paid")
+        backend = reg.get("mid")
+        assert backend.provider_name == "openrouter"
+        assert backend.model_name == "anthropic/claude-3.5-sonnet"
+
+    def test_free_mode_emptied_tier_is_unregistered(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        patched_load: list[BackendConfig],
+    ) -> None:
+        # MID is all-non-:free openrouter → drops away; FRONTIER keeps the
+        # registry non-empty so the default-for-all fallback does NOT fire.
+        _clear_tier_env(monkeypatch)
+        monkeypatch.setenv("PERSONA_FRONTIER_MODELS", "nvidia/nemotron-3-super-120b-a12b")
+        monkeypatch.setenv("PERSONA_MID_MODELS", "openrouter/anthropic/claude-3.5-sonnet")
+        monkeypatch.setenv("PERSONA_OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("PERSONA_NVIDIA_API_KEY", "nvapi-test")
+
+        reg = tier_registry_from_env(openrouter_subscription_mode="free")
+        assert "frontier" in reg.configured_tier_names
+        assert "mid" not in reg.configured_tier_names  # fail-soft drop

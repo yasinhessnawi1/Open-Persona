@@ -8,6 +8,7 @@ invalid YAML → 422, and authoring (scripted backend) produces a valid persona.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -207,3 +208,53 @@ def test_avatar_url_defaults_null(client: tuple[TestClient, str]) -> None:
     c, uid = client
     pid = c.post("/v1/personas", json={"yaml": _VALID_YAML}, headers=_auth(uid)).json()["id"]
     assert c.get(f"/v1/personas/{pid}", headers=_auth(uid)).json()["avatar_url"] is None
+
+
+def test_consent_defaults_null(client: tuple[TestClient, str]) -> None:
+    """Spec 21 T09: a freshly created persona has NULL consent (never asked)."""
+    c, uid = client
+    pid = c.post("/v1/personas", json={"yaml": _VALID_YAML}, headers=_auth(uid)).json()["id"]
+    body = c.get(f"/v1/personas/{pid}", headers=_auth(uid)).json()
+    assert body["consent_to_auto_dispatch"] is None
+    assert body["consent_updated_at"] is None
+
+
+def test_consent_grant_revoke_decline_round_trip(client: tuple[TestClient, str]) -> None:
+    """Spec 21 T09 (D-21-7/17): grant → revoke (NULL re-arm) → decline (stable)."""
+    c, uid = client
+    pid = c.post("/v1/personas", json={"yaml": _VALID_YAML}, headers=_auth(uid)).json()["id"]
+
+    # grant
+    resp = c.patch(f"/v1/personas/{pid}/consent", json={"granted": True}, headers=_auth(uid))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["consent_to_auto_dispatch"] is True
+    assert resp.json()["consent_updated_at"] is not None
+
+    # revoke → NULL (re-arms the prompt)
+    resp = c.patch(f"/v1/personas/{pid}/consent", json={"granted": None}, headers=_auth(uid))
+    assert resp.status_code == 200
+    assert resp.json()["consent_to_auto_dispatch"] is None
+
+    # explicit decline → False (stable preference)
+    resp = c.patch(f"/v1/personas/{pid}/consent", json={"granted": False}, headers=_auth(uid))
+    assert resp.status_code == 200
+    assert resp.json()["consent_to_auto_dispatch"] is False
+
+
+def test_consent_is_rls_scoped(client: tuple[TestClient, str]) -> None:
+    """Another user cannot set this persona's consent (RLS → 404).
+
+    Requires the non-superuser ``persona_app`` role against APP_DATABASE_URL
+    (RLS bypasses superusers per D-07-5) — skips cleanly otherwise, mirroring
+    the cross-tenant guard in ``test_api_imagegen.py``.
+    """
+    app_url = os.environ.get("APP_DATABASE_URL", "")
+    if "persona_app" not in app_url:
+        pytest.skip(
+            "APP_DATABASE_URL is not using the non-superuser persona_app role;"
+            " RLS isolation cannot be verified (D-07-5)"
+        )
+    c, uid = client
+    pid = c.post("/v1/personas", json={"yaml": _VALID_YAML}, headers=_auth(uid)).json()["id"]
+    resp = c.patch(f"/v1/personas/{pid}/consent", json={"granted": True}, headers=_auth("intruder"))
+    assert resp.status_code == 404

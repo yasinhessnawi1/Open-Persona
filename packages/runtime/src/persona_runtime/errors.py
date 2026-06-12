@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from persona.errors import PersonaError
 
-__all__ = ["TierNotConfiguredError"]
+__all__ = ["InvalidQuestionAnswerError", "TierNotConfiguredError"]
 
 
 class TierNotConfiguredError(PersonaError):
@@ -28,4 +28,17 @@ class TierNotConfiguredError(PersonaError):
     not resolve even after the ``small → mid → frontier`` fallback and the
     single-backend fallback (D-05-3). Carries ``context`` with the requested
     tier and the configured tier names so the operator can see the gap.
+    """
+
+
+class InvalidQuestionAnswerError(PersonaError):
+    """An answer to a proactive question matches neither an option nor free-form.
+
+    Spec 21 (D-21-9). Raised by :func:`persona_runtime.questions.validate_answer`
+    when a submitted answer is not one of the question's predefined option
+    labels and is not an acceptable free-form submission (empty, or free-form
+    disallowed). This is the server-side validation that makes the structured
+    3+1 options meaningful rather than decorative — the boundary rejects junk
+    answers (fail-fast) instead of forwarding them into the loop. ``context``
+    carries the offending answer and the legal option labels.
     """

@@ -26,17 +26,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 __all__ = ["DEFAULT_BASE_URLS", "ImageBackendConfig", "ImageProvider"]
 
 
-ImageProvider = Literal["openai", "fal", "nvidia"]
+ImageProvider = Literal["openai", "fal", "nvidia", "openrouter", "cloudflare"]
 """Closed set of image-generation providers shipped at v0.1 (D-15-1) +
-Spec 20 D-20-1 (NVIDIA Build Catalog).
+Spec 20 D-20-1 (NVIDIA Build Catalog) + Spec 22 D-22-8 (OpenRouter).
 
 OpenAI ``gpt-image-1.x`` is demo-primary (D-15-X-demo-primary-provider);
 Flux 1.1 [pro] via fal.ai is the alternative for cost/style
 differentiation. NVIDIA (Spec 20 T10) routes to either the OpenAI-compat
 shape (Branch B — ``integrate.api.nvidia.com``) for FLUX.2-klein-4b /
 Qwen-Image variants OR the legacy GenAI shape (Branch A —
-``ai.api.nvidia.com``) for SDXL. Extending this Literal goes through
-code review + a new entry in
+``ai.api.nvidia.com``) for SDXL. OpenRouter (Spec 22 T09a/T09b) has NO
+``/images/generations`` route — image-gen rides the chat-completions
+surface via :class:`persona.imagegen.openrouter_image.OpenRouterImageBackend`
+(paid-mode only; zero ``:free`` image models exist — D-22-8). Extending
+this Literal goes through code review + a new entry in
 :func:`persona.imagegen._factory.load_image_backend`.
 """
 
@@ -57,6 +60,17 @@ DEFAULT_BASE_URLS: dict[str, str] = {
     # :class:`persona.imagegen.nvidia_image.NvidiaImageBackend` because
     # it bypasses the openai SDK entirely.
     "nvidia": "https://integrate.api.nvidia.com/v1/",
+    # OpenRouter (Spec 22 D-22-8): image-gen rides chat-completions; the
+    # openai SDK appends /chat/completions so the /v1/ suffix is kept.
+    # Matches the chat-side persona.backends.config.DEFAULT_BASE_URLS entry
+    # and the OpenRouterImageBackend module constant.
+    "openrouter": "https://openrouter.ai/api/v1/",
+    # Cloudflare Workers AI (Spec 25 D-25-11/12): NOT openai-compat. This is
+    # the STATIC account-path PREFIX; the backend appends
+    # ``{account_id}/ai/run/{model}`` (account_id from the separate
+    # ``cloudflare_account_id`` field per D-25-12 — NOT embedded here so
+    # base_url keeps its proxy/mock-override meaning).
+    "cloudflare": "https://api.cloudflare.com/client/v4/accounts/",
 }
 """Per-provider default base URLs. The caller can override via
 :attr:`ImageBackendConfig.base_url` (proxies, self-hosted endpoints, or
@@ -114,6 +128,12 @@ class ImageBackendConfig(BaseSettings):
     base_url: str | None = None
     request_timeout_s: float = Field(default=120.0, gt=0.0)
     fal_safety_tolerance: int = Field(default=2, ge=1, le=6)
+    # Spec 25 D-25-12: Cloudflare account id (32-char hex) — a first-class
+    # provider-specific scalar (mirrors ``fal_safety_tolerance``), NOT
+    # embedded in ``base_url`` (which keeps its proxy/mock-override meaning).
+    # Env: ``PERSONA_IMAGEGEN_CLOUDFLARE_ACCOUNT_ID``. Required only when
+    # ``provider="cloudflare"`` (the backend ctor fail-fasts on empty).
+    cloudflare_account_id: str | None = Field(default=None)
 
     @classmethod
     def from_env(cls, prefix: str = "PERSONA_IMAGEGEN_") -> ImageBackendConfig:

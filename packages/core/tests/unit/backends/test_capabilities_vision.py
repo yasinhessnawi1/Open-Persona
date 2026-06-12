@@ -71,6 +71,8 @@ class TestVisionCapabilityMatrix:
     def test_matrix_keys_are_the_six_openai_compatible_providers(self) -> None:
         # Spec 20 D-20-1: nvidia row added as default vision tier (NVIDIA Open
         # Model License — avoids Llama-3.2-Vision EU carve-out per R-20-5).
+        # Spec 22 D-22-10f: openrouter row added (empty override hook; vision
+        # resolves via catalog metadata / underlying-model inference).
         assert set(_VISION_CAPABILITY) == {
             "anthropic",
             "openai",
@@ -78,6 +80,7 @@ class TestVisionCapabilityMatrix:
             "groq",
             "nvidia",
             "together",
+            "openrouter",
         }
 
 

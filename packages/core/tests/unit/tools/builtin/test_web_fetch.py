@@ -85,8 +85,10 @@ class TestHTMLExtraction:
         assert result.data["original_length"] > 500
 
     @pytest.mark.asyncio
-    async def test_empty_extraction_returns_empty_content(self) -> None:
-        # A page with no extractable content (e.g., JS-only or empty body).
+    async def test_empty_extraction_returns_explanatory_message(self) -> None:
+        # Spec 25 T14: empty extraction now returns an explanatory message
+        # (not a bare "") so the model knows the fetch succeeded but yielded
+        # no readable text.
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
@@ -99,7 +101,9 @@ class TestHTMLExtraction:
             result = await tool_inst.execute(url="https://x.com/empty")
 
         assert result.is_error is False
-        assert result.content == ""
+        assert result.content != ""
+        assert "no extractable readable text" in result.content
+        assert "fetch itself succeeded" in result.content.lower()
         assert result.data is not None
         assert result.data["extracted"] is False
 
@@ -365,3 +369,100 @@ class TestAsyncToolConformance:
         assert tool_inst.name == "web_fetch"
         assert "url" in tool_inst.parameters_schema["properties"]
         assert "max_chars" in tool_inst.parameters_schema["properties"]
+
+
+# Section: descriptive User-Agent (Spec 25 T14 / §2.11 / D-25-X-web-fetch-fix-shape)
+
+
+class TestDescriptiveUserAgent:
+    """Phase-1 root cause: the default ``python-httpx`` UA (and even a spoofed
+    browser UA) is 403'd by Wikimedia's UA policy; a descriptive bot UA gets
+    200. The tool must send a descriptive UA on every request unless the
+    caller supplied a client with its own non-default UA."""
+
+    @pytest.mark.asyncio
+    async def test_sends_descriptive_ua_on_owned_client_path(self) -> None:
+        seen: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["ua"] = request.headers.get("user-agent", "")
+            return httpx.Response(
+                200,
+                text="<html><body><p>ok</p></body></html>",
+                headers={"content-type": "text/html"},
+            )
+
+        # Inject a client whose only UA is the httpx default → tool overrides it.
+        async with _make_mock_http(handler) as client:
+            tool_inst = make_web_fetch_tool(http=client)
+            await tool_inst.execute(url="https://en.wikipedia.org/wiki/Test")
+
+        assert seen["ua"].startswith("OpenPersona/")
+        assert "github.com" in seen["ua"]
+        assert not seen["ua"].startswith("python-httpx")
+
+    @pytest.mark.asyncio
+    async def test_simulated_403_on_default_ua_then_200_on_descriptive(self) -> None:
+        # A handler that mimics Wikimedia: 403 for default/empty UA, 200 for ours.
+        def handler(request: httpx.Request) -> httpx.Response:
+            ua = request.headers.get("user-agent", "")
+            if ua.startswith("OpenPersona/"):
+                return httpx.Response(
+                    200,
+                    text="<html><body><p>article</p></body></html>",
+                    headers={"content-type": "text/html"},
+                )
+            return httpx.Response(403, text="forbidden")
+
+        async with _make_mock_http(handler) as client:
+            tool_inst = make_web_fetch_tool(http=client)
+            result = await tool_inst.execute(url="https://en.wikipedia.org/wiki/Test")
+
+        assert result.is_error is False
+        assert "article" in result.content
+
+    @pytest.mark.asyncio
+    async def test_respects_caller_custom_ua(self) -> None:
+        seen: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["ua"] = request.headers.get("user-agent", "")
+            return httpx.Response(
+                200,
+                text="<html><body><p>ok</p></body></html>",
+                headers={"content-type": "text/html"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        custom = httpx.AsyncClient(
+            transport=transport, timeout=httpx.Timeout(5.0), headers={"User-Agent": "MyCrawler/9.9"}
+        )
+        async with custom as client:
+            tool_inst = make_web_fetch_tool(http=client)
+            await tool_inst.execute(url="https://example.com/x")
+
+        assert seen["ua"] == "MyCrawler/9.9"
+
+
+# Section: live web_fetch — Phase-1 representative URLs (external; opt-in)
+
+
+@pytest.mark.external
+class TestWebFetchLive:
+    """Spec 25 acceptance criterion 7 — real fetches against the Phase-1
+    representative URLs. Excluded from the default run (``-m external``)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://en.wikipedia.org/wiki/Retrieval-augmented_generation",
+            "https://docs.python.org/3/library/asyncio.html",
+            "https://www.bbc.com/news/technology",
+        ],
+    )
+    async def test_live_fetch_succeeds(self, url: str) -> None:
+        tool_inst = make_web_fetch_tool()
+        result = await tool_inst.execute(url=url, max_chars=500)
+        assert result.is_error is False, f"{url} -> {result.content[:200]}"
+        assert result.content

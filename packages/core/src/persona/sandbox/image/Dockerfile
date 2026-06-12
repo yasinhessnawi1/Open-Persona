@@ -1,13 +1,17 @@
-# persona-sandbox:0.1.0 — R-12-3 hardened sandbox image (spec 12 T06)
+# persona-sandbox:0.1.0 — D-25-1 / R-25-2 full sci-Python sandbox image
+# (spec 25 T07; supersedes the spec-12 T06 R-12-3 eight-package image).
 #
 # Multi-stage build:
-#   Stage 1 (builder) — installs the pinned data/document stack into an
-#                       isolated venv using ``--require-hashes`` (PyPA's
+#   Stage 1 (builder) — installs the pinned data/document/science stack into
+#                       an isolated venv using ``--require-hashes`` (PyPA's
 #                       strongest pip-level supply-chain guarantee).
 #   Stage 2 (runtime) — copies the venv into a minimal image with the
 #                       runtime libs only (no compilers, no apt cache).
 #
-# Estimated compressed image size: ~290–340 MB (R-12-3 measured target ≤ 500 MB).
+# Estimated compressed image size: ~415–485 MB (D-25-1 estimate; R-12-3 hard
+# cap ≤ 500 MB). BUILD-GATE (D-25-1, locked): after building, measure the
+# compressed size; if it exceeds 500 MB, cut in order: (1) weasyprint + its
+# six pango/cairo apt libs (~−40 MB), then (2) hypothesis + pytest (~−6 MB).
 #
 # Build:
 #   docker build -t persona-sandbox:0.1.0 packages/core/src/persona/sandbox/image/
@@ -24,10 +28,13 @@ FROM python:3.11-slim-bookworm AS builder
 
 # Build-time deps for any wheels that need compilation (most have manylinux
 # wheels; this is a safety net for arm64 where some still source-build).
+# ``libffi-dev`` covers any source-build of weasyprint's cffi bindings
+# (the runtime stage ships ``libffi8``).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libxml2-dev libxslt1-dev \
         zlib1g-dev libjpeg-dev libfreetype6-dev \
+        libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/opt/venv \
@@ -56,9 +63,29 @@ RUN python -m compileall -q "$VIRTUAL_ENV"
 FROM python:3.11-slim-bookworm AS runtime
 
 # Runtime libs only — no compilers, no apt cache.
+#   - libxml2/libxslt1.1, libjpeg/libfreetype  → lxml, Pillow, matplotlib
+#   - graphviz                                  → the ``dot`` binary the
+#                                                 ``graphviz`` Python wrapper
+#                                                 shells out to (D-25-1)
+#   - libpango*/libcairo2/libgdk-pixbuf/libffi8/shared-mime-info
+#                                               → weasyprint's cffi-loaded
+#                                                 rendering stack (D-25-1).
+#                                                 NOTE (R-25-2 OQ-R2-2):
+#                                                 weasyprint's CVE class is
+#                                                 SSRF/file-disclosure — safe
+#                                                 ONLY because the sandbox
+#                                                 defaults to network=none +
+#                                                 uid 65534. The invariant:
+#                                                 weasyprint stays only while
+#                                                 network-disabled stays the
+#                                                 default.
+#   - fonts-dejavu-core                         → matplotlib + weasyprint glyphs
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libxml2 libxslt1.1 \
         libjpeg62-turbo libfreetype6 \
+        graphviz \
+        libpango-1.0-0 libpangocairo-1.0-0 libcairo2 \
+        libgdk-pixbuf-2.0-0 libffi8 shared-mime-info \
         fonts-dejavu-core \
         tini \
     && rm -rf /var/lib/apt/lists/* \
@@ -82,13 +109,13 @@ ENV VIRTUAL_ENV=/opt/venv \
 USER 65534:65534
 WORKDIR /workspace/out
 
-# OCI labels for provenance — Open Persona Spec 12.
+# OCI labels for provenance — Open Persona Spec 25 (full sci-Python stack).
 LABEL org.opencontainers.image.title="persona-sandbox" \
       org.opencontainers.image.version="0.1.0" \
-      org.opencontainers.image.created="2026-06-05T00:00:00Z" \
+      org.opencontainers.image.created="2026-06-11T00:00:00Z" \
       org.opencontainers.image.source="https://github.com/<org>/open-persona" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.description="Hardened sandbox image for spec-12 code execution (Specs 16, 17 dependents)."
+      org.opencontainers.image.description="Hardened sandbox image for spec-12 code execution; full sci-Python stack (D-25-1; Specs 16, 17 dependents)."
 
 # HEALTHCHECK NONE — the sandbox is ephemeral; a healthcheck would spawn
 # a probe process inside every container, skewing the R-12-2 resource caps.
@@ -103,4 +130,10 @@ HEALTHCHECK NONE
 # the image. The default CMD below runs the smoke test for direct
 # ``docker run persona-sandbox:0.1.0`` invocations (no args from the SDK
 # override).
-CMD ["python", "-c", "import pandas, numpy, matplotlib, docx, pptx, openpyxl, reportlab, ipykernel; print('persona-sandbox ready')"]
+# Smoke-import CMD covers every one of the D-25-1 top-level packages by its
+# correct *import* name (bs4, docx, pptx, PIL, sklearn, yaml differ from their
+# distribution names), asserts the graphviz ``dot`` binary is on PATH, and
+# imports weasyprint to exercise the pango/cairo cffi load. A broken pin,
+# missing transitive, or missing apt lib fails ``docker run`` cleanly before
+# the image is tagged for production.
+CMD ["python", "-c", "import shutil; assert shutil.which('dot'), 'graphviz dot binary missing'; import numpy, scipy, pandas, sympy, statsmodels, sklearn, networkx, matplotlib, seaborn, graphviz, openpyxl, docx, pptx, tabulate, reportlab, pypdf, weasyprint, markdown, pygments, jinja2, bs4, lxml, PIL, yaml, jsonschema, httpx, requests, rich, pytest, hypothesis, ipykernel; print('persona-sandbox ready')"]

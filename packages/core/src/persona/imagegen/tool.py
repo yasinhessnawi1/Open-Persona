@@ -94,11 +94,17 @@ _LOG = get_logger("imagegen.tool")
 # system prompt is the right place for additional usage guidance; the
 # persona's ``visual_style`` is merged in BEFORE the backend call so the
 # model does not need to be told to invoke a style explicitly.
+# Spec 25 T11b (§2.9): affirmative-capability framing. Leads with "YOU CAN"
+# so the model does not refuse an image request despite the tool being wired
+# (the §2.9 failure: a fluent "I can't generate images" while generate_image
+# was available). Hedge language removed.
 _DEFAULT_DESCRIPTION = (
-    "Generate an image from a text description. Returns a generated image "
-    "stored in the persona's workspace. Use for illustrations, diagrams, "
-    "and visual aids that complement the conversation. The persona's "
-    "visual style (if configured) is applied automatically."
+    "YOU CAN generate images. Use this tool for ANY image request — "
+    "illustrations, diagrams, photos, visual aids, or 'just make an image'. "
+    "Do not say you cannot generate images: call this tool. It takes a text "
+    "description and returns a generated image stored in the persona's "
+    "workspace. The persona's visual style (if configured) is applied "
+    "automatically."
 )
 
 

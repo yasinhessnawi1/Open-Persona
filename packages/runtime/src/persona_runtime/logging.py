@@ -19,6 +19,7 @@ pricing pages before any billing use.**
 
 from __future__ import annotations
 
+import re
 import threading
 from datetime import datetime  # noqa: TC003 — Pydantic needs runtime access for TurnLog.timestamp
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -38,6 +39,8 @@ __all__ = [
     "MemoryTurnLogWriter",
     "TurnLog",
     "TurnLogWriter",
+    "cost_basis_for",
+    "detect_tool_refusals",
     "estimate_cost_cents",
 ]
 
@@ -116,6 +119,22 @@ class TurnLog(BaseModel):
     by omitting them. The :meth:`_validate_fallback_invariants` after-
     validator enforces (a) length-match between count + reasons + providers
     and (b) ``fallback_engaged == (tier_fallback_count > 0)``.
+
+    Spec 25 (T11; §2.9, D-18-1 NOT reopened) extends the shape additively
+    with tool-refusal observability:
+
+    * :attr:`tool_refusal_detected` — the list of tool names the model
+      refused to use that WERE available for the turn. Populated by
+      :func:`detect_tool_refusals` (conservative, low-false-positive). An
+      empty list means no refusal-of-available-tool pattern was detected.
+      Operators aggregate this over the JSONL stream to surface per-model /
+      per-tool refusal rates and drive model-selection guidance
+      (spec §2.9 MAINTENANCE.md row). This is OBSERVABILITY ONLY — no
+      auto-retry or system-message injection is performed here (that is the
+      separate risky T21 surface).
+
+    The field is OPTIONAL and defaults to ``[]``; pre-Spec-25 callers stay
+    green by omitting it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -151,6 +170,34 @@ class TurnLog(BaseModel):
     tier_fallback_reasons: list[str] = Field(default_factory=list)
     tier_fallback_providers: list[str] = Field(default_factory=list)
     fallback_engaged: bool = False
+    # Spec 25 T11 (§2.9; D-18-1 NOT reopened) — tool-refusal observability.
+    # Tool names the model refused to use that WERE available this turn,
+    # detected conservatively by :func:`detect_tool_refusals`. Observability
+    # only: NO auto-retry / system-message injection here (that is T21).
+    tool_refusal_detected: list[str] = Field(default_factory=list)
+    # Spec 25 T13 (§2.6 / D-25-7; D-13-3 reframed estimate+flag, NOT reopened).
+    # ``cost_basis`` records how ``cost_cents`` was derived: "published"
+    # (provider-listed rate) or "verify-at-deploy" (best-estimate shadow price,
+    # e.g. NVIDIA — re-anchor against the actual host before billing use).
+    # Populated by the turn loop from :func:`cost_basis_for`.
+    cost_basis: str = Field(default="published")
+    # Spec 25 T12 (§2.1 / D-25-5/6; D-18-1 NOT reopened) — chronic-fallback
+    # alert. ``True`` on every turn while the runtime turn-loop's rolling
+    # 10-turn fallback-rate window is in the ALERTING state (>30% = ≥4/10).
+    # The window lives in the turn loop (D-25-X-t12-window-location), not here.
+    fallback_rate_alert: bool = False
+    # Spec 25 T21 (§2.9 RISKY half; default-OFF behind
+    # ``PERSONA_REFUSAL_RETRY_ENABLED``) — ``True`` when the turn loop detected
+    # a tool-refusal on an available tool and injected ONE corrective
+    # system message + re-generated. Always ``False`` when the flag is off
+    # (the observability-only path, T11/T12).
+    refusal_retry_engaged: bool = False
+    # Spec 25 T22 (§2.4; D-25-4; D-18-1 NOT reopened) — ``True`` when any
+    # ``code_execution`` call this turn auto-recreated a killed sandbox session
+    # (the tool wrapper's retry-once recovery). The wrapper surfaces it per-call
+    # in ``ToolResult.metadata["sandbox_session_recreated"]``; the turn loop ORs
+    # it across the turn's tool dispatches into this field.
+    sandbox_session_recreated: bool = False
 
     @field_validator("timestamp", mode="after")
     @classmethod
@@ -237,14 +284,62 @@ class MemoryTurnLogWriter:
 # Hand-maintained estimate (S05-3 / D-05-10): (provider, model) ->
 # (prompt_cents_per_1k_tokens, completion_cents_per_1k_tokens).
 # v0.1 PLACEHOLDERS — verify against provider pricing before any billing use.
+#
+# Spec 25 T13 (§2.6 / D-25-7): NVIDIA entries added as SHADOW prices — NVIDIA
+# publishes no first-party per-token rate, so these are the cheapest credible
+# third-party-host comparable (cents/1k = USD-per-Mtok ÷ 10; see
+# decisions.md §R-25-3). They carry ``cost_basis="verify-at-deploy"`` in
+# :data:`_COST_BASIS`; all others are provider-listed ("published").
 _PRICE_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("anthropic", "claude-sonnet-4-6"): (0.30, 1.50),
     ("anthropic", "claude-haiku-4-5"): (0.08, 0.40),
     ("deepseek", "deepseek-chat"): (0.014, 0.028),
     ("groq", "llama-3.1-8b-instant"): (0.005, 0.008),
+    # NVIDIA shadow-price estimates (D-25-7 / R-25-3) — verify-at-deploy.
+    ("nvidia", "llama-3.3-nemotron-super-49b-v1.5"): (0.040, 0.040),
+    ("nvidia", "nemotron-3-super-120b-a12b"): (0.060, 0.120),
+    ("nvidia", "nemotron-3-nano-omni-30b-a3b-reasoning"): (0.020, 0.040),
+    # NOTE: NVIDIA vision model deferred to its T13 model-ID lock (R-25-3
+    # OQ-R3-5); image-gen omitted entirely (per-image, not per-token —
+    # D-25-X-per-image-cost-model-deferred).
+}
+
+# Spec 25 T13 (D-25-7): per-entry cost-derivation flag. Only non-"published"
+# entries are listed; :func:`cost_basis_for` defaults to "published".
+# ``Literal`` kept at two values per D-25-X-cost-basis-two-values (re-openable
+# for a 3rd "shadow-price" value if Spec 23 needs it).
+_COST_BASIS: dict[tuple[str, str], str] = {
+    ("nvidia", "llama-3.3-nemotron-super-49b-v1.5"): "verify-at-deploy",
+    ("nvidia", "nemotron-3-super-120b-a12b"): "verify-at-deploy",
+    ("nvidia", "nemotron-3-nano-omni-30b-a3b-reasoning"): "verify-at-deploy",
 }
 
 _warned_unknown: set[tuple[str, str]] = set()
+
+
+def _normalize_model_key(provider: str, model: str) -> str:
+    """Strip a leading ``"{provider}/"`` catalog prefix from ``model``.
+
+    Spec 25 D-25-X-nvidia-model-name-normalization (§2.6 silent-miss root
+    cause): NVIDIA catalog IDs arrive prefixed (``"nvidia/llama-3.3-..."``)
+    while :data:`_PRICE_TABLE` keys are bare (``"llama-3.3-..."``). Without
+    this strip every NVIDIA entry silently misses → the 0.0-cost path. Only
+    the provider-matching prefix is stripped, so legitimately-slashed names
+    (e.g. ``"stabilityai/..."``) for a different provider are untouched.
+    """
+    prefix = f"{provider}/"
+    return model[len(prefix) :] if model.startswith(prefix) else model
+
+
+def cost_basis_for(provider: str, model: str) -> str:
+    """Return the ``cost_basis`` flag for a ``(provider, model)`` pair.
+
+    ``"verify-at-deploy"`` for shadow-price entries (D-25-7), else
+    ``"published"``. Applies the same catalog-prefix normalization as
+    :func:`estimate_cost_cents` so a prefixed NVIDIA model resolves.
+    """
+    key = (provider, _normalize_model_key(provider, model))
+    return _COST_BASIS.get(key, "published")
 
 
 def estimate_cost_cents(
@@ -257,9 +352,12 @@ def estimate_cost_cents(
 
     Returns ``0.0`` for an unknown ``(provider, model)`` pair and logs a warning
     once per unknown pair. This is an estimate for telemetry, not a billing
-    record.
+    record. NVIDIA catalog-prefixed model names are normalized first
+    (D-25-X-nvidia-model-name-normalization) so prefixed IDs resolve to the
+    bare-keyed table entries instead of silently estimating 0 (§2.6).
     """
-    key = (provider, model)
+    normalized = _normalize_model_key(provider, model)
+    key = (provider, normalized)
     prices = _PRICE_TABLE.get(key)
     if prices is None:
         if key not in _warned_unknown:
@@ -272,3 +370,105 @@ def estimate_cost_cents(
         return 0.0
     prompt_price, completion_price = prices
     return (prompt_tokens / 1000.0) * prompt_price + (completion_tokens / 1000.0) * completion_price
+
+
+# Spec 25 T11 (§2.9) — tool-refusal detection patterns.
+#
+# Each entry maps ONE builtin tool name to the regexes that signal the model
+# refused that tool's capability. A refusal is only counted when the tool is
+# ALSO in ``available_tools`` (the model would be *accurate* refusing an
+# unavailable capability — §2.9 distinguishes accurate self-report from a
+# training-time refusal-override of a wired tool).
+#
+# Discipline: CONSERVATIVE / low-false-positive. Every pattern anchors the
+# refusal verb ("I can't / I cannot / I'm unable to") DIRECTLY to the
+# capability verb+object so that affirmative sentences ("I can generate
+# images") and unrelated text never match. Patterns are pre-compiled once,
+# case-insensitive (``re.IGNORECASE``). Contractions allow a straight or
+# curly apostrophe. Tool names are the canonical builtin names
+# (``generate_image`` / ``code_execution`` / ``web_search`` / ``web_fetch``).
+#
+# This is the OBSERVABILITY half of §2.9 only — detection feeds the
+# ``TurnLog.tool_refusal_detected`` field. The affirmative tool-description
+# rewrites and any in-flight correction (auto-retry / system-message
+# injection) are separate, riskier surfaces (T09/T10/T21).
+
+# Refusal lead-in: "I can't" / "I cannot" / "I am/I'm unable to" / "can not".
+# Trailing ``.{0,40}?`` is a short non-greedy bridge so small filler words
+# ("really", "currently", "for you") between the verb and the capability
+# object still match without spanning unrelated sentences.
+_REFUSAL_LEAD = (
+    r"i\s*(?:can['’]?t|can\s?not|cannot|am\s+unable\s+to|['’]m\s+unable\s+to)"
+    r"[^.?!]{0,40}?"
+)
+
+# Capability-object fragments (each anchored to ``_REFUSAL_LEAD``). Verbs kept
+# tight to avoid catching affirmative ("I can generate images") or unrelated
+# prose. Defined as separate constants so each line stays readable + short.
+_IMG_OBJ = (
+    r"(?:generate|create|make|produce|draw)\s+"
+    r"(?:an?\s+)?(?:images?|pictures?|photos?|illustrations?|drawings?)"
+)
+_FETCH_OBJ = (
+    r"(?:browse|access|fetch|retrieve|open)\s+(?:the\s+)?"
+    r"(?:web|internet|live\s+websites?|web\s?sites?|urls?|pages?)"
+)
+_SEARCH_OBJ = (
+    r"(?:browse|access|search)\s+(?:the\s+)?"
+    r"(?:web|internet|live\s+websites?|web\s?sites?|online)"
+)
+_SEARCH_OBJ_ALT = r"search\s+(?:the\s+)?(?:web|internet|online|for\s+(?:current|live|real-time))"
+_CODE_OBJ = r"(?:run|execute)\s+(?:code|scripts?|programs?|python)"
+
+
+def _refusal(capability_object: str) -> re.Pattern[str]:
+    """Compile a case-insensitive refusal pattern for ``capability_object``."""
+    return re.compile(_REFUSAL_LEAD + capability_object, re.IGNORECASE)
+
+
+_TOOL_REFUSAL_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "generate_image": (_refusal(_IMG_OBJ),),
+    "web_fetch": (_refusal(_FETCH_OBJ),),
+    "web_search": (_refusal(_SEARCH_OBJ), _refusal(_SEARCH_OBJ_ALT)),
+    "code_execution": (_refusal(_CODE_OBJ),),
+}
+
+
+def detect_tool_refusals(model_output: str, available_tools: list[str]) -> list[str]:
+    """Flag available tools the model's text refused to use (Spec 25 §2.9).
+
+    Pure function. Scans ``model_output`` for conservative refusal patterns
+    ("I can't / I cannot / I'm unable to <capability>") and returns the
+    canonical names of tools whose capability was refused AND that are present
+    in ``available_tools``. A refusal for a capability whose tool is *not*
+    available yields nothing (the model is reporting accurately). Non-refusal
+    text yields the empty list.
+
+    The result is de-duplicated and ordered by ``available_tools`` so the
+    output is deterministic for a given allow-list. No retry or correction is
+    performed — this is observability only (the corrective half is T21).
+
+    Args:
+        model_output: The model's natural-language turn output (assistant
+            text). May be empty.
+        available_tools: Canonical tool names available to the model this turn
+            (the persona's effective allow-list).
+
+    Returns:
+        Canonical tool names the model refused despite their availability,
+        de-duplicated and ordered by ``available_tools``. Empty when no
+        available-tool refusal pattern matched.
+    """
+    if not model_output or not available_tools:
+        return []
+    available = set(available_tools)
+    detected: list[str] = []
+    for tool_name in available_tools:
+        if tool_name in detected:
+            continue
+        patterns = _TOOL_REFUSAL_PATTERNS.get(tool_name)
+        if patterns is None or tool_name not in available:
+            continue
+        if any(pattern.search(model_output) for pattern in patterns):
+            detected.append(tool_name)
+    return detected

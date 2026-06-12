@@ -19,16 +19,57 @@ from persona.errors import PersonaError, PersonaNotFoundError, SchemaVersionMism
 
 __all__ = [
     "SUPPORTED_SCHEMA_VERSIONS",
+    "CatalogueVoice",
     "EmbeddingConfig",
     "EpisodicEntry",
     "Persona",
     "PersonaIdentity",
     "RoutingConfig",
     "SelfFact",
+    "VoiceSpec",
     "WorldviewClaim",
 ]
 
 SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1.0"})
+
+
+class CatalogueVoice(BaseModel):
+    """A persona's voice, selected from a TTS provider's catalogue (Spec V3).
+
+    The v1 member of the voice-resolution indirection
+    (D-V3-X-cloning-seam-shape): a persona's ``voice`` resolves at synthesis
+    time (in ``persona-voice``) to a provider voice. ``kind`` is the
+    discriminator a v0.2 cloned-voice member extends the :data:`VoiceSpec`
+    union by — the ``voice`` field annotation never changes, only the alias,
+    so cloning slots in additively without re-architecting. ``consent`` is
+    reserved (always ``None`` in v1); the cloning-consent record lands here
+    in v0.2. Cloning itself is OUT of v1 (biometric-adjacent serious-harm
+    surface requiring its own consent + safety design).
+
+    Attributes:
+        kind: Discriminator. Always ``"catalogue"`` in v1 (the default, so a
+            YAML mapping may omit it).
+        provider: The TTS provider whose catalogue this voice belongs to
+            (e.g. ``"cartesia"``). Lowercase; validated against the
+            configured backend at resolution time.
+        voice_id: The provider-scoped voice handle (a catalogue voice id).
+        consent: Reserved cloning-consent hook; always ``None`` at v1.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["catalogue"] = "catalogue"
+    provider: str = Field(min_length=1)
+    voice_id: str = Field(min_length=1)
+    consent: None = None
+
+
+# v1: a single-member alias. v0.2 promotes this to a discriminated union —
+# ``Annotated[CatalogueVoice | ClonedVoice, Field(discriminator="kind")]`` —
+# WITHOUT changing the ``PersonaIdentity.voice`` annotation (that is the whole
+# point of the seam). Until then a plain alias avoids Pydantic's
+# single-member-union edge case.
+VoiceSpec = CatalogueVoice
 
 
 class PersonaIdentity(BaseModel):
@@ -47,6 +88,14 @@ class PersonaIdentity(BaseModel):
             D-01-12 / D-13-X-now — existing personas without the field are
             byte-for-byte unaffected. Merges at generation time, NOT at
             prompt-build time; the runtime prompt builder does not read it.
+        voice: Optional per-persona voice — the audible analogue of
+            ``visual_style`` (Spec V3, the F1 visual-identity sibling).
+            A :class:`CatalogueVoice` resolved at synthesis time by
+            ``persona-voice``; additive per D-01-12 — existing personas
+            without it are byte-for-byte unaffected (criterion 4). May be
+            authored in YAML as a mapping (``{provider: cartesia,
+            voice_id: ...}``) or the shorthand string ``"cartesia:<id>"``,
+            normalised at load. The runtime prompt builder does not read it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -57,6 +106,24 @@ class PersonaIdentity(BaseModel):
     language_default: str = "en"
     constraints: list[str] = Field(default_factory=list)
     visual_style: str | None = None
+    voice: VoiceSpec | None = None
+
+    @field_validator("voice", mode="before")
+    @classmethod
+    def _normalise_voice(cls, value: object) -> object:
+        """Accept the ``"provider:voice_id"`` shorthand for ``voice``.
+
+        Parses the string form at the boundary into a
+        :class:`CatalogueVoice` mapping (the ``kind`` defaults to
+        ``"catalogue"``); mappings and instances pass through unchanged.
+        Never passes a raw string inward (D-V3-X-voice-schema-shape).
+        """
+        if isinstance(value, str):
+            provider, sep, voice_id = value.partition(":")
+            if not sep or not provider.strip() or not voice_id.strip():
+                raise ValueError(f"voice string must be 'provider:voice_id', got {value!r}")
+            return {"provider": provider.strip(), "voice_id": voice_id.strip()}
+        return value
 
 
 class SelfFact(BaseModel):
@@ -153,6 +220,17 @@ class Persona(BaseModel):
         skills: List of declared skill pack names (spec 04 binds).
         routing: Per-persona router overrides.
         embedding: Embedder identity.
+        autonomy: Author-time default for the proactive-autonomy preference
+            (spec 21 §2, D-21-1). One of ``"cautious"`` (default — asks
+            frequently, confirms more), ``"balanced"``, or ``"decisive"``
+            (asks rarely, proceeds on assumptions). Additive per the D-01-12 /
+            ``visual_style`` precedent: personas authored before spec 21 omit
+            the field and load as ``"cautious"`` byte-for-byte unaffected.
+            This is the *author-time default only* — the runtime-effective
+            value is resolved at load time by overlaying any ``persona_self``
+            self_facts head version under ``logical_id="autonomy"`` (D-21-8 /
+            D-21-11). Autonomy is NOT identity: it is mutable at runtime via
+            the versioned-append-only learner, unlike :class:`PersonaIdentity`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -171,6 +249,7 @@ class Persona(BaseModel):
     skills: list[str] = Field(default_factory=list)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    autonomy: Literal["cautious", "balanced", "decisive"] = "cautious"
 
     @field_validator("schema_version", mode="after")
     @classmethod

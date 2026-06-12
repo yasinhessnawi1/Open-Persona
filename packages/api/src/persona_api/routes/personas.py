@@ -23,12 +23,14 @@ from persona_api.schemas import (
     PersonaDetail,
     PersonaSummary,
     RefinePersonaRequest,
+    SetConsentRequest,
     UpdatePersonaRequest,
 )
 from persona_api.services import (
     audit_service,
     authoring_service,
     catalog_service,
+    consent_service,
     credits_service,
     persona_service,
 )
@@ -81,12 +83,15 @@ def _persona_detail(
     tier_registry: TierRegistry | None,
 ) -> PersonaDetail:
     avatar = row.get("avatar_url")
+    consent = row.get("consent_to_auto_dispatch")
     return PersonaDetail(
         id=str(row["id"]),
         yaml=str(row["yaml"]),
         schema_version=str(row["schema_version"]),
         avatar_url=str(avatar) if avatar is not None else None,
         capabilities=_capabilities_from_registry(tier_registry),
+        consent_to_auto_dispatch=bool(consent) if consent is not None else None,
+        consent_updated_at=row.get("consent_updated_at"),  # type: ignore[arg-type]
         created_at=row["created_at"],  # type: ignore[arg-type]
         updated_at=row["updated_at"],  # type: ignore[arg-type]
     )
@@ -263,6 +268,42 @@ async def update_persona(
         engine=request.app.state.rls_engine,
         user_id=user.id,
         action="persona.update",
+        target=persona_id,
+    )
+    row = persona_service.get_persona(
+        rls_engine=request.app.state.rls_engine, persona_id=persona_id
+    )
+    return _persona_detail(row, tier_registry=_tier_registry(request))
+
+
+@router.patch("/{persona_id}/consent", response_model=PersonaDetail)
+async def set_consent(
+    persona_id: str,
+    body: SetConsentRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonaDetail:
+    """Set the persona's auto-dispatch consent (grant / decline / revoke).
+
+    Spec 21 T09 (D-21-2/7/8): only this ``user``-sourced settings write may
+    change consent; ``persona_self`` never can. Each transition stamps
+    ``consent_updated_at`` and emits an ``AuditEvent`` naming the transition.
+    """
+    from datetime import UTC, datetime
+
+    consent_service.set_consent(
+        rls_engine=request.app.state.rls_engine,
+        persona_id=persona_id,
+        granted=body.granted,
+        now=datetime.now(UTC),
+    )
+    transition = (
+        "grant" if body.granted is True else "decline" if body.granted is False else "revoke"
+    )
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action=f"persona.consent.{transition}",
         target=persona_id,
     )
     row = persona_service.get_persona(

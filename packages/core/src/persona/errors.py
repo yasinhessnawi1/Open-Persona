@@ -180,3 +180,27 @@ class SkillManifestError(PersonaError):
     envelope (D-04-4) catches this exception and logs a structured warning;
     the persona keeps loading with the offending skill omitted.
     """
+
+
+class InvalidAutonomyLevelError(PersonaError):
+    """Raised when an autonomy value is not one of the three supported levels.
+
+    Spec 21 (D-21-1 / D-21-11). Surfaces from
+    :func:`persona.autonomy.resolve_autonomy` when a persona_self autonomy
+    chain head stores a value outside ``{"cautious", "balanced", "decisive"}``
+    (a corrupted or hand-edited chain). Fail-loud rather than silently falling
+    back to the YAML default — a malformed learned-autonomy value is a data
+    integrity problem the caller must see. ``context`` carries the offending
+    value, the ``logical_id``, and the ``persona_id``.
+    """
+
+
+class AutonomyCooldownError(PersonaError):
+    """Raised when a ``persona_self`` autonomy update is attempted within cooldown.
+
+    Spec 21 (D-21-4). The learner rate-limits self-revision to at most once
+    per session and once per UTC day; a second attempt inside either window
+    raises this rather than appending a churn version. ``context`` carries the
+    ``persona_id``, the cooldown window that tripped (``session`` | ``day``),
+    and the head version's ``written_at`` timestamp.
+    """

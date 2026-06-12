@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Final, Literal, get_args
+from typing import TYPE_CHECKING, Final, Literal, TypeVar, get_args
 
 from pydantic import SecretStr
 
@@ -36,13 +36,19 @@ from persona.backends.errors import (
 )
 from persona.logging import get_logger
 
+if TYPE_CHECKING:
+    from persona.backends.openrouter_catalog import OpenRouterSubscriptionMode
+
 __all__ = [
     "ProviderCredentials",
     "ProviderCredentialResolver",
     "TierResolution",
+    "filter_openrouter_free_mode",
     "parse_models_list",
     "resolve_tier_config",
 ]
+
+_ProviderStr = TypeVar("_ProviderStr", bound=str)
 
 _LOG = get_logger("persona.backends.credentials")
 
@@ -280,6 +286,63 @@ def parse_models_list(tier_name: str, raw_value: str) -> list[tuple[Provider, st
         # Narrow str → Provider — the membership check above guarantees this.
         results.append((provider_token, model_token))  # type: ignore[arg-type]
     return results
+
+
+def filter_openrouter_free_mode(
+    models: list[tuple[_ProviderStr, str]],
+    *,
+    mode: OpenRouterSubscriptionMode | None,
+    tier_name: str,
+    keep_free_suffix: bool,
+) -> list[tuple[_ProviderStr, str]]:
+    """Drop OpenRouter MODELS entries unusable under free-mode (D-22-2 / D-22-20).
+
+    Pure, shared by the chat tier registry (``persona_runtime.tier``) and the
+    image-gen factory (:func:`persona.imagegen._factory.load_image_backend_from_env`).
+    The ``mode`` value is resolved by the runtime subscription resolver
+    (Spec 22 T13) and injected as a plain string — keeping this filter in
+    ``persona-core`` without a forward dependency on ``persona-runtime``.
+
+    Two postures, selected by ``keep_free_suffix``:
+
+    * **Chat (D-22-2, ``keep_free_suffix=True``):** in free-mode, drop only
+      ``openrouter/<model>`` entries that LACK the ``:free`` suffix (free-tier
+      users haven't paid for paid models). ``:free`` entries are kept.
+    * **Image (D-22-20, ``keep_free_suffix=False``):** in free-mode, drop ALL
+      ``openrouter/<model>`` entries — zero ``:free`` image-output models exist,
+      so any OpenRouter image entry is unusable; fail-fast over a call-time 402.
+
+    Non-OpenRouter entries are never touched, and ``mode != "free"`` (paid or
+    ``None`` = mode unknown/probe-skipped) is a pass-through no-op (fail-soft:
+    each dropped entry emits a WARN; the system continues).
+
+    Args:
+        models: Parsed ``(provider, model)`` slots, in chain order.
+        mode: Resolved OpenRouter subscription mode, or ``None`` (no filtering).
+        tier_name: Tier label for the WARN log (e.g. ``frontier`` / ``imagegen``).
+        keep_free_suffix: ``True`` keeps ``:free`` entries (chat); ``False``
+            drops every OpenRouter entry (image).
+
+    Returns:
+        The kept slots, preserving order.
+    """
+    if mode != "free":
+        return models
+    kept: list[tuple[_ProviderStr, str]] = []
+    for provider, model in models:
+        is_openrouter = provider == "openrouter"
+        is_usable_free = keep_free_suffix and model.endswith(":free")
+        if is_openrouter and not is_usable_free:
+            _LOG.warning(
+                "dropping OpenRouter entry unusable in free-mode "
+                "tier={tier} model={model} keep_free_suffix={keep}",
+                tier=tier_name,
+                model=model,
+                keep=keep_free_suffix,
+            )
+            continue
+        kept.append((provider, model))
+    return kept
 
 
 _TRIPLET_SUFFIXES: Final[tuple[Literal["PROVIDER", "MODEL", "API_KEY"], ...]] = (

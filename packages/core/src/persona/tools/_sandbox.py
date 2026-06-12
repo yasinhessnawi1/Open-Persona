@@ -35,6 +35,37 @@ __all__ = ["resolve_sandbox_path"]
 
 _MAX_PATH_LENGTH = 4096
 
+# Consistent recovery hint appended to every SandboxViolationError message
+# (T10 / D-25-5 / spec §2.5). The model that triggered the violation reads the
+# ToolResult text and needs a concrete, valid path form to retry with — not
+# just a statement of what was wrong. Every reason ends with the SAME relative
+# path example so the recovery action is unambiguous regardless of which check
+# fired. ``<root>`` stands for the sandbox root, whose absolute value the model
+# neither knows nor needs (it is per-persona); the example shows the *form* of
+# a relative path that resolves inside it.
+_VALID_PATH_HINT = (
+    "use a relative path like 'out/report.md' "
+    "(resolves to <root>/out/report.md under the sandbox root)"
+)
+
+
+def _violation_message(summary: str, reason: str) -> str:
+    """Compose a model-recoverable SandboxViolationError message.
+
+    Args:
+        summary: Human-readable statement of what was wrong (no trailing
+            punctuation).
+        reason: The machine discriminator (mirrors ``context["reason"]``) so
+            the model sees the same token in the prose that it does in the
+            structured context.
+
+    Returns:
+        ``"<summary> [reason=<reason>]; <valid-path hint>"`` — a string that
+        tells the model both what failed and a concrete relative path form
+        that would succeed, enabling a recovery retry instead of giving up.
+    """
+    return f"{summary} [reason={reason}]; {_VALID_PATH_HINT}"
+
 
 def resolve_sandbox_path(root: Path, requested: str) -> Path:
     """Resolve ``requested`` against ``root``; reject any escape attempts.
@@ -68,25 +99,25 @@ def resolve_sandbox_path(root: Path, requested: str) -> Path:
 
     if "\x00" in requested:
         raise SandboxViolationError(
-            "null byte in path",
+            _violation_message("null byte in path", "null_byte"),
             context={"reason": "null_byte", "requested_preview": _preview(requested)},
         )
 
     if len(requested) > _MAX_PATH_LENGTH:
         raise SandboxViolationError(
-            "path too long",
+            _violation_message("path too long", "too_long"),
             context={"reason": "too_long", "length": str(len(requested))},
         )
 
     if os.sep == "/" and "\\" in requested:
         raise SandboxViolationError(
-            "windows-style separator on POSIX",
+            _violation_message("windows-style separator on POSIX", "mixed_separators"),
             context={"reason": "mixed_separators", "requested": _preview(requested)},
         )
 
     if not requested or requested.strip() == "":
         raise SandboxViolationError(
-            "empty path",
+            _violation_message("empty path", "empty"),
             context={"reason": "empty"},
         )
 
@@ -94,7 +125,7 @@ def resolve_sandbox_path(root: Path, requested: str) -> Path:
     # we already rejected backslash on POSIX above.
     if PurePosixPath(requested).is_absolute():
         raise SandboxViolationError(
-            "absolute path not allowed",
+            _violation_message("absolute path not allowed", "absolute"),
             context={"reason": "absolute", "requested": _preview(requested)},
         )
 
@@ -105,7 +136,7 @@ def resolve_sandbox_path(root: Path, requested: str) -> Path:
     pure = PurePosixPath(requested)
     if pure.parts == () or pure.parts == (".",) or requested.strip() in (".", "./"):
         raise SandboxViolationError(
-            "path resolves to sandbox root directory",
+            _violation_message("path resolves to sandbox root directory", "root_reference"),
             context={"reason": "root_reference", "requested": _preview(requested)},
         )
 
@@ -116,7 +147,7 @@ def resolve_sandbox_path(root: Path, requested: str) -> Path:
 
     if not candidate.is_relative_to(root_resolved):
         raise SandboxViolationError(
-            "path escapes sandbox",
+            _violation_message("path escapes sandbox", "escape"),
             context={
                 "reason": "escape",
                 "requested": _preview(requested),

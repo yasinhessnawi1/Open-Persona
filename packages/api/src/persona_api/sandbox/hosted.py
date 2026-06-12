@@ -34,6 +34,7 @@ The script that measures these lives at
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path  # noqa: TC003 — runtime use in copy_produced_file_to
 from typing import TYPE_CHECKING, Any
@@ -54,6 +55,8 @@ from persona.sandbox.result import (
     SandboxFile,
 )
 
+from persona_api.sandbox.config import SandboxWallClockConfig
+
 if TYPE_CHECKING:
     # The E2B SDK is lazy-imported at use-site (so importing this module
     # without the SDK installed is a graceful SandboxUnavailableError at
@@ -62,9 +65,79 @@ if TYPE_CHECKING:
     # annotations carry the real type instead of ``Any``.
     from e2b_code_interpreter import Sandbox as E2BSandbox
 
-__all__ = ["HostedSandbox"]
+__all__ = ["HostedSandbox", "detect_env_setup"]
 
 _logger = get_logger("sandbox.hosted")
+
+
+# Spec 25 D-25-2 — env-setup detection. Explicit leading-token match against a
+# fixed package-manager set; explicit prefix list over regex/heuristic so the
+# match is predictable, testable, and never trips on user code that merely
+# *mentions* "pip" (the false-positive failure mode D-25-2 rejects). The set is
+# the load-bearing contract; growing it is a deliberate, reviewable edit.
+# Two-token forms whose first token alone is ambiguous (``npm``/``yarn`` are
+# also plausible variable names) — require the install verb. D-25-2.
+_ENV_SETUP_TWO_TOKEN_FORMS = frozenset({("npm", "install"), ("yarn", "add")})
+# Single-token forms that are unambiguous on their own (a line that *starts*
+# with these is overwhelmingly a shell invocation, not Python identifiers).
+_ENV_SETUP_UNAMBIGUOUS_TOKENS = frozenset({"pip", "pip3", "apt", "apt-get", "wget", "curl", "uv"})
+# The realistic ``subprocess.*([sys.executable, "-m", "pip", "install", ...])``
+# shape from the operator log: a Python call that shells out to a package
+# manager. Detect ``"-m", "pip"`` / ``"-m", "pip3"`` and a quoted package
+# manager token inside a subprocess argv list.
+_SUBPROCESS_PIP_RE = re.compile(
+    r"""subprocess\.\w+\s*\(\s*\[[^\]]*?-m["']\s*,\s*["'](pip3?|uv)["']""",
+    re.DOTALL,
+)
+
+
+def _line_is_env_setup(line: str) -> bool:
+    """Return ``True`` when a single physical line is a package-manager call.
+
+    A line is env-setup when, after stripping leading whitespace and an
+    optional IPython ``!`` shell-escape, its leading token (lower-cased) is an
+    unambiguous package manager, or its first two tokens are an
+    ``npm install`` / ``yarn add`` form. D-25-2 explicit-prefix discipline.
+    """
+    stripped = line.strip()
+    if stripped.startswith("!"):  # IPython shell-escape (``!pip install ...``)
+        stripped = stripped[1:].lstrip()
+    if not stripped:
+        return False
+    tokens = stripped.split()
+    head = tokens[0].lower()
+    if head in _ENV_SETUP_UNAMBIGUOUS_TOKENS:
+        return True
+    return len(tokens) >= 2 and (head, tokens[1].lower()) in _ENV_SETUP_TWO_TOKEN_FORMS
+
+
+def detect_env_setup(code: str) -> bool:
+    """Detect whether ``code`` invokes a package manager (D-25-2).
+
+    Pure helper (no I/O, no sandbox) so the dual-policy cap selection is
+    testable in isolation. The sandbox executes a Python ``code`` string, so
+    "env-setup" is the code string's *intent*: it either (a) is a shell-style
+    package-manager line (``pip install ...``, ``!pip install ...``,
+    ``npm install ...``) or (b) shells out to a package manager via the
+    realistic ``subprocess.check_call([sys.executable, "-m", "pip",
+    "install", ...])`` shape seen in the operator log.
+
+    Matches the explicit leading-token set ``{pip, pip3, apt, apt-get, wget,
+    curl, npm, yarn, uv}`` (+ the ``npm install`` / ``yarn add`` two-token
+    forms) so user code that merely mentions "pip" in a string or comment is
+    NOT a false positive.
+
+    Args:
+        code: The Python code string about to be executed.
+
+    Returns:
+        ``True`` if the code invokes a package manager (→ setup wall-clock
+        cap), ``False`` otherwise (→ exec wall-clock cap).
+    """
+    if _SUBPROCESS_PIP_RE.search(code):
+        return True
+    return any(_line_is_env_setup(line) for line in code.splitlines())
+
 
 # T12 SCP-12-4 — hosted substrate template-class floors (E2B Hobby tier).
 # The T12 audit measured MemTotal=2 GiB and RLIMIT_AS=-1 inside the default
@@ -74,6 +147,24 @@ _logger = get_logger("sandbox.hosted")
 # requesting a different template; lowering is not supported at Hobby tier.
 _HOSTED_SUBSTRATE_MEMORY_FLOOR_MB = 2048
 _HOSTED_SUBSTRATE_DISK_FLOOR_MB = 1024
+
+
+def _is_sandbox_reaped(stderr: str) -> bool:
+    """True if an execution error indicates the E2B sandbox was reaped/gone.
+
+    Spec 25 §2.4 (operator-pass 2026-06-13): E2B reaps an idle sandbox
+    server-side; the next ``run_code`` then raises a ``TimeoutException`` whose
+    payload carries ``"The sandbox was not found"`` / ``"code":502``. The SDK
+    error is caught + marshalled into an ``outcome="error"`` ``ExecutionResult``
+    by :meth:`HostedSandbox._run_and_marshal`; this detector lets the stateful
+    execute path re-surface it as ``reason="no_session"`` so the tool wrapper's
+    auto-recovery (D-25-4 / T09) recreates the session instead of the model
+    retrying the SAME dead sandbox forever. Matched on the marshalled stderr;
+    a genuine user-code error arrives via ``execution.error`` (a Python
+    traceback), not this SDK-exception shape.
+    """
+    low = stderr.lower()
+    return ("not found" in low and "sandbox" in low) or "502" in low
 
 
 class HostedSandbox:
@@ -89,6 +180,10 @@ class HostedSandbox:
         timeout_default_s: Default per-sandbox idle timeout (substrate-side
             sandbox lifetime ceiling). Per-execute ``timeout_s`` is enforced
             by the SDK's ``request_timeout`` (separate dimension).
+        wallclock_config: Spec 25 D-25-2/3 dual wall-clock policy. ``None`` ⇒
+            the env-driven defaults (30s exec / 120s env-setup) are read from
+            the process environment. Env-setup commands (package-manager
+            invocations per :func:`detect_env_setup`) get the longer setup cap.
 
     Raises:
         SandboxUnavailableError: When the E2B API is unreachable or the
@@ -102,10 +197,13 @@ class HostedSandbox:
         api_key: str | None = None,
         template: str | None = None,
         timeout_default_s: int = 300,
+        wallclock_config: SandboxWallClockConfig | None = None,
     ) -> None:
         self._api_key = api_key  # None ⇒ SDK reads E2B_API_KEY env var
         self._template = template
         self._timeout_default_s = timeout_default_s
+        # D-25-3 dual wall-clock policy. None ⇒ env-driven defaults.
+        self._wallclock = wallclock_config or SandboxWallClockConfig()
         self._closed = False
         # Per-session E2B sandbox references — sandbox_id ↔ Sandbox SDK object.
         # Kept in memory; T09 pool replaces this with a warm-pool + reaper.
@@ -114,6 +212,8 @@ class HostedSandbox:
             "HostedSandbox initialised",
             template=template or "<default>",
             timeout_default_s=timeout_default_s,
+            wallclock_exec_s=self._wallclock.exec_cap_s,
+            wallclock_setup_s=self._wallclock.setup_cap_s,
         )
 
     # -- CodeSandbox Protocol methods -------------------------------------
@@ -124,7 +224,7 @@ class HostedSandbox:
         *,
         language: str = "python",
         session_id: str | None = None,
-        timeout_s: float = 30.0,
+        timeout_s: float | None = None,
         limits: ResourceLimits | None = None,
         network: NetworkPolicy | None = None,
         input_files: list[SandboxFile] | None = None,
@@ -137,6 +237,22 @@ class HostedSandbox:
         state DOES persist (E2B's sandbox runs a single long-lived IPython
         kernel; this is the D-12-1 mental model the spec calls for, hosted
         side, no scaling caveat).
+
+        **Spec 25 D-25-2/3 dual wall-clock policy.** The effective wall-clock
+        cap is chosen per call from ``code``'s intent:
+
+        * Env-setup commands (package-manager invocations per
+          :func:`detect_env_setup`) get the longer setup cap
+          (``wallclock_config.setup_cap_s``, default 120s) — a one-off
+          ``pip install`` shouldn't be killed at the 30s exec budget.
+        * Ordinary code keeps the exec cap. When the caller passes an explicit
+          ``timeout_s`` (the conventional ``limits.wall_clock_s`` exec budget)
+          it is the exec baseline; ``None`` ⇒ ``wallclock_config.exec_cap_s``
+          (default 30s).
+
+        Which cap applied is recorded in the timeout-error metadata
+        (``cap_applied`` ∈ {``"exec"``, ``"setup"``}) so the TurnLog surfaces
+        it.
         """
         if self._closed:
             msg = "HostedSandbox is closed"
@@ -149,7 +265,17 @@ class HostedSandbox:
         network = network or NetworkPolicy()
         input_files = input_files or []
 
-        # T12 F-T12-RES-02 fix: enforce ``wall_clock_s`` at the async boundary.
+        # D-25-2/3 dual-policy cap selection (pure helper keeps it testable).
+        is_env_setup = detect_env_setup(code)
+        cap_applied = "setup" if is_env_setup else "exec"
+        if is_env_setup:
+            effective_timeout_s = self._wallclock.setup_cap_s
+        elif timeout_s is not None:
+            effective_timeout_s = timeout_s
+        else:
+            effective_timeout_s = self._wallclock.exec_cap_s
+
+        # T12 F-T12-RES-02 fix: enforce the wall-clock cap at the async boundary.
         # The E2B SDK's ``run_code(timeout=...)`` maps to httpx read-timeout,
         # NOT substrate wall-clock — a silent CPU-bound ``while True: pass``
         # hung > 90 s in the T12 probe before OS SIGKILL took effect, breaking
@@ -165,12 +291,12 @@ class HostedSandbox:
                     self._execute_sync,
                     code,
                     session_id=session_id,
-                    timeout_s=timeout_s,
+                    timeout_s=effective_timeout_s,
                     limits=limits,
                     network=network,
                     input_files=input_files,
                 ),
-                timeout=timeout_s + grace_s,
+                timeout=effective_timeout_s + grace_s,
             )
         except TimeoutError as exc:
             # Force-kill the substrate sandbox if stateful so a runaway
@@ -181,13 +307,14 @@ class HostedSandbox:
                 if sandbox is not None:
                     await asyncio.to_thread(self._safe_kill, sandbox)
             msg = (
-                f"code_execution exceeded wall_clock_s={timeout_s} "
-                f"(grace +{grace_s}s) — substrate kill forced"
+                f"code_execution exceeded wall_clock_s={effective_timeout_s} "
+                f"(cap={cap_applied}, grace +{grace_s}s) — substrate kill forced"
             )
             raise ExecutionTimeoutError(
                 msg,
                 context={
-                    "wall_clock_s": str(timeout_s),
+                    "wall_clock_s": str(effective_timeout_s),
+                    "cap_applied": cap_applied,
                     "session_id": session_id or "",
                 },
             ) from exc
@@ -338,7 +465,29 @@ class HostedSandbox:
         if sandbox is None:
             msg = f"session {session_id!r} does not exist; call create_session() first"
             raise CodeSandboxError(msg, context={"reason": "no_session", "session_id": session_id})
-        return self._run_and_marshal(sandbox, code, timeout_s, input_files)
+        result = self._run_and_marshal(sandbox, code, timeout_s, input_files)
+        # Spec 25 §2.4 (operator-pass 2026-06-13): the E2B substrate reaps an
+        # idle sandbox server-side; the next run_code raised a TimeoutException
+        # ("The sandbox was not found", code 502) that _run_and_marshal captured
+        # as an outcome="error" result. Evict the dead handle + re-surface as
+        # reason="no_session" so the tool wrapper auto-recovers (D-25-4 / T09:
+        # recreate + retry once). Without this the model retries the SAME dead
+        # sandboxId and never recovers (the reported failure mode).
+        if result.outcome == "error" and _is_sandbox_reaped(result.stderr):
+            self._sessions.pop(session_id, None)
+            msg = (
+                f"session {session_id!r} sandbox was reaped by the substrate "
+                "(idle timeout); recreate it"
+            )
+            raise CodeSandboxError(
+                msg,
+                context={
+                    "reason": "no_session",
+                    "session_id": session_id,
+                    "cause": "substrate_reaped",
+                },
+            )
+        return result
 
     def _create_session_sync(
         self,

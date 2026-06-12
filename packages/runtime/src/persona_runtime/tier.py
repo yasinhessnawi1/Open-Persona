@@ -30,13 +30,14 @@ new env vars).
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
 from persona.backends import BackendConfig, load_backend
 from persona.backends.credentials import (
     ProviderCredentialResolver,
     TierResolution,
+    filter_openrouter_free_mode,
     resolve_tier_config,
 )
 from persona.backends.errors import (
@@ -53,6 +54,7 @@ from persona_runtime.errors import TierNotConfiguredError
 
 if TYPE_CHECKING:
     from persona.backends import ChatBackend
+    from persona.backends.openrouter_catalog import OpenRouterSubscriptionMode
 
 __all__ = [
     "TierConfig",
@@ -394,7 +396,11 @@ def tier_metadata_from_env(*, prefix: str) -> TierMetadata | None:
         return None
 
 
-def tier_registry_from_env(*, default_prefix: str = "PERSONA_") -> TierRegistry:
+def tier_registry_from_env(
+    *,
+    default_prefix: str = "PERSONA_",
+    openrouter_subscription_mode: OpenRouterSubscriptionMode | None = None,
+) -> TierRegistry:
     """Build a :class:`TierRegistry` from the environment (D-05-3 + D-20-17).
 
     Per-tier precedence (Spec 20 D-20-17 four cases):
@@ -430,8 +436,18 @@ def tier_registry_from_env(*, default_prefix: str = "PERSONA_") -> TierRegistry:
     Spec 18 (T04): per-tier :class:`TierMetadata` continues to populate
     additively via :func:`tier_metadata_from_env`.
 
+    Spec 22 (T14): when ``openrouter_subscription_mode`` is ``"free"`` (resolved
+    at startup by ``persona_runtime.openrouter_subscription``), ``openrouter/X``
+    MODELS entries lacking a ``:free`` suffix are dropped per tier with a WARN
+    (D-22-2). A tier whose entire MODELS list drops away is simply not
+    registered — it falls back via the registry's tier chain (fail-soft, not a
+    hard error). ``None`` (probe skipped, no key, or paid-mode) is a no-op, so
+    existing Spec-20 configurations are unaffected.
+
     Args:
         default_prefix: Env prefix for the single-backend fallback.
+        openrouter_subscription_mode: Resolved OpenRouter mode (``"free"`` /
+            ``"paid"``) or ``None`` (no OpenRouter free-mode filtering).
 
     Returns:
         A registry with whatever tiers the environment configured.
@@ -442,10 +458,21 @@ def tier_registry_from_env(*, default_prefix: str = "PERSONA_") -> TierRegistry:
     for tier_name, prefix in _TIER_ENV_PREFIXES.items():
         resolution = resolve_tier_config(tier_name, env=env_snapshot)
         if resolution.models is not None:
+            # D-22-2: drop non-:free openrouter entries in free-mode (no-op when
+            # mode is None / paid). An emptied MODELS list means the tier is left
+            # unregistered → registry fallback chain (fail-soft).
+            filtered_models = filter_openrouter_free_mode(
+                resolution.models,
+                mode=openrouter_subscription_mode,
+                tier_name=tier_name,
+                keep_free_suffix=True,
+            )
+            if not filtered_models:
+                continue
             tiers[tier_name] = _tier_config_from_models_list(
                 tier_name=tier_name,
                 prefix=prefix,
-                resolution=resolution,
+                resolution=replace(resolution, models=filtered_models),
                 resolver=resolver,
             )
         elif resolution.triplet is not None:

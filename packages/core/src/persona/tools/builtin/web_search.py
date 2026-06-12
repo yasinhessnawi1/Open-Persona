@@ -81,7 +81,10 @@ def make_web_search_tool(
     @tool(
         name="web_search",
         description=(
-            "Search the web for a query and return results with titles, URLs, and snippets."
+            "YOU CAN search the web. Use this tool whenever the user asks for "
+            "current information or anything you should look up — do not say you "
+            "lack internet access: call this tool. Returns results with titles, "
+            "URLs, and snippets."
         ),
     )
     async def web_search(query: str, max_results: int = 5) -> ToolResult:

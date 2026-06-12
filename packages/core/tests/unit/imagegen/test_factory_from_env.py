@@ -81,14 +81,21 @@ def _make_fake_backend_module(provider_name: str, class_name: str) -> types.Modu
 
 @pytest.fixture
 def stub_image_backends(monkeypatch: pytest.MonkeyPatch) -> dict[str, types.ModuleType]:
-    """Install stub OpenAI / fal / nvidia image-backend modules."""
+    """Install stub OpenAI / fal / nvidia / openrouter image-backend modules."""
     openai_mod = _make_fake_backend_module("openai", "OpenAIImageBackend")
     fal_mod = _make_fake_backend_module("fal", "FalImageBackend")
     nvidia_mod = _make_fake_backend_module("nvidia", "NvidiaImageBackend")
+    openrouter_mod = _make_fake_backend_module("openrouter", "OpenRouterImageBackend")
     monkeypatch.setitem(sys.modules, "persona.imagegen.openai_image", openai_mod)
     monkeypatch.setitem(sys.modules, "persona.imagegen.fal_image", fal_mod)
     monkeypatch.setitem(sys.modules, "persona.imagegen.nvidia_image", nvidia_mod)
-    return {"openai": openai_mod, "fal": fal_mod, "nvidia": nvidia_mod}
+    monkeypatch.setitem(sys.modules, "persona.imagegen.openrouter_image", openrouter_mod)
+    return {
+        "openai": openai_mod,
+        "fal": fal_mod,
+        "nvidia": nvidia_mod,
+        "openrouter": openrouter_mod,
+    }
 
 
 @pytest.fixture
@@ -337,3 +344,51 @@ class TestImageUnset:
         backend = load_image_backend_from_env()
         assert not isinstance(backend, MultiModelImageBackend)
         assert backend.provider_name == "openai"
+
+
+class TestImageOpenRouterFreeModeDrop:
+    """Spec 22 D-22-20 — in free-mode, ALL openrouter image entries drop
+    (no :free image-output models exist on OpenRouter)."""
+
+    def test_free_mode_drops_all_openrouter_keeps_other(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_image_backends: dict[str, types.ModuleType],
+    ) -> None:
+        _clear_imagegen_env(monkeypatch)
+        monkeypatch.setenv(
+            "PERSONA_IMAGEGEN_MODELS",
+            "openrouter/google/gemini-2.5-flash-image,nvidia/flux.2-klein-4b",
+        )
+        monkeypatch.setenv("PERSONA_OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("PERSONA_NVIDIA_API_KEY", "nvapi-test")
+
+        backend = load_image_backend_from_env(openrouter_subscription_mode="free")
+        # openrouter dropped → only nvidia survives → length-1 bare backend.
+        assert not isinstance(backend, MultiModelImageBackend)
+        assert backend.provider_name == "nvidia"
+
+    def test_paid_mode_keeps_openrouter(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_image_backends: dict[str, types.ModuleType],
+    ) -> None:
+        _clear_imagegen_env(monkeypatch)
+        monkeypatch.setenv("PERSONA_IMAGEGEN_MODELS", "openrouter/google/gemini-2.5-flash-image")
+        monkeypatch.setenv("PERSONA_OPENROUTER_API_KEY", "sk-or-v1-test")
+
+        backend = load_image_backend_from_env(openrouter_subscription_mode="paid")
+        assert backend.provider_name == "openrouter"
+        assert backend.model_name == "google/gemini-2.5-flash-image"
+
+    def test_none_mode_keeps_openrouter(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_image_backends: dict[str, types.ModuleType],
+    ) -> None:
+        _clear_imagegen_env(monkeypatch)
+        monkeypatch.setenv("PERSONA_IMAGEGEN_MODELS", "openrouter/google/gemini-2.5-flash-image")
+        monkeypatch.setenv("PERSONA_OPENROUTER_API_KEY", "sk-or-v1-test")
+
+        backend = load_image_backend_from_env()
+        assert backend.provider_name == "openrouter"

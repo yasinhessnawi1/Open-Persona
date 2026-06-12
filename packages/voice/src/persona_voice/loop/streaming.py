@@ -358,16 +358,18 @@ class StreamingLoop:
     # ----- barge-in / lifecycle --------------------------------------
 
     async def interrupt(self) -> None:
-        """V4 barge-in entry — cancel in-flight TTS + notify the session.
+        """V4 barge-in entry — cancel in-flight TTS + flush + notify session.
 
         Called by V4 (out of scope for V1) when the user starts speaking
-        while the agent is mid-utterance. The TTS cancel propagates as the
-        ``synthesize`` AsyncIterator raising :class:`StopAsyncIteration` on
-        its next yield; the audio rail goes quiet within one frame's worth
-        of jitter buffer.
+        while the agent is mid-utterance. The TTS cancel ends the
+        ``synthesize`` AsyncIterator via sentinel (Spec V3 steps 1-3); the
+        outbound-queue clear drops already-queued frames so the rail goes
+        quiet near-immediately rather than draining the jitter buffer (Spec
+        V3 D-V3-5 step 4 — without it R-V3-5's "ghost audio" plays on).
         """
         if self._tts is not None:
             await self._tts.cancel()
+        self._voice_room.clear_outbound()
         await self._session.notify(SessionLifecycleEvent.AGENT_STOPPED_SPEAKING)
 
     async def stop(self) -> None:

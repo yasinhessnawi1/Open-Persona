@@ -23,10 +23,63 @@ the API-scope ``PERSONA_API_*`` knobs in :class:`persona_api.config.APIConfig`.
 
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-__all__ = ["SandboxPoolConfig"]
+__all__ = ["SandboxPoolConfig", "SandboxWallClockConfig"]
+
+
+class SandboxWallClockConfig(BaseSettings):
+    """Env-driven wall-clock dual policy for code execution (Spec 25 D-25-2/3).
+
+    Acceptance criterion 2: env-setup commands (package-manager invocations,
+    per :func:`persona_api.sandbox.hosted.detect_env_setup`) get a longer
+    wall-clock cap than ordinary code so a one-off ``pip install`` isn't
+    killed at the 30s exec budget, while runaway compute still is.
+
+    Both caps are tunable via env (folds in the Spec 25 kickoff's
+    ``D-25-X-cap-env-overrides``):
+
+      - ``PERSONA_SANDBOX_WALLCLOCK_EXEC_S`` — ordinary code-execution cap
+        (D-25-3 default: 30s; unchanged from Spec 12).
+      - ``PERSONA_SANDBOX_WALLCLOCK_SETUP_S`` — env-setup cap (D-25-3
+        default: 120s).
+
+    Read once at process start by the composition root and passed into
+    :class:`persona_api.sandbox.hosted.HostedSandbox`. Shares the
+    ``PERSONA_SANDBOX_`` prefix with :class:`SandboxPoolConfig`; the env-var
+    names use explicit aliases so they read ``..._WALLCLOCK_EXEC_S`` rather
+    than the field-derived ``..._EXEC_CAP_S``.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="PERSONA_SANDBOX_", extra="ignore", populate_by_name=True
+    )
+
+    exec_cap_s: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("exec_cap_s", "PERSONA_SANDBOX_WALLCLOCK_EXEC_S"),
+        description=(
+            "Wall-clock cap (seconds) for ordinary code execution. D-25-3 "
+            "default: 30s (unchanged from Spec 12)."
+        ),
+    )
+    setup_cap_s: float = Field(
+        default=120.0,
+        validation_alias=AliasChoices("setup_cap_s", "PERSONA_SANDBOX_WALLCLOCK_SETUP_S"),
+        description=(
+            "Wall-clock cap (seconds) for env-setup commands (package-manager "
+            "invocations per D-25-2). D-25-3 default: 120s."
+        ),
+    )
+
+    @field_validator("exec_cap_s", "setup_cap_s")
+    @classmethod
+    def _positive_cap_seconds(cls, v: float) -> float:
+        if v <= 0:
+            msg = f"wall-clock cap must be > 0; got {v}"
+            raise ValueError(msg)
+        return v
 
 
 class SandboxPoolConfig(BaseSettings):

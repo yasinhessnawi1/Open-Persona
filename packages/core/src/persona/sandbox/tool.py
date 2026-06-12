@@ -86,11 +86,13 @@ _AUDIT_CODE_CAP_BYTES = 4 * 1024
 
 # Default factory description fed to the model. Kept terse — the model's
 # system prompt is the right place for additional usage guidance.
+# Spec 25 T11b (§2.9): affirmative-capability framing — lead with "YOU CAN".
 _DEFAULT_DESCRIPTION = (
-    "Execute Python code in a secure sandbox. Use for calculations, data analysis, "
-    "file processing, generating charts, and producing documents. Returns stdout, "
-    "stderr, and any files the code writes to the workspace. Network access is "
-    "disabled by default."
+    "YOU CAN run Python code. Use this tool whenever the user asks for "
+    "calculations, data analysis, file processing, charts, or documents — "
+    "do not say you cannot run code: call this tool. It executes Python in a "
+    "secure sandbox and returns stdout, stderr, and any files the code writes "
+    "to the workspace. Network access is disabled by default."
 )
 
 
@@ -184,18 +186,52 @@ def make_code_execution_tool(
     async def code_execution(code: str) -> ToolResult:
         session_id = _provider()
         code_sha256 = hashlib.sha256(code.encode("utf-8")).hexdigest()
+        # D-25-4 per-turn telemetry: flipped True only when a vanished session
+        # was transparently recreated for THIS dispatch. Surfaced in the
+        # ToolResult metadata so the runtime turn loop can mirror it into the
+        # additive ``TurnLog.sandbox_session_recreated`` field (wired in
+        # Cluster B/D — Spec 18 D-18-1 NOT reopened).
+        session_recreated = False
         try:
             if pre_execute_hook is not None:
                 await pre_execute_hook()
             deferred = deferred_input_files_provider() if deferred_input_files_provider else None
-            result = await sandbox.execute(
-                code,
-                session_id=session_id,
-                timeout_s=limits.wall_clock_s,
-                limits=limits,
-                network=network,
-                input_files=deferred,
-            )
+
+            async def _run() -> ExecutionResult:
+                return await sandbox.execute(
+                    code,
+                    session_id=session_id,
+                    timeout_s=limits.wall_clock_s,
+                    limits=limits,
+                    network=network,
+                    input_files=deferred,
+                )
+
+            try:
+                result = await _run()
+            except SandboxError as exc:
+                # D-25-4 session auto-recovery: when a stateful session has
+                # vanished underneath us (substrate reaped it; pod restart;
+                # idle-timeout race), recreate it once and retry EXACTLY ONCE.
+                # Only ONE recovery attempt — looping here would mask a real,
+                # persistent session failure (kickoff "don't auto-recover more
+                # than once" discipline). A non-``no_session`` error, a one-shot
+                # (``session_id is None``), a create_session failure, or a
+                # second no_session all fall through to the structured-error
+                # path below.
+                if exc.context.get("reason") != "no_session" or session_id is None:
+                    raise
+                _logger.warning(
+                    "code_execution session vanished; recreating once (D-25-4)",
+                    persona_id=persona_id or "<unknown>",
+                    session_id=session_id,
+                )
+                await sandbox.create_session(session_id, limits=limits, network=network)
+                session_recreated = True
+                # Single retry. If THIS raises (no_session again, or anything
+                # else), it propagates to the structured-error path — there is
+                # deliberately no second recovery attempt.
+                result = await _run()
             # D-17-X-bytes-persistence: persist produced bytes to the API
             # workspace so the existing GET /uploads/{ref:path} route can
             # serve them. ProducedFileSizeError propagates here and is caught
@@ -247,6 +283,9 @@ def make_code_execution_tool(
                     "outcome": "error",
                     "session_id": session_id or "",
                     "code_sha256": code_sha256,
+                    # D-25-4: True when a recreate+retry still ended in failure
+                    # (the recovery was attempted this turn but did not save it).
+                    "sandbox_session_recreated": str(session_recreated),
                 },
             )
 
@@ -310,6 +349,9 @@ def make_code_execution_tool(
                 "duration_ms": f"{result.duration_ms:.1f}",
                 "exit_status": str(result.exit_status),
                 "code_sha256": code_sha256,
+                # D-25-4: True when this dispatch transparently recreated a
+                # vanished session and the retry succeeded.
+                "sandbox_session_recreated": str(session_recreated),
             },
         )
 

@@ -5,7 +5,7 @@ import {
   projectToolCalling,
   projectToolResult,
 } from "@/lib/normalisers/_classify";
-import type { RunEvent } from "@/lib/sse-types";
+import type { QuestionOption, RunEvent } from "@/lib/sse-types";
 
 // Normalised run-viewer model (T07). Both the live `RunEvent` SSE stream and the
 // persisted `GET /runs/:id` `steps[]` reduce into one {@link RunStep} shape so the
@@ -68,6 +68,9 @@ export interface RunStep {
   outputs: OutputContent[];
   reasoning?: string;
   question?: string;
+  /** Spec 21 (D-21-9): the 3+1 options when the ask carries them; else absent. */
+  options?: QuestionOption[];
+  allowFreeForm?: boolean;
   answered: boolean;
   final?: string;
   maxSteps?: string;
@@ -176,6 +179,9 @@ export function runViewFromEvents(
         const st = ensure(ev.step);
         st.thinking = false;
         st.question = ev.data.question;
+        // Spec 21 (D-21-9): carry the 3+1 options when present (additive).
+        st.options = ev.data.options;
+        st.allowFreeForm = ev.data.allow_free_form;
         break;
       }
       case "user_responded":

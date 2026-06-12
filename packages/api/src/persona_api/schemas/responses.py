@@ -99,6 +99,11 @@ class PersonaDetail(_Output):
     schema_version: str
     avatar_url: str | None = None
     capabilities: PersonaCapabilities | None = None
+    # Spec 21 T09 (D-21-7): tri-state auto-dispatch consent surfaced to the
+    # settings UI. None = never asked / revoked-to-ask, True = granted,
+    # False = declined. Additive — omitted defaults to None on legacy rows.
+    consent_to_auto_dispatch: bool | None = None
+    consent_updated_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

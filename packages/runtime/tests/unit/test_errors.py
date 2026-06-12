@@ -52,7 +52,11 @@ class TestRuntimeImportable:
     def test_package_imports(self) -> None:
         assert persona_runtime is not None
 
-    def test_errors_module_exports_only_the_one_exception(self) -> None:
+    def test_errors_module_exports_the_runtime_exceptions(self) -> None:
+        # Originally the runtime defined exactly one exception (D-05-2). Spec 21
+        # (T04, D-21-9) adds ``InvalidQuestionAnswerError`` for the one new
+        # genuinely-runtime failure mode — a proactive-question answer that
+        # matches neither an option nor free-form. Both are exported.
         from persona_runtime import errors
 
-        assert errors.__all__ == ["TierNotConfiguredError"]
+        assert errors.__all__ == ["InvalidQuestionAnswerError", "TierNotConfiguredError"]

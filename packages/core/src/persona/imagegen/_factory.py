@@ -36,6 +36,7 @@ from pydantic import SecretStr
 
 from persona.backends.credentials import (
     ProviderCredentialResolver,
+    filter_openrouter_free_mode,
 )
 from persona.backends.errors import (
     LocalProviderInModelsListError,
@@ -48,6 +49,7 @@ from persona.imagegen.errors import ImageProviderError
 from persona.logging import get_logger
 
 if TYPE_CHECKING:
+    from persona.backends.openrouter_catalog import OpenRouterSubscriptionMode
     from persona.imagegen.protocol import ImageBackend
 
 __all__ = ["load_image_backend", "load_image_backend_from_env"]
@@ -61,7 +63,9 @@ _TRIPLET_VARS: tuple[str, str, str] = (
     "PERSONA_IMAGEGEN_MODEL",
     "PERSONA_IMAGEGEN_API_KEY",
 )
-_IMAGE_PROVIDERS: frozenset[str] = frozenset({"openai", "fal", "nvidia"})
+_IMAGE_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "fal", "nvidia", "openrouter", "cloudflare"}
+)
 """Closed set of providers with concrete :class:`ImageBackend` implementations.
 
 T11's :func:`persona.backends.credentials.parse_models_list` validates
@@ -85,7 +89,7 @@ consistently across surfaces.
 _LOCAL_REJECT_HINT: str = "use PERSONA_IMAGEGEN_PROVIDER single-backend fast path"
 
 
-_SUPPORTED_PROVIDERS: tuple[str, ...] = ("openai", "fal", "nvidia")
+_SUPPORTED_PROVIDERS: tuple[str, ...] = ("openai", "fal", "nvidia", "openrouter", "cloudflare")
 """Closed set of provider identifiers shipped at v0.1 (D-15-1).
 
 Kept in sync with :data:`persona.imagegen.config.ImageProvider`; the
@@ -155,6 +159,29 @@ def load_image_backend(config: ImageBackendConfig) -> ImageBackend:
         )
 
         return NvidiaImageBackend(config)
+    if provider == "openrouter":
+        # Spec 22 T09a — OpenRouter image-gen rides the chat-completions
+        # surface (no /images/generations route). The concrete backend's
+        # ``__init__`` fail-fasts on missing api_key. Paid-mode only — the
+        # free-mode drop of openrouter image entries lives at the runtime
+        # composition layer (T14), where the subscription state resolved by
+        # T13 is available (core must not import persona-runtime — D-22-20).
+        from persona.imagegen.openrouter_image import (
+            OpenRouterImageBackend,
+        )
+
+        return OpenRouterImageBackend(config)
+    if provider == "cloudflare":
+        # Spec 25 T15/T16 (D-25-11..14) — Cloudflare Workers AI text-to-image
+        # (the truly-free path; flux-1-schnell GA primary). The concrete
+        # backend's ``__init__`` fail-fasts on missing api_key, missing
+        # ``cloudflare_account_id`` (D-25-12), and unknown models
+        # (``reason="unsupported_model"``).
+        from persona.imagegen.cloudflare_image import (
+            CloudflareImageBackend,
+        )
+
+        return CloudflareImageBackend(config)
     supported = ", ".join(_SUPPORTED_PROVIDERS)
     raise ImageProviderError(
         f"unknown image provider {provider!r}; expected one of {supported}",
@@ -266,7 +293,9 @@ def _parse_image_models_list(raw_value: str) -> list[tuple[str, str]]:
     return results
 
 
-def load_image_backend_from_env() -> ImageBackend:
+def load_image_backend_from_env(
+    *, openrouter_subscription_mode: OpenRouterSubscriptionMode | None = None
+) -> ImageBackend:
     """Build a single :class:`ImageBackend` from the environment (D-20-17).
 
     Four-case precedence (Spec 20 D-20-17) mirroring the chat-side
@@ -290,6 +319,19 @@ def load_image_backend_from_env() -> ImageBackend:
     D-20-18: ``local`` / ``ollama`` tokens rejected by
     :func:`parse_models_list` (irrelevant for image-gen but the parser is
     shared with the chat side).
+
+    Spec 22 (D-22-20): when ``openrouter_subscription_mode`` is ``"free"``,
+    ALL ``openrouter/<model>`` entries are dropped at config-validation time
+    with a WARN per entry — zero ``:free`` image-output models exist on
+    OpenRouter, so an OpenRouter image entry is unusable in free-mode
+    (fail-fast over a call-time 402). ``None`` / ``"paid"`` is a no-op.
+
+    Args:
+        openrouter_subscription_mode: Resolved OpenRouter mode (``"free"`` /
+            ``"paid"``) or ``None`` (no OpenRouter free-mode filtering). The
+            value is resolved by the runtime subscription resolver
+            (Spec 22 T13) and injected so ``persona-core`` stays free of any
+            ``persona-runtime`` dependency.
 
     Returns:
         Either a bare :class:`ImageBackend` (case (b), or case (a) with
@@ -319,6 +361,16 @@ def load_image_backend_from_env() -> ImageBackend:
     # Provider Literal — ``fal`` is image-only and not in the chat Literal,
     # so T11's parser can't accept it).
     parsed = _parse_image_models_list(raw_models)
+
+    # D-22-20: in free-mode, drop ALL openrouter image entries (no :free image
+    # models exist). keep_free_suffix=False → every openrouter entry drops with
+    # a WARN. No-op when mode is None / paid.
+    parsed = filter_openrouter_free_mode(
+        parsed,
+        mode=openrouter_subscription_mode,
+        tier_name=_IMAGEGEN_TIER_NAME,
+        keep_free_suffix=False,
+    )
 
     # D-20-17 case (c): both forms set — emit INFO log naming ignored triplet vars.
     ignored = sorted(var for var in _TRIPLET_VARS if env_snapshot.get(var, "").strip())
@@ -358,6 +410,20 @@ def load_image_backend_from_env() -> ImageBackend:
             model=model,
             api_key=creds.api_key if creds.api_key is not None else SecretStr(""),
             base_url=slot_base_url,
+            # Spec 25 D-25-14: thread the single process-level Cloudflare
+            # account id into every slot (ignored by non-cloudflare backends);
+            # a cloudflare slot in a cross-provider MODELS list needs it.
+            # On the MODELS path the API key resolves via the per-provider
+            # convention (``PERSONA_CLOUDFLARE_API_KEY``), so the account id's
+            # canonical sibling here is ``PERSONA_CLOUDFLARE_ACCOUNT_ID``;
+            # ``PERSONA_IMAGEGEN_CLOUDFLARE_ACCOUNT_ID`` (the single-provider
+            # config-field name) is accepted as a fallback so an operator who
+            # set it under either namespace resolves. (Operator-pass §2.7 fix.)
+            cloudflare_account_id=(
+                env_snapshot.get("PERSONA_CLOUDFLARE_ACCOUNT_ID")
+                or env_snapshot.get("PERSONA_IMAGEGEN_CLOUDFLARE_ACCOUNT_ID")
+                or None
+            ),
         )
         resolved_backends.append(load_image_backend(slot_config))
 

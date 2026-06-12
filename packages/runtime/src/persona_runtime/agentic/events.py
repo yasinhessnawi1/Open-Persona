@@ -22,9 +22,12 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from persona.schema.tools import ToolCall, ToolResult
 
     from persona_runtime.agentic.run import Run
+    from persona_runtime.questions import QuestionOption
 
 __all__ = ["RunEvent"]
 
@@ -132,11 +135,37 @@ class RunEvent(BaseModel):
         )
 
     @classmethod
-    def asking_user(cls, step: int, question: str) -> RunEvent:
-        """The model asked the user a question (``[ASK_USER]``)."""
-        return cls(
-            type="asking_user", step=step, data={"question": question}, timestamp=datetime.now(UTC)
-        )
+    def asking_user(
+        cls,
+        step: int,
+        question: str,
+        *,
+        options: Sequence[QuestionOption] | None = None,
+        allow_free_form: bool = True,
+    ) -> RunEvent:
+        """The persona asked the user a question.
+
+        Spec 21 (D-21-9): additively carries the 3+1 proactive-question shape.
+        When ``options`` is ``None`` (the model-initiated ``[ASK_USER]`` path and
+        every pre-spec-21 frame) the payload is the bare ``{"question": ...}`` —
+        byte-identical to the original shape, so existing renderers and the
+        web ``AskingUserData`` type are unaffected. When ``options`` is present
+        the payload adds the predefined options + free-form flag and the web
+        renders the 3-button + free-form UI (T12). Absence IS the back-compat
+        shape — exactly the ``produced_files`` precedent above.
+
+        Args:
+            step: The step index the question belongs to.
+            question: The question text.
+            options: The 3 predefined options, or ``None`` for a free-text ask.
+            allow_free_form: Whether a free-form answer is accepted (only
+                meaningful, and only emitted, when ``options`` is present).
+        """
+        data: dict[str, Any] = {"question": question}
+        if options is not None:
+            data["options"] = [{"label": o.label, "description": o.description} for o in options]
+            data["allow_free_form"] = allow_free_form
+        return cls(type="asking_user", step=step, data=data, timestamp=datetime.now(UTC))
 
     @classmethod
     def user_responded(cls, step: int) -> RunEvent:

@@ -251,3 +251,50 @@ class TestToolResultProducedFilesForwarding:
         restored = RunEvent.model_validate_json(event.model_dump_json())
         assert restored == event
         assert restored.data["produced_files"] == produced
+
+
+class TestAskingUserOptionsForwarding:
+    """Spec 21 T04 — ``asking_user`` additively carries the 3+1 options (D-21-9).
+
+    Mirrors :class:`TestToolResultProducedFilesForwarding`: absence of
+    ``options`` IS the back-compat shape (byte-identical to the pre-spec-21
+    frame), presence adds the predefined options + free-form flag.
+    """
+
+    def test_back_compat_when_options_omitted(self) -> None:
+        ev = RunEvent.asking_user(3, "Which focus?")
+        assert ev.data == {"question": "Which focus?"}
+        assert "options" not in ev.data
+        assert "allow_free_form" not in ev.data
+
+    def test_options_forwarded_when_present(self) -> None:
+        from persona_runtime.questions import QuestionOption
+
+        options = [
+            QuestionOption(label="Maintenance", description="mould, leaks"),
+            QuestionOption(label="Deposit", description="withheld at move-out"),
+            QuestionOption(label="Harassment", description="landlord conduct"),
+        ]
+        ev = RunEvent.asking_user(3, "What's the focus?", options=options, allow_free_form=True)
+        assert ev.data["question"] == "What's the focus?"
+        assert ev.data["allow_free_form"] is True
+        assert ev.data["options"] == [
+            {"label": "Maintenance", "description": "mould, leaks"},
+            {"label": "Deposit", "description": "withheld at move-out"},
+            {"label": "Harassment", "description": "landlord conduct"},
+        ]
+
+    def test_allow_free_form_false_forwarded(self) -> None:
+        from persona_runtime.questions import QuestionOption
+
+        options = [QuestionOption(label=str(i)) for i in range(3)]
+        ev = RunEvent.asking_user(1, "Pick one", options=options, allow_free_form=False)
+        assert ev.data["allow_free_form"] is False
+
+    def test_options_payload_json_round_trips(self) -> None:
+        from persona_runtime.questions import QuestionOption
+
+        options = [QuestionOption(label=str(i)) for i in range(3)]
+        ev = RunEvent.asking_user(1, "Pick one", options=options)
+        restored = RunEvent.model_validate_json(ev.model_dump_json())
+        assert restored == ev

@@ -95,6 +95,13 @@ personas = Table(
     Column("avatar_url", Text),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # Spec 21 T09 (D-21-7): tri-state auto-dispatch consent. NULL = never asked /
+    # revoked-to-ask, TRUE = granted, FALSE = explicitly declined (stable, never
+    # auto-re-prompts — D-21-17). Added by migration 008; nullable so existing
+    # rows are unaffected. consent_updated_at stamps the last transition (each
+    # transition also emits an AuditEvent at the route).
+    Column("consent_to_auto_dispatch", Boolean),
+    Column("consent_updated_at", DateTime(timezone=True)),
     # Lets conversations/runs reference (persona_id, owner_id) as a composite FK
     # so a row can never attach to another tenant's persona (defence-in-depth
     # beyond RLS — see spec-07 closeout / security review finding 1).

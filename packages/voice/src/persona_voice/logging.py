@@ -122,6 +122,30 @@ class VoiceLog(BaseModel):
     stt_provider_cost_cents_per_minute: float | None = Field(default=None, ge=0.0)
     stt_total_cents: float | None = Field(default=None, ge=0.0)
 
+    # Spec V3 D-V3-X-cost + D-05-9 additive TTS fields (T11) — the outbound
+    # analogs of the four V2 STT fields. Distinct from the canonical
+    # ``tts_first_byte_at`` hop above (which is the first *provider* byte):
+    #   - ``tts_text_first_at`` — first reply-text token entering the TTS
+    #     stage for the turn (the input anchor; pairs with tts_first_audio_at
+    #     to surface the V3 synthesis-slice latency, sibling of V2's
+    #     stt_audio_pushed_at).
+    #   - ``tts_first_audio_at`` — first AudioChunk yielded onto the V1
+    #     outbound rail (post-reframe; the "persona starts speaking on the
+    #     wire" anchor — the governing criterion-2 streaming number, sibling
+    #     of V2's stt_partial_first_at). >= tts_first_byte_at by the
+    #     reframer's progressive-first-frame accumulation.
+    #   - ``tts_provider_cost_cents_per_minute`` — per-session cost knob
+    #     (Cartesia ~2.3 cents/min est., D-V3-X-cost; populated at
+    #     session-start from the backend's cost_cents_per_minute). TTS is the
+    #     SECOND continuously-metered service on top of V2 STT + the LLM.
+    #   - ``tts_total_cents`` — session-end roll-up = call_duration_minutes
+    #     * tts_provider_cost_cents_per_minute. Spec 08 credits-ledger
+    #     consumer post-V5 surfaces this alongside stt_total_cents.
+    tts_text_first_at: datetime | None = None
+    tts_first_audio_at: datetime | None = None
+    tts_provider_cost_cents_per_minute: float | None = Field(default=None, ge=0.0)
+    tts_total_cents: float | None = Field(default=None, ge=0.0)
+
 
 def compute_e2e_ms(log: VoiceLog) -> float | None:
     """End-to-end round-trip in ms, from ``eou_at`` → ``audio_first_play_at``.

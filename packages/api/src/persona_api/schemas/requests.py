@@ -63,6 +63,17 @@ class UpdatePersonaRequest(_Input):
     avatar_url: str | None = None
 
 
+class SetConsentRequest(_Input):
+    """Set a persona's auto-dispatch consent (spec 21 T09, D-21-7/2).
+
+    ``granted``: ``True`` = grant (auto-dispatch), ``False`` = decline (stable,
+    no re-prompt), ``None`` = revoke back to "ask" (the settings-toggle OFF
+    path, which re-arms the prompt on the next autonomous dispatch).
+    """
+
+    granted: bool | None = None
+
+
 class AuthorPersonaRequest(_Input):
     """LLM-assisted authoring from a natural-language description (§5.1, §6.3)."""
 

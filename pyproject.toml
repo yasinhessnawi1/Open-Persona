@@ -207,6 +207,17 @@ ignore_missing_imports = true
 module = ["onnxruntime", "onnxruntime.*"]
 ignore_missing_imports = true
 
+# cartesia (persona-voice [packages/voice], spec V3 T04) — D-V3-1 LOCK launch
+# streaming-TTS provider (Sonic 3.5). NO mypy override needed:
+# D-V3-X-mypy-tts-sdk-override verified at T04 install that the PyPI `cartesia`
+# package (Apache-2.0, v3.2.0; Stainless-generated) ships a py.typed marker and
+# fully-typed request/response models, so `mypy --strict` type-checks the
+# Cartesia backend against the real SDK types with no friction — the defensive
+# `ignore_missing_imports` block placed at T03 was dropped here. Transitive
+# surface (anyio MIT / distro Apache-2.0 / httpx BSD-3 / pydantic MIT / sniffio
+# MIT / typing-extensions PSF; websockets BSD-3 extra) all permissive, mostly
+# already in the workspace via deepgram/livekit.
+
 [tool.pytest.ini_options]
 testpaths = ["packages/core/tests", "packages/runtime/tests", "packages/api/tests", "packages/voice/tests"]
 markers = [

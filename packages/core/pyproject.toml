@@ -1,9 +1,43 @@
 [project]
 name = "persona-core"
 version = "0.1.0"
-description = "Open-source library for building AI personas with typed memory"
+description = "Build AI personas with typed memory and tier-routed model selection."
+readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "Apache-2.0"}
+# Source-available, noncommercial use only. NOT OSI-approved.
+# See LICENSE for full terms. Commercial use requires a separate license
+# negotiated with the rights holder.
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Yasin Hessnawi", email = "yasinhessnawi1@gmail.com" },
+]
+keywords = [
+    "ai",
+    "persona",
+    "agent",
+    "llm",
+    "typed-memory",
+    "rag",
+    "pgvector",
+    "agentic",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.3,<3",
@@ -78,6 +112,12 @@ test = [
 
 [project.scripts]
 persona = "persona.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/yasinhessnawi1/Open-Persona"
+Repository = "https://github.com/yasinhessnawi1/Open-Persona"
+Issues = "https://github.com/yasinhessnawi1/Open-Persona/issues"
+Changelog = "https://github.com/yasinhessnawi1/Open-Persona/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]

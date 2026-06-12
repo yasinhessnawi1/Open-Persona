@@ -124,7 +124,12 @@ export function StepCard({
         {step.question ? (
           <div className="flex flex-col gap-2">
             {awaiting ? (
-              <AskUserPrompt question={step.question} onAnswer={onAnswer} />
+              <AskUserPrompt
+                question={step.question}
+                options={step.options}
+                allowFreeForm={step.allowFreeForm}
+                onAnswer={onAnswer}
+              />
             ) : (
               <div
                 className="rounded-md border bg-muted/40 p-3"

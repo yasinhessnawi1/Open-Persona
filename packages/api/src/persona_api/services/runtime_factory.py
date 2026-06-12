@@ -20,6 +20,7 @@ from persona.audit import JSONLAuditLogger
 from persona.config import PersonaCoreConfig
 from persona.errors import PersonaNotFoundError
 from persona.history import ConversationHistoryManager
+from persona.imagegen import make_generate_image_tool
 from persona.schema.persona import Persona
 from persona.skills import BUILTIN_ROOT, SkillInjector, SkillScanner, make_use_skill_tool
 from persona.stores import (
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from persona.imagegen import ImageBackend
     from persona.sandbox.result import SandboxFile
     from persona.stores.embedder import Embedder
     from persona.stores.protocol import MemoryStore
@@ -75,7 +77,31 @@ class RuntimeFactory:
         core_config: PersonaCoreConfig | None = None,
         sandbox_pool: SandboxPool | None = None,
         workspace_root: Path | None = None,
+        image_backend: ImageBackend | None = None,
     ) -> None:
+        """Composition root for per-request loops.
+
+        Args:
+            rls_engine: The RLS-scoped SQLAlchemy engine (D-08-1).
+            embedder: Persona-memory embedder (D-08-8).
+            tier_registry: App-scoped tier registry; closed on shutdown.
+            turn_log_writer: Per-turn log sink (D-08-7).
+            audit_root: Root directory for JSONL audit files (CLI / fallback).
+            core_config: Persona-core runtime config; defaults to env-derived.
+            sandbox_pool: Hosted code-execution pool (Spec 12). ``None`` when
+                ``E2B_API_KEY`` is unset; the ``code_execution`` tool is
+                then absent from the toolbox.
+            workspace_root: Per-persona workspace root (Spec 17
+                D-17-X-bytes-persistence). ``None`` disables produced-file
+                persistence + ``intermediate/*`` cross-turn staging.
+            image_backend: Image-generation backend (Spec 15 T16, Spec 25
+                §2.9 wiring). ``None`` when ``PERSONA_IMAGEGEN_API_KEY`` is
+                unset OR construction failed; the ``generate_image`` tool is
+                then absent from the toolbox (mirrors the sandbox_pool
+                graceful-absence shape — D-12-5 / D-15-X). When non-None,
+                ``_build_toolbox`` composes ``make_generate_image_tool`` so
+                the persona's runtime can dispatch image generation.
+        """
         self._engine = rls_engine
         self._embedder = embedder
         self._tier_registry = tier_registry
@@ -92,6 +118,15 @@ class RuntimeFactory:
         # ``make_pool_code_execution_tool``. None (test / CLI path) ⇒ no
         # persistence + no staging; tool dispatches as before.
         self._workspace_root = workspace_root
+        # Spec 15 T16 + Spec 25 §2.9 — image-generation backend. None when no
+        # provider is configured OR construction failed; the
+        # ``generate_image`` tool is absent in that case (same graceful-
+        # absence pattern as ``sandbox_pool``). Composed into the toolbox
+        # in ``_build_toolbox`` so the persona's chat runtime can dispatch
+        # ``generate_image`` calls — closes the wiring gap diagnosed in
+        # Spec 25 §2.9 where ``make_generate_image_tool`` existed in core
+        # but was never called from the API composition root.
+        self._image_backend = image_backend
         # MCP clients accumulated across requests, closed on shutdown.
         self._mcp_clients: list[MCPClient] = []
 
@@ -185,6 +220,23 @@ class RuntimeFactory:
                     persona_id=persona.persona_id,
                     deferred_input_files_provider=provider,
                     workspace_root=self._workspace_root,
+                )
+            )
+        # Spec 15 T16 + Spec 25 §2.9 — register ``generate_image`` when an
+        # image backend is composed. The persona's ``tools`` allow-list
+        # (Spec 03 D-03-7) is still the final gate inside
+        # ``build_default_toolbox`` — personas that don't declare
+        # ``generate_image`` see no advertised tool, but the registration
+        # itself is unconditional once a backend is available. Mirrors the
+        # ``code_execution`` graceful-absence shape: no backend → no tool;
+        # the model surfaces a structured error if it tries to invoke one
+        # that isn't registered.
+        if self._image_backend is not None:
+            extra.append(
+                make_generate_image_tool(
+                    backend=self._image_backend,
+                    persona_id=persona.persona_id,
+                    persona_visual_style=persona.identity.visual_style,
                 )
             )
         toolbox, mcp_clients = await build_default_toolbox(

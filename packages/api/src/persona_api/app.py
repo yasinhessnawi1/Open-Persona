@@ -20,16 +20,17 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from persona.backends.errors import AuthenticationError
+from persona.errors import PersonaError
 from persona.imagegen import (
     ImageBackend,
-    ImageBackendConfig,
-    ImageGenUnavailableError,
-    load_image_backend,
+    load_image_backend_from_env,
 )
 from persona.logging import get_logger
 from persona.stores.document_store import DocumentStore
 from persona.stores.postgres import PostgresBackend
 from persona_runtime.errors import TierNotConfiguredError
+from persona_runtime.openrouter_subscription import resolve_openrouter_subscription
 from persona_runtime.tier import tier_registry_from_env
 
 from persona_api.background.run_worker import RunRegistry
@@ -63,6 +64,7 @@ from persona_api.services.turn_log_writer import PostgresTurnLogWriter
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from persona.backends.openrouter_catalog import OpenRouterSubscriptionMode
     from sqlalchemy import Engine
 
 __all__ = ["create_app"]
@@ -71,42 +73,83 @@ __all__ = ["create_app"]
 _LOG = get_logger("api.app")
 
 
-def _compose_image_backend() -> ImageBackend | None:
-    """Build the image-generation backend at startup (spec 15 T16).
+def _resolve_openrouter_subscription_mode() -> OpenRouterSubscriptionMode | None:
+    """Resolve the OpenRouter free/paid mode at startup (Spec 22 T13 + T15).
 
-    Reads ``PERSONA_IMAGEGEN_*`` env vars via
-    :class:`persona.imagegen.ImageBackendConfig`. When ``api_key`` is
-    ``None`` (the env var is unset) we return ``None`` and log a warning
-    rather than raising — dev environments without an image provider
-    boot cleanly; the route raises
-    :class:`persona.imagegen.ImageGenUnavailableError` → 503 on a request
-    that needs the backend, same fail-loud pattern as the Spec 12
-    sandbox-pool absence (D-12-5).
+    Probes ``GET /api/v1/key`` once (or honours the
+    ``PERSONA_OPENROUTER_SUBSCRIPTION_MODE`` override) so the resolved mode can
+    be threaded into both the chat :class:`TierRegistry` (D-22-2 free-mode
+    filter) and the image-gen factory (D-22-20 drop). Returns ``None`` when
+    OpenRouter is not configured (no key) — the zero-touch opt-in path.
 
-    Returns ``None`` when no provider is configured OR when the concrete
-    backend constructor itself raises
-    :class:`ImageGenUnavailableError` at construction time (auth check
-    happens then per D-15-X-construction-time-fail-fast; we let the
-    deployment boot regardless so chat / runs / authoring routes stay
-    available).
+    Composition-root degradation: an :class:`AuthenticationError` (the
+    resolver's D-22-9 fail-loud signal for an invalid key) is logged at ERROR
+    and swallowed here so one optional provider's bad key does NOT block API
+    startup — consistent with the graceful-absence pattern used for the
+    image backend and the E2B-less sandbox pool above. The misconfigured
+    OpenRouter entries then surface their 401 at call time. A transient probe
+    failure already degrades to free-mode inside the resolver (D-22-3).
     """
-    config = ImageBackendConfig.from_env(prefix="PERSONA_IMAGEGEN_")
-    if config.api_key is None:
+    try:
+        state = resolve_openrouter_subscription()
+    except AuthenticationError as exc:
+        _LOG.error(
+            "OpenRouter API key rejected at startup; OpenRouter free-mode "
+            "filtering disabled (reason={reason})",
+            reason=str(exc),
+        )
+        return None
+    if state is None:
+        return None
+    _LOG.info(
+        "OpenRouter subscription mode resolved mode={mode} probe_failed={probe_failed}",
+        mode=state.mode,
+        probe_failed=state.probe_failed,
+    )
+    return state.mode
+
+
+def _compose_image_backend(
+    openrouter_subscription_mode: OpenRouterSubscriptionMode | None = None,
+) -> ImageBackend | None:
+    """Build the image-generation backend at startup (spec 15 T16; spec 25 §2.7).
+
+    Spec 25 T17 fix: delegate to
+    :func:`persona.imagegen.load_image_backend_from_env`, which applies the
+    D-20-17 four-case precedence — ``PERSONA_IMAGEGEN_MODELS`` (cross-provider
+    list, wrapped in a ``MultiModelImageBackend`` for N≥2) wins over the legacy
+    ``PERSONA_IMAGEGEN_PROVIDER/MODEL/API_KEY`` triplet, with an INFO log when
+    both are set. The pre-fix code read ONLY the triplet, so a MODELS-list
+    Setup C config silently fell back to the hard-coded ``openai/gpt-image-1``
+    default and 503'd (§2.7).
+
+    When NEITHER form is configured we return ``None`` with a clear
+    "not configured" warning (no silent hard-coded default); the route then
+    raises :class:`persona.imagegen.ImageGenUnavailableError` → 503 on a
+    request that needs the backend (same fail-loud pattern as the Spec 12
+    sandbox-pool absence, D-12-5). Any construction-time
+    :class:`persona.errors.PersonaError` (missing key, all-slots-unresolved,
+    malformed MODELS, unknown provider) is caught so the deployment still
+    boots cleanly and chat / runs / authoring routes stay available.
+    """
+    import os
+
+    models_set = bool(os.environ.get("PERSONA_IMAGEGEN_MODELS", "").strip())
+    triplet_key_set = bool(os.environ.get("PERSONA_IMAGEGEN_API_KEY", "").strip())
+    if not models_set and not triplet_key_set:
         _LOG.warning(
-            "PERSONA_IMAGEGEN_API_KEY not set — image generation will return 503"
-            " (provider={provider} model={model})",
-            provider=config.provider,
-            model=config.model,
+            "image generation not configured — set PERSONA_IMAGEGEN_MODELS "
+            "(cross-provider list) OR the PERSONA_IMAGEGEN_PROVIDER/MODEL/API_KEY "
+            "triplet; image generation will return 503 until then"
         )
         return None
     try:
-        return load_image_backend(config)
-    except ImageGenUnavailableError as exc:
+        return load_image_backend_from_env(
+            openrouter_subscription_mode=openrouter_subscription_mode
+        )
+    except PersonaError as exc:
         _LOG.warning(
-            "image backend construction failed; image generation will return 503"
-            " (provider={provider} model={model} reason={reason})",
-            provider=config.provider,
-            model=config.model,
+            "image backend construction failed; image generation will return 503 (reason={reason})",
             reason=str(exc),
         )
         return None
@@ -207,7 +250,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # configured — the route raises ``ImageGenUnavailableError`` → 503
     # in that case (same dev-friendly graceful-absence shape as the
     # E2B-less sandbox pool).
-    app.state.image_backend = _compose_image_backend()
+    # Spec 22 T13/T15: resolve OpenRouter free/paid mode once (probe or env
+    # override), then thread it into both the image backend (D-22-20 drop) and
+    # the chat TierRegistry (D-22-2 filter). ``None`` when OpenRouter is unused.
+    openrouter_mode = _resolve_openrouter_subscription_mode()
+    app.state.image_backend = _compose_image_backend(openrouter_mode)
 
     # Runtime composition root (T10): the TierRegistry (app-scoped) + the
     # per-request loop builders. Built only when a model backend is configured
@@ -216,7 +263,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     runtime_factory: RuntimeFactory | None = None
     if rls_engine is not None:
         try:
-            tier_registry = tier_registry_from_env()
+            tier_registry = tier_registry_from_env(openrouter_subscription_mode=openrouter_mode)
         except TierNotConfiguredError:
             tier_registry = None
         if tier_registry is not None:
@@ -234,6 +281,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # so the code_execution tool persists produced files into the
                 # served persona workspace + stages intermediate/* cross-turn.
                 workspace_root=app.state.workspace_root,
+                # Spec 15 T16 + Spec 25 §2.9: thread the image backend so the
+                # factory composes ``generate_image`` into the persona's
+                # toolbox (the wiring gap diagnosed in Spec 25 §2.9 — the
+                # factory + HTTP endpoint had the backend; the per-request
+                # toolbox never did). ``None`` ⇒ tool absent (same graceful
+                # shape as sandbox_pool).
+                image_backend=app.state.image_backend,
             )
             app.state.tier_registry = tier_registry
             app.state.authoring_tier = config.authoring_tier

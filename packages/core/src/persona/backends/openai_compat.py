@@ -100,16 +100,127 @@ _NATIVE_TOOLS_CAPABILITY: dict[str, frozenset[str] | Literal["all"]] = {
             "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         }
     ),
+    # Spec 22 D-22-10f: the OpenRouter row ships EMPTY. OpenRouter model
+    # strings are full slugs (``anthropic/claude-3.5-sonnet:free``); this row
+    # is a pure positive-override hook for operators (an exact-slug entry
+    # forces tools=True). Routine capability comes from catalog metadata
+    # (tier 2, layered by T10/T11) or underlying-model inference (tier 3,
+    # below) — never from pre-seeded entries here that would go stale.
+    "openrouter": frozenset(),
 }
+
+
+# --- OpenRouter capability inference (Spec 22 D-22-4 + D-22-10) ---
+#
+# OpenRouter model strings are full slugs: ``author/model[:variant]``. The
+# three-tier resolver sits in FRONT of the matrices above:
+#   tier 1 — explicit ``openrouter`` row, exact-slug positive override;
+#   tier 2 — catalog metadata (``supported_parameters`` / ``input_modalities``),
+#            the workhorse, layered in at backend construction by T10/T11;
+#   tier 3 — underlying-model inference (this module), the OFFLINE FALLBACK
+#            used when the catalog is unavailable or the slug is absent.
+# T08 ships tiers 1 + 3 and the reusable helpers; the T10/T11 catalog
+# resolver composes tier 1 → tier 2 → tier 3 over these same helpers.
+
+# Author-prefix → existing provider-key map (R-22-4). Only these four author
+# prefixes coincide with a populated capability matrix row; all other authors
+# (meta-llama, google, mistralai, qwen, ...) have NO row and degrade to the
+# conservative shim/no-vision default in tier 3 (the catalog rescues them in
+# tier 2 in practice).
+_OPENROUTER_AUTHOR_TO_PROVIDER: Final[dict[str, str]] = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "deepseek": "deepseek",
+    "nvidia": "nvidia",
+}
+
+# Documented OpenRouter variant suffixes (R-22-4 / D-22-6). Static variants
+# (free/extended/thinking/beta) are separate catalog entries; dynamic variants
+# (nitro/floor/exacto/online) are routing transforms. Tier-3 inference strips
+# all of them to the base slug; an unknown suffix strips + WARNs (D-22-10d).
+_KNOWN_OPENROUTER_VARIANTS: Final[frozenset[str]] = frozenset(
+    {"free", "extended", "thinking", "beta", "nitro", "floor", "exacto", "online"}
+)
+
+
+def _matrix_contains(
+    matrix: dict[str, frozenset[str] | Literal["all"]], provider: str, name: str
+) -> bool:
+    """Return whether ``name`` is covered by ``matrix[provider]`` (``"all"`` wins)."""
+    capability = matrix.get(provider, frozenset())
+    if capability == "all":
+        return True
+    assert isinstance(capability, frozenset)
+    return name in capability
+
+
+def _explicit_openrouter_entry(
+    slug: str, matrix: dict[str, frozenset[str] | Literal["all"]]
+) -> bool:
+    """Tier 1 — exact-slug positive override in the ``openrouter`` matrix row.
+
+    Returns ``True`` only when an operator has explicitly listed the full
+    slug; absence falls through to catalog (tier 2) / inference (tier 3).
+    The ``openrouter`` row is never ``"all"`` (D-22-10f), so a plain
+    membership test suffices.
+    """
+    row = matrix.get("openrouter", frozenset())
+    assert isinstance(row, frozenset)
+    return slug in row
+
+
+def _infer_openrouter_capability(
+    slug: str, *, matrix: dict[str, frozenset[str] | Literal["all"]], is_tools: bool
+) -> bool:
+    """Tier 3 — underlying-model inference for an OpenRouter slug (R-22-4).
+
+    Conservative by construction (prefers false negatives → prompt shim /
+    no image attach), because an optimistic miss surfaces as a hard runtime
+    error. Implements: ``:free`` asymmetric conservatism (tools→False per
+    verified ``404 No endpoints that support tool use``; vision falls back to
+    the base slug — free/paid deltas drop parameters, never input modalities),
+    unknown-variant strip+WARN, author-prefix→provider map, and the
+    load-bearing DUAL match key (existing rows mix bare names like
+    ``deepseek-chat`` and full slugs like ``nvidia/vila``).
+    """
+    base, _, variant = slug.partition(":")
+    author, _, model = base.partition("/")
+    if variant == "free" and is_tools:
+        return False
+    if variant and variant not in _KNOWN_OPENROUTER_VARIANTS:
+        _LOG.warning(
+            "unknown OpenRouter model variant; stripping to base slug",
+            slug=slug,
+            variant=variant,
+        )
+    provider = _OPENROUTER_AUTHOR_TO_PROVIDER.get(author)
+    if provider is None:
+        # Unmapped author (meta-llama, google, mistralai, ...) → shim default.
+        return False
+    # Dual match key: try the stripped model name, then the full base slug.
+    return _matrix_contains(matrix, provider, model) or _matrix_contains(matrix, provider, base)
+
+
+def _resolve_openrouter_capability(
+    slug: str, *, matrix: dict[str, frozenset[str] | Literal["all"]], is_tools: bool
+) -> bool:
+    """Resolve an OpenRouter slug's capability via tier 1 → tier 3.
+
+    The catalog tier (tier 2) is composed OVER this function by the T10/T11
+    resolver when a catalog is available at construction; at construction
+    time without a catalog (Cluster A), capability resolves via the explicit
+    override (tier 1) then underlying-model inference (tier 3).
+    """
+    if _explicit_openrouter_entry(slug, matrix):
+        return True
+    return _infer_openrouter_capability(slug, matrix=matrix, is_tools=is_tools)
 
 
 def _native_tools_supported(provider: str, model: str) -> bool:
     """Look up the native-tools capability for a (provider, model) pair."""
-    capability = _NATIVE_TOOLS_CAPABILITY.get(provider, frozenset())
-    if capability == "all":
-        return True
-    assert isinstance(capability, frozenset)
-    return model in capability
+    if provider == "openrouter":
+        return _resolve_openrouter_capability(model, matrix=_NATIVE_TOOLS_CAPABILITY, is_tools=True)
+    return _matrix_contains(_NATIVE_TOOLS_CAPABILITY, provider, model)
 
 
 # D-13-3 vision capability matrix; verify-at-deploy per T19 close-out.
@@ -140,6 +251,11 @@ _VISION_CAPABILITY: dict[str, frozenset[str] | Literal["all"]] = {
             "nvidia/cosmos-reason2-8b",
         }
     ),
+    # Spec 22 D-22-10f: empty OpenRouter override row (see the tools matrix
+    # note above). Vision capability resolves via catalog ``input_modalities``
+    # (tier 2) or underlying-model inference (tier 3); vision inference for a
+    # ``:free`` slug falls back to the base slug (D-22-10c).
+    "openrouter": frozenset(),
 }
 
 # D-13-3 "verify-at-deploy" precedent — model IDs above were sourced from a
@@ -160,11 +276,9 @@ _NVIDIA_VISION_MODELS_VERIFY_AT_DEPLOY: Final[frozenset[str]] = frozenset(
 
 def _vision_supported(provider: str, model: str) -> bool:
     """Look up the vision capability for a (provider, model) pair (D-13-3)."""
-    capability = _VISION_CAPABILITY.get(provider, frozenset())
-    if capability == "all":
-        return True
-    assert isinstance(capability, frozenset)
-    return model in capability
+    if provider == "openrouter":
+        return _resolve_openrouter_capability(model, matrix=_VISION_CAPABILITY, is_tools=False)
+    return _matrix_contains(_VISION_CAPABILITY, provider, model)
 
 
 def _extract_retry_after_s(headers: Any) -> str | None:  # noqa: ANN401 — SDK type
@@ -194,8 +308,11 @@ class OpenAICompatibleBackend:
 
         Args:
             config: Backend configuration. ``provider`` must be one of
-                ``anthropic | openai | deepseek | groq | together | nvidia``
-                (Spec 20 added nvidia per D-20-X-nvidia-allow-set-extend).
+                ``anthropic | openai | deepseek | groq | together | nvidia |
+                openrouter`` (Spec 20 added nvidia per
+                D-20-X-nvidia-allow-set-extend; Spec 22 added openrouter per
+                the same allow-set-extend invariant — adding to the Provider
+                Literal alone is necessary but NOT sufficient).
             workspace_root: Optional persona workspace root used by the
                 Spec 13 multimodal serialisers (T05/T06) to resolve
                 :class:`ImageContent` workspace-path refs to bytes. Most
@@ -213,6 +330,7 @@ class OpenAICompatibleBackend:
             "groq",
             "together",
             "nvidia",
+            "openrouter",
         }:
             msg = (
                 f"OpenAICompatibleBackend does not handle provider "

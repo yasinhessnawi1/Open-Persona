@@ -314,3 +314,37 @@ def test_voice_log_all_t08_fields_populated_round_trip() -> None:
     assert rehydrated.stt_audio_pushed_at == ts
     assert rehydrated.stt_provider_cost_cents_per_minute == 0.48
     assert rehydrated.stt_total_cents == 2.4
+
+
+# ---------- Spec V3 T11 additive TTS fields (D-V3-X-cost + D-05-9) ----------
+
+
+def test_voice_log_all_t11_tts_fields_default_to_none() -> None:
+    """Additive — existing VoiceLog tests pass byte-for-byte."""
+    log = _build_log()
+    assert log.tts_text_first_at is None
+    assert log.tts_first_audio_at is None
+    assert log.tts_provider_cost_cents_per_minute is None
+    assert log.tts_total_cents is None
+
+
+@pytest.mark.parametrize("field", ["tts_provider_cost_cents_per_minute", "tts_total_cents"])
+def test_voice_log_t11_cost_fields_reject_negative(field: str) -> None:
+    with pytest.raises(ValidationError):
+        _build_log(**{field: -0.01})
+
+
+def test_voice_log_all_t11_fields_populated_round_trip() -> None:
+    """End-to-end JSON round-trip with all 4 T11 TTS fields populated."""
+    ts = datetime.now(UTC)
+    log = _build_log(
+        tts_text_first_at=ts,
+        tts_first_audio_at=ts,
+        tts_provider_cost_cents_per_minute=2.3,  # Cartesia est. cents/min
+        tts_total_cents=11.5,  # 5-min call at 2.3 cents/min
+    )
+    rehydrated = VoiceLog.model_validate_json(log.model_dump_json())
+    assert rehydrated.tts_text_first_at == ts
+    assert rehydrated.tts_first_audio_at == ts
+    assert rehydrated.tts_provider_cost_cents_per_minute == 2.3
+    assert rehydrated.tts_total_cents == 11.5

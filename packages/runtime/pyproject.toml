@@ -1,8 +1,42 @@
 [project]
 name = "persona-runtime"
 version = "0.1.0"
-description = "Generation loop, router, and agentic engine for Persona"
+description = "Generation loop, router, and agentic engine for persona-core."
+readme = "README.md"
 requires-python = ">=3.11"
+# Source-available, noncommercial use only. NOT OSI-approved.
+# See LICENSE for full terms. Commercial use requires a separate license
+# negotiated with the rights holder.
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Yasin Hessnawi", email = "yasinhessnawi1@gmail.com" },
+]
+keywords = [
+    "ai",
+    "persona",
+    "agent",
+    "llm",
+    "agentic",
+    "router",
+    "tool-use",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "persona-core",
     # Direct dep for prompt-token estimation in prompt.py (D-05-8). Already
@@ -11,12 +45,21 @@ dependencies = [
     "tiktoken>=0.7,<1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/yasinhessnawi1/Open-Persona"
+Repository = "https://github.com/yasinhessnawi1/Open-Persona"
+Issues = "https://github.com/yasinhessnawi1/Open-Persona/issues"
+Changelog = "https://github.com/yasinhessnawi1/Open-Persona/blob/main/CHANGELOG.md"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/persona_runtime"]
+include = [
+    "src/persona_runtime/py.typed",
+]
 
 [tool.uv.sources]
 persona-core = { workspace = true }

@@ -30,11 +30,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, TypedDict
 
+from persona.autonomy import policy_for, resolve_autonomy
 from persona.backends.types import reasoning_as_text
 from persona.logging import get_logger
 from persona.schema.chunks import ChunkProvenance, PersonaChunk, WriteSource, make_chunk_id
@@ -44,8 +47,16 @@ from persona.skills import collect_skill_supplements, render_skill_index
 from persona.tools import format_tool_result
 
 from persona_runtime.agentic.events import RunEvent
-from persona_runtime.logging import TurnLog, estimate_cost_cents
+from persona_runtime.ambiguity import DetectionContext, detect_ambiguity, should_ask
+from persona_runtime.logging import (
+    TurnLog,
+    cost_basis_for,
+    detect_tool_refusals,
+    estimate_cost_cents,
+)
 from persona_runtime.prompt import DocumentContext, RetrievedContext
+from persona_runtime.question_author import TemplateQuestionAuthor
+from persona_runtime.questions import QuestionRegistry
 from persona_runtime.routing import (
     FirstTokenLatencyTracker,
     HeuristicRouter,
@@ -69,6 +80,8 @@ if TYPE_CHECKING:
 
     from persona_runtime.logging import TurnLogWriter
     from persona_runtime.prompt import PromptBuilder
+    from persona_runtime.question_author import QuestionAuthor
+    from persona_runtime.questions import ProactiveQuestion
     from persona_runtime.routing import Router
     from persona_runtime.tier import TierRegistry
 
@@ -135,6 +148,21 @@ class _RoundOutcome:
     reasoning_text: str = ""
 
 
+@dataclass(frozen=True)
+class _ProactiveDecision:
+    """Outcome of the spec-21 proactive-question decision (T06).
+
+    Exactly one of the two fields is meaningful at a time: ``question`` set →
+    ask it and end the turn; ``assumption_nudge`` set → a signal fired but was
+    not asked (gated/deduped/class-C), so prepend this stated-assumption system
+    instruction (D-21-18) and generate normally. Both ``None`` is never
+    returned (the caller gets ``None`` instead when no signal fired).
+    """
+
+    question: ProactiveQuestion | None = None
+    assumption_nudge: str | None = None
+
+
 class ConversationLoop:
     """Orchestrates a single conversation turn (spec §4).
 
@@ -160,10 +188,16 @@ class ConversationLoop:
         turn_log_writer: TurnLogWriter,
         max_tool_rounds: int = 5,
         latency_tracker: FirstTokenLatencyTracker | None = None,
+        question_author: QuestionAuthor | None = None,
     ) -> None:
         self._persona = persona
         self._stores = stores
         self._toolbox = toolbox
+        # Spec 21 T06: proactive clarifying questions (D-21-1). The author turns
+        # an ambiguity signal into the 3+1 question; the template author is the
+        # D-21-14 mandatory fallback and the default, a model-backed author is
+        # injected when available. Not feature-flagged — core v0.1 autonomy.
+        self._question_author = question_author or TemplateQuestionAuthor()
         self._scanner = skill_scanner
         self._injector = skill_injector
         self._scanned_skills = scanned_skills
@@ -174,6 +208,21 @@ class ConversationLoop:
         self._tiers = tier_registry
         self._turn_log_writer = turn_log_writer
         self._max_tool_rounds = max_tool_rounds
+        # Spec 25 T12 (§2.1 / D-25-5/6 / D-25-X-t12-window-location): rolling
+        # 10-turn fallback-rate window lives HERE in the turn loop (turns ≠
+        # backend calls; one backend instance serves many conversations, so the
+        # window cannot live on the backend). ``_fallback_alerting`` is the
+        # hysteresis state: enter ALERTING at strict >30% (≥4/10) with a
+        # min-sample guard; clear only at ≤20% (≤2/10). Edge-triggered logging.
+        self._fallback_window: deque[bool] = deque(maxlen=10)
+        self._fallback_alerting = False
+        # Spec 25 T21 (§2.9 RISKY half) — refusal auto-retry guardrail.
+        # DEFAULT-OFF: only an explicit truthy ``PERSONA_REFUSAL_RETRY_ENABLED``
+        # ("1"/"true"/"yes", case-insensitive) arms it. When off the turn loop
+        # is detection-only (T11/T12 observability). Read once at construction.
+        self._refusal_retry_enabled = os.environ.get(
+            "PERSONA_REFUSAL_RETRY_ENABLED", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         # Spec 18 T06: per-process first-token-latency tracker
         # (D-18-X-first-token-measurement-impl). Composition-root-owned so
         # multiple loops share a single EWMA estimate per model; an unset
@@ -240,6 +289,42 @@ class ConversationLoop:
 
         context = self._retrieve(persona_id, user_message)
         history, compacted = await self._manage_history(conversation)
+
+        # Spec 21 T06 (D-21-1): proactive clarifying question decision point —
+        # PRE-generation, before routing (D-05-12 ordering). When a question is
+        # asked the turn ends here (the answer arrives as the next user turn);
+        # when a signal is suppressed/gated a stated-assumption nudge is seeded
+        # into the prompt (D-21-18); when nothing fires the turn is unchanged.
+        proactive = await self._decide_proactive_question(conversation, user_message, persona_id)
+        if proactive is not None and proactive.question is not None:
+            q = proactive.question
+            if on_event is not None:
+                await on_event(
+                    RunEvent.asking_user(
+                        -1, q.question, options=q.options, allow_free_form=q.allow_free_form
+                    )
+                )
+            yield _text_chunk(q.question)
+            now_q = datetime.now(UTC)
+            conversation.messages.append(
+                ConversationMessage(role="user", content=user_message, created_at=now_q)
+            )
+            conversation.messages.append(
+                ConversationMessage(
+                    role="assistant",
+                    content=q.question,
+                    created_at=now_q,
+                    metadata={"proactive_question": "true"},
+                )
+            )
+            yield _final_chunk(None)
+            return
+        assumption_seed: list[ConversationMessage] = (
+            [self._system_message(proactive.assumption_nudge)]
+            if proactive is not None and proactive.assumption_nudge is not None
+            else []
+        )
+
         skill_index = render_skill_index(self._scanned_skills)
         # Spec 18 T12: measure the router's OWN decision latency (distinct
         # from the whole-turn latency_ms) for D-18-X-turnlog-extension.
@@ -265,9 +350,15 @@ class ConversationLoop:
         matched_skill_content: str | None = None
         injected_this_turn = False
         tool_call_count = 0
+        # Spec 25 T22 (§2.4): ORed across the turn's tool dispatches from each
+        # ToolResult.metadata["sandbox_session_recreated"] flag (set by the
+        # sandbox tool wrapper's auto-recovery, T09).
+        session_recreated = False
         usage: TokenUsage | None = None
         assistant_text = ""
-        tool_messages: list[ConversationMessage] = []
+        # Seeded with the spec-21 stated-assumption nudge when a non-asked signal
+        # fired (D-21-18); otherwise empty. Carried into every round's prompt.
+        tool_messages: list[ConversationMessage] = list(assumption_seed)
         # Spec 20 T12 (D-20-5): accumulate reasoning text across rounds for
         # the TurnLog content hash; raw text is hashed and DISCARDED at
         # write-back — never persisted.
@@ -322,6 +413,11 @@ class ConversationLoop:
                 for call in round_calls:
                     result = await self._dispatch(call)
                     tool_call_count += 1
+                    # Spec 25 T22 (§2.4): the sandbox wrapper flags an
+                    # auto-recovered session in ToolResult.metadata (str
+                    # "True"/"False" per the dict[str,str] convention).
+                    if result.metadata.get("sandbox_session_recreated") == "True":
+                        session_recreated = True
                     if on_event is not None:
                         await on_event(RunEvent.tool_result(-1, call.name, result))
                     tool_messages.append(
@@ -394,6 +490,59 @@ class ConversationLoop:
                 usage = round_usage
             break
 
+        # Spec 25 T21 (§2.9 RISKY half; default-OFF) — refusal auto-retry.
+        # If armed AND the model produced NO tool call this turn AND its text
+        # refused an AVAILABLE tool, inject ONE corrective system message and
+        # re-generate exactly once. The corrected text streams to the consumer
+        # (transparent self-correction); the retry's text replaces
+        # ``assistant_text`` for write-back. One retry per turn — never loops.
+        refusal_retry_engaged = False
+        if self._refusal_retry_enabled and tool_call_count == 0:
+            refused = detect_tool_refusals(assistant_text, self._toolbox.names())
+            if refused:
+                refusal_retry_engaged = True
+                now_ts = datetime.now(UTC)
+                tool_messages.append(
+                    ConversationMessage(role="assistant", content=assistant_text, created_at=now_ts)
+                )
+                tool_messages.append(
+                    ConversationMessage(
+                        role="system",
+                        content=(
+                            f"You DO have the {', '.join(refused)} tool(s) available. "
+                            "Do not decline — call the appropriate tool to fulfil the "
+                            "user's request."
+                        ),
+                        created_at=now_ts,
+                    )
+                )
+                retry_prompt = [
+                    *self._builder.build(
+                        self._persona,
+                        context,
+                        history,
+                        skill_index,
+                        user_message,
+                        max_tokens=max_tokens,
+                        matched_skill_content=matched_skill_content,
+                        document_context=document_context,
+                    ),
+                    *tool_messages,
+                ]
+                retry_outcome = _RoundOutcome()
+                async for delta in self._stream_round(backend, retry_prompt, retry_outcome):
+                    yield _text_chunk(delta)
+                if retry_outcome.text:
+                    assistant_text = retry_outcome.text
+                if retry_outcome.usage is not None:
+                    usage = retry_outcome.usage
+                reasoning_buffer += retry_outcome.reasoning_text
+                _logger.info(
+                    "refusal-retry engaged: corrected a tool refusal tools={tools} tier={tier}",
+                    tools=",".join(refused),
+                    tier=tier,
+                )
+
         # 7. Post-generation write-back — the LAST step before the final chunk
         #    (D-05-12). An early consumer-exit mid-stream never reaches here
         #    because the generator stays suspended at an earlier yield.
@@ -406,11 +555,14 @@ class ConversationLoop:
             usage=usage,
             latency_ms=latency_ms,
             tool_calls=tool_call_count,
+            refusal_retry_engaged=refusal_retry_engaged,
+            session_recreated=session_recreated,
             skill_used=skill_used,
             compacted=compacted,
             decision=decision,
             routing_latency_ms=routing_latency_ms,
             reasoning_text=reasoning_buffer,
+            assistant_text=assistant_text,
         )
         now = datetime.now(UTC)
         conversation.messages.append(
@@ -431,6 +583,97 @@ class ConversationLoop:
             msg = "persona_id is required for the conversation loop"
             raise ValueError(msg)
         return pid
+
+    # ----- proactive question (spec 21 T06) --------------------------------
+
+    async def _decide_proactive_question(
+        self, conversation: Conversation, user_message: str, persona_id: str
+    ) -> _ProactiveDecision | None:
+        """Decide whether to ask a clarifying question this turn (D-21-1).
+
+        Returns ``None`` when no ambiguity fired (the turn is unchanged). When a
+        signal fires: ask it (``question`` set) if the autonomy policy gates it
+        in, it is not a per-conversation duplicate (D-21-6), and the per-turn cap
+        (1) is free; otherwise return a stated-assumption nudge (D-21-18). The
+        ask-rate / suppression telemetry is logged either way (D-21-20).
+        """
+        ctx = self._detection_context(conversation, self._persona.identity.language_default)
+        signal = detect_ambiguity(user_message, ctx)
+        if signal is None:
+            return None
+
+        level = resolve_autonomy(
+            self._persona,
+            self._stores["self_facts"].get_all(persona_id, include_superseded=True),
+        )
+        policy = policy_for(level)
+        if not should_ask(signal, policy):
+            _logger.info(
+                "proactive question suppressed class={cls} pattern={pat} autonomy={lvl}",
+                cls=str(signal.signal_class),
+                pat=signal.pattern_id,
+                lvl=level,
+            )
+            return _ProactiveDecision(assumption_nudge=self._assumption_nudge(signal))
+
+        question = await self._question_author.author(
+            user_message, signal, language=self._persona.identity.language_default
+        )
+        registry = self._build_question_registry(conversation)
+        if registry.seen(question.question):
+            # Already asked an equivalent question this conversation (D-21-6) —
+            # do not re-ask; proceed (the prior answer is in history).
+            _logger.info("proactive question deduped pattern={pat}", pat=signal.pattern_id)
+            return None
+        _logger.info(
+            "proactive question asked class={cls} pattern={pat} autonomy={lvl}",
+            cls=str(signal.signal_class),
+            pat=signal.pattern_id,
+            lvl=level,
+        )
+        return _ProactiveDecision(question=question)
+
+    @staticmethod
+    def _detection_context(conversation: Conversation, language: str) -> DetectionContext:
+        """Build the detector context from conversation state (D-21-6 suppressors)."""
+        messages = conversation.messages
+        prev_was_question = bool(messages) and (
+            messages[-1].role == "assistant"
+            and messages[-1].metadata.get("proactive_question") == "true"
+        )
+        return DetectionContext(
+            prev_turn_was_question=prev_was_question,
+            has_prior_context=bool(messages),
+            language=language,
+        )
+
+    @staticmethod
+    def _build_question_registry(conversation: Conversation) -> QuestionRegistry:
+        """Reconstruct the per-conversation dedup registry from tagged turns (D-21-6)."""
+        registry = QuestionRegistry()
+        for message in conversation.messages:
+            if (
+                message.role == "assistant"
+                and message.metadata.get("proactive_question") == "true"
+                and isinstance(message.content, str)
+            ):
+                registry.record(message.content)
+        return registry
+
+    @staticmethod
+    def _assumption_nudge(signal: object) -> str:
+        """The stated-assumption system instruction for a suppressed signal (D-21-18)."""
+        missing = getattr(signal, "missing_element", "detail")
+        return (
+            "The user's request is somewhat under-specified "
+            f"(unclear: {missing}). Make the most reasonable assumption, state that "
+            "assumption explicitly in one short sentence at the start of your reply, "
+            "then proceed — do not ask a clarifying question."
+        )
+
+    @staticmethod
+    def _system_message(text: str) -> ConversationMessage:
+        return ConversationMessage(role="system", content=text, created_at=datetime.now(UTC))
 
     def _retrieve(self, persona_id: str, user_message: str) -> RetrievedContext:
         """Retrieve per-turn context using the real store signatures (§4.1)."""
@@ -678,12 +921,22 @@ class ConversationLoop:
         decision: RoutingDecision,
         routing_latency_ms: float,
         reasoning_text: str = "",
+        assistant_text: str = "",
+        refusal_retry_engaged: bool = False,
+        session_recreated: bool = False,
     ) -> None:
         prompt_tokens = usage.prompt_tokens if usage is not None else 0
         completion_tokens = usage.completion_tokens if usage is not None else 0
         cost = estimate_cost_cents(
             backend.provider_name, backend.model_name, prompt_tokens, completion_tokens
         )
+        # Spec 25 T13 (§2.6 / D-25-7): surface how ``cost`` was derived so
+        # operators can tell provider-listed rates from verify-at-deploy
+        # shadow-price estimates (e.g. NVIDIA).
+        cost_basis = cost_basis_for(backend.provider_name, backend.model_name)
+        # Spec 25 T11 (§2.9): observability-only refusal detection — flag any
+        # AVAILABLE tool the assistant text refused to use. No correction here.
+        tool_refusal_detected = detect_tool_refusals(assistant_text, self._toolbox.names())
         # Spec 20 T12 (D-20-5): content-hash-only — hash the raw reasoning
         # text and DISCARD it. Token-count approximation from whitespace
         # split is a coarse v0.1 estimate (providers don't surface separate
@@ -700,6 +953,15 @@ class ConversationLoop:
         # via ``getattr(..., None) or []``, yielding the zero-fallback
         # default shape (backward compat).
         fallback_kwargs = _compute_fallback_fields(backend)
+        # Spec 25 T12 (§2.1 / D-25-5/6): feed this turn's fallback signal into
+        # the rolling window and resolve the alert state (hysteresis + logging
+        # handled in the helper).
+        fallback_rate_alert = self._update_fallback_window(
+            engaged=fallback_kwargs["fallback_engaged"],
+            conversation_id=conversation.conversation_id,
+            provider=backend.provider_name,
+            model=backend.model_name,
+        )
         self._turn_log_writer.write(
             TurnLog(
                 conversation_id=conversation.conversation_id,
@@ -711,6 +973,7 @@ class ConversationLoop:
                 completion_tokens=completion_tokens,
                 latency_ms=latency_ms,
                 cost_cents=cost,
+                cost_basis=cost_basis,
                 tool_calls=tool_calls,
                 skill_used=skill_used,
                 history_compacted=compacted,
@@ -721,9 +984,62 @@ class ConversationLoop:
                 routing_fallback_reason=decision.fallback_reason,
                 reasoning_total_tokens=reasoning_total_tokens,
                 reasoning_text_hash=reasoning_text_hash,
+                tool_refusal_detected=tool_refusal_detected,
+                fallback_rate_alert=fallback_rate_alert,
+                refusal_retry_engaged=refusal_retry_engaged,
+                sandbox_session_recreated=session_recreated,
                 **fallback_kwargs,
             )
         )
+
+    def _update_fallback_window(
+        self,
+        *,
+        engaged: bool,
+        conversation_id: str,
+        provider: str,
+        model: str,
+    ) -> bool:
+        """Push this turn's fallback signal and resolve the alert state.
+
+        Spec 25 §2.1 / D-25-5 / D-25-6. Count-based rolling window (turns
+        arrive irregularly, so a time-window false-pages in low-traffic
+        regimes per the SRE precedent). Strict ``>30%`` entry threshold
+        (``≥4/10`` on a full window) with a min-sample guard (``≥5`` turns AND
+        ``≥2`` fallbacks, so 1-in-2 noise can't trip it); hysteresis clears at
+        ``≤20%`` (``≤2/10``). Edge-triggered: exactly one ERROR per breach
+        episode at the OK→ALERTING edge, one INFO at recovery. Returns the
+        current ALERTING state for the TurnLog ``fallback_rate_alert`` field.
+        """
+        self._fallback_window.append(engaged)
+        n = len(self._fallback_window)
+        count = sum(self._fallback_window)
+        rate = count / n if n else 0.0
+        if not self._fallback_alerting:
+            if n >= 5 and count >= 2 and rate > 0.30:
+                self._fallback_alerting = True
+                _logger.error(
+                    "multi_model fallback-rate alert: {count}/{n} turns "
+                    "({rate:.0%}) used fallback (>30% over rolling window); "
+                    "primary provider={provider} model={model} conversation={conv}",
+                    count=count,
+                    n=n,
+                    rate=rate,
+                    provider=provider,
+                    model=model,
+                    conv=conversation_id,
+                )
+        elif rate <= 0.20:
+            self._fallback_alerting = False
+            _logger.info(
+                "multi_model fallback-rate recovered: {count}/{n} turns "
+                "({rate:.0%}) ≤20%; conversation={conv}",
+                count=count,
+                n=n,
+                rate=rate,
+                conv=conversation_id,
+            )
+        return self._fallback_alerting
 
 
 class _FallbackFields(TypedDict):

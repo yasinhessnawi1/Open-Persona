@@ -63,8 +63,11 @@ def make_file_write_tool(
     @tool(
         name="file_write",
         description=(
-            "Write content to a file in the working directory. "
-            "Creates the file if it doesn't exist, overwrites if it does."
+            "YOU CAN write files. Use this tool whenever the user asks you to "
+            "save, export, or create a file — do not say you cannot write "
+            "files: call this tool. Writes content to a file in the working "
+            "directory (use a relative path like 'out/report.md'), creating it "
+            "if absent and overwriting if present."
         ),
     )
     async def file_write(path: str, content: str) -> ToolResult:

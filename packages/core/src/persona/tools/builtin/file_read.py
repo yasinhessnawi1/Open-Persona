@@ -51,7 +51,14 @@ def make_file_read_tool(*, sandbox_root: Path) -> AsyncTool:
         ``ToolResult(is_error=True, ...)`` — never raise.
     """
 
-    @tool(name="file_read", description="Read the contents of a file from the working directory.")
+    @tool(
+        name="file_read",
+        description=(
+            "YOU CAN read files. Use this tool whenever the user asks about a "
+            "file's contents in the working directory — do not say you cannot "
+            "access files: call this tool."
+        ),
+    )
     async def file_read(path: str) -> ToolResult:
         try:
             resolved = resolve_sandbox_path(sandbox_root, path)

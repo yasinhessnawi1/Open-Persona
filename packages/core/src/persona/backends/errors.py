@@ -66,6 +66,8 @@ __all__ = [
     "MalformedTierModelsError",
     "ModelNotFoundError",
     "NoVisionTierConfiguredError",
+    "OpenRouterBalanceProbeError",
+    "OpenRouterCatalogError",
     "ProviderCredentialMissingError",
     "ProviderError",
     "RateLimitError",
@@ -119,6 +121,45 @@ class BackendTimeoutError(ProviderError):
     ``openai.APITimeoutError``. Distinct from :class:`ProviderError` because
     timeouts are the most common transient failure callers retry on
     (D-02-1).
+    """
+
+
+class OpenRouterCatalogError(ProviderError):
+    """Raised when the OpenRouter model catalog cannot be fetched or parsed.
+
+    Spec 22 D-22-1 + D-20-16 partition: a **provider-layer** error (slots
+    under :class:`ProviderError` — it describes a live HTTP call to
+    ``GET /api/v1/models``, not a wrapper/config gap). Fired by
+    :class:`persona.backends.openrouter_catalog.OpenRouterCatalogClient`
+    when the catalog request fails (network / 5xx / unparseable body).
+
+    Per D-22-1 the catalog fetch **fails open**: the resolver catches this
+    at construction, logs a WARN, and falls back to tier-3 underlying-model
+    capability inference rather than taking the backend down. The
+    distinct class lets that fail-open handler catch catalog failures
+    without also swallowing balance-probe failures.
+
+    Context: ``{"provider": "openrouter", "reason", ...}`` where ``reason``
+    is one of ``http_error`` / ``timeout`` / ``malformed_response``.
+    """
+
+
+class OpenRouterBalanceProbeError(ProviderError):
+    """Raised when the OpenRouter subscription-mode probe fails non-fatally.
+
+    Spec 22 D-22-3 + D-20-16 partition: a **provider-layer** error (live
+    HTTP call to ``GET /api/v1/key``). Fired by
+    :class:`persona.backends.openrouter_catalog.OpenRouterCatalogClient`
+    on timeout / 5xx of the probe — per D-22-3 the resolver treats this as
+    a conservative fall-back to **free-mode** (cannot confirm paid credits),
+    WARNs, and continues.
+
+    A 401 on the probe is NOT this class — an invalid key is a fail-loud
+    :class:`AuthenticationError` (D-22-9), distinct from a transient probe
+    failure that degrades to free-mode.
+
+    Context: ``{"provider": "openrouter", "reason", ...}`` where ``reason``
+    is one of ``http_error`` / ``timeout`` / ``malformed_response``.
     """
 
 

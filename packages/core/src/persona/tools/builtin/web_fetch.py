@@ -38,6 +38,15 @@ _logger = get_logger("tools.web_fetch")
 
 _DEFAULT_TIMEOUT_S = 30.0
 _ALLOWED_SCHEMES = ("http", "https")
+# Spec 25 T14 (§2.11 / D-25-X-web-fetch-fix-shape). Phase-1 reproduction:
+# httpx's default ``python-httpx/<ver>`` UA — and even a spoofed browser UA —
+# is 403'd by Wikimedia's UA policy, while a DESCRIPTIVE bot UA (project +
+# contact URL) returns 200. Set this on every request unless the caller
+# supplied a client with its own non-default UA.
+_DESCRIPTIVE_UA = (
+    f"OpenPersona/0.1 (+https://github.com/yasinhessnawi1/open-persona) httpx/{httpx.__version__}"
+)
+_DEFAULT_HTTPX_UA_PREFIX = "python-httpx"
 # Bound the redirect chain — the SSRF guard re-checks every hop's resolved IP.
 _MAX_REDIRECTS = 5
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
@@ -110,7 +119,12 @@ def make_web_fetch_tool(
 
     @tool(
         name="web_fetch",
-        description="Fetch a URL and extract its readable text content.",
+        description=(
+            "YOU CAN fetch web pages. Use this tool whenever the user gives you "
+            "a URL or you need the full text behind a search result — do not say "
+            "you cannot open links: call this tool. Fetches a URL and returns its "
+            "readable text content."
+        ),
     )
     async def web_fetch(url: str, max_chars: int = 4000) -> ToolResult:
         # Scheme guard (D-03-11). Full SSRF defense lives in spec 11.
@@ -153,6 +167,15 @@ def make_web_fetch_tool(
             if http is not None
             else httpx.AsyncClient(timeout=httpx.Timeout(_DEFAULT_TIMEOUT_S))
         )
+        # Descriptive UA (D-25-X-web-fetch-fix-shape): always for our own
+        # client; for an injected client only when it carries no UA or just
+        # the httpx default (so a caller's deliberate custom UA is respected).
+        existing_ua = "" if owns_client else client.headers.get("user-agent", "")
+        request_headers: dict[str, str] = (
+            {}
+            if existing_ua and not existing_ua.startswith(_DEFAULT_HTTPX_UA_PREFIX)
+            else {"User-Agent": _DESCRIPTIVE_UA}
+        )
 
         try:
             # Manual redirect following with a per-hop SSRF re-check (spec 11 T07b
@@ -164,7 +187,9 @@ def make_web_fetch_tool(
             response: httpx.Response | None = None
             for _hop in range(_MAX_REDIRECTS + 1):
                 try:
-                    response = await client.get(current_url, follow_redirects=False)
+                    response = await client.get(
+                        current_url, headers=request_headers, follow_redirects=False
+                    )
                 except httpx.TimeoutException as e:
                     _logger.warning("web_fetch timeout", url=current_url, error=type(e).__name__)
                     return ToolResult(
@@ -253,11 +278,19 @@ def make_web_fetch_tool(
             if "html" in content_type:
                 text = _extract_readable(response.text)
                 if not text:
-                    # Empty extraction — usually JavaScript-heavy page.
+                    # Empty extraction — usually a JavaScript-rendered page or
+                    # one with no article body. Spec 25 T14: return an
+                    # explanatory message (not a bare ``""``) so the model knows
+                    # the fetch succeeded but yielded no readable text, rather
+                    # than mistaking emptiness for a tool failure.
                     _logger.debug("web_fetch empty extraction", url=url)
                     return ToolResult(
                         tool_name="web_fetch",
-                        content="",
+                        content=(
+                            f"[web_fetch: {url} returned no extractable readable text "
+                            "(the page is likely JavaScript-rendered or has no article "
+                            "content). The fetch itself succeeded.]"
+                        ),
                         truncated=False,
                         data={"url": url, "content_type": content_type, "extracted": False},
                     )

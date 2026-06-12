@@ -1,57 +1,67 @@
 # persona-core
 
-> Open-source Python library for building AI personas with typed memory and
-> tier-routed model selection. Apache 2.0.
+> Source-available Python library for building AI personas with typed memory
+> and tier-routed model selection. Noncommercial use only.
+
+**Status:** PolyForm Noncommercial 1.0.0 · Source Available (Noncommercial Use Only)
+
+## What it is
 
 `persona-core` lets you author a persona as a single YAML document (identity,
-constraints, self-facts, worldview claims with epistemic tags, allowed tools
-and skills) and run it against any of seven model providers — Anthropic,
-OpenAI, DeepSeek, Groq, Together, local Ollama, or local HF — with four
+constraints, self-facts, worldview claims with epistemic tags, tools, skills)
+and run it against any of seven model providers (Anthropic, OpenAI, DeepSeek,
+Groq, Together, NVIDIA, OpenRouter, local Ollama, or local HF), with four
 typed memory stores (identity, self-facts, worldview, episodic) backed by
-Chroma or Postgres + pgvector. The full system architecture, including the
-hosted API and web app that compose this library, lives at
-[ARCHITECTURE.md](https://github.com/yasinhessnawi1/open-persona/blob/main/docs/ARCHITECTURE.md).
+ChromaDB or Postgres + pgvector. Ships the schema, the four memory stores
+behind a `MemoryStore` protocol, the backend layer behind a `ChatBackend`
+protocol, a sandboxed tool layer (`Toolbox`, MCP client, built-in
+`web_search` / `web_fetch` / `file_read` / `file_write`), a skills layer
+(`SkillScanner` + `SkillInjector` + six built-in skill packs), a vision
+layer (`ImageContent` + `ImageBackend`), document ingestion + generation,
+a code-execution sandbox protocol, an `AuditLogger` protocol with a JSONL
+default, per-component loguru logging, and a `persona` CLI. Every other
+Open Persona package depends on this one; this one depends on nothing inside
+Open Persona.
 
 ## Install
 
 ```bash
-pip install persona-core                 # core + Chroma + a frontier SDK
-pip install persona-core[local]          # adds torch / transformers for HF local inference
+pip install persona-core                 # core + Chroma + frontier SDKs
+pip install persona-core[local]          # adds torch / transformers for local HF inference
 pip install persona-core[postgres]       # adds psycopg + pgvector for the Postgres backend
+pip install persona-core[sandbox]        # adds docker SDK for LocalDockerSandbox
 ```
 
-Python ≥3.11.
+Python ≥ 3.11.
 
-## Use
-
-### 1. Create a persona
+For workspace development from the monorepo:
 
 ```bash
-persona init        # interactive prompts → astrid.yaml
+git clone https://github.com/yasinhessnawi1/Open-Persona.git
+cd open-persona
+uv sync --all-packages
 ```
 
-Or copy one of the [committed examples](examples/) (the three personas the
-launch screencast demonstrates):
+## Run
 
-- [`examples/astrid_tenancy_law.yaml`](examples/astrid_tenancy_law.yaml) — Norwegian tenancy-law assistant
-- [`examples/kai_research.yaml`](examples/kai_research.yaml) — domain-agnostic research assistant
-- [`examples/maren_writing_coach.yaml`](examples/maren_writing_coach.yaml) — writing coach (tool-free)
-
-### 2. Chat with it from the terminal
+Author and chat with a persona from the terminal:
 
 ```bash
-export PERSONA_API_KEY=<your-deepseek-or-other-key>
-export PERSONA_PROVIDER=deepseek         # or anthropic / openai / groq / together / ollama / local
+persona init                                      # interactive → astrid.yaml
+persona validate examples/astrid_tenancy_law.yaml
+export PERSONA_PROVIDER=deepseek
 export PERSONA_MODEL=deepseek-chat
+export PERSONA_API_KEY=<your-key>
 persona chat examples/astrid_tenancy_law.yaml
+persona audit examples/astrid_tenancy_law.yaml    # tail the JSONL audit log
 ```
 
-Multi-turn conversations stay coherent — history is summarised at K=10 with
-the last five turns kept verbatim; the persona's identity block, constraints,
-and relevant retrieved facts/worldview/episodic chunks are re-injected every
-turn. Full transcripts always go to the episodic store.
+Three example personas ship in [`examples/`](examples/):
+`astrid_tenancy_law.yaml` (Norwegian tenancy-law assistant),
+`kai_research.yaml` (research assistant), `maren_writing_coach.yaml`
+(tool-free writing coach).
 
-### 3. Use it programmatically
+Programmatic use:
 
 ```python
 import asyncio
@@ -63,10 +73,12 @@ from persona.schema.conversation import ConversationMessage
 
 async def main() -> None:
     persona = Persona.from_yaml(Path("examples/astrid_tenancy_law.yaml"))
-    backend = OpenAICompatibleBackend(BackendConfig(provider="deepseek", model="deepseek-chat"))
-    system_prompt = f"You are {persona.identity.name}, {persona.identity.role}.\n{persona.identity.background}"
+    backend = OpenAICompatibleBackend(
+        BackendConfig(provider="deepseek", model="deepseek-chat")
+    )
+    system = f"You are {persona.identity.name}, {persona.identity.role}."
     reply = await backend.chat([
-        ConversationMessage(role="system", content=system_prompt, created_at=None),
+        ConversationMessage(role="system", content=system, created_at=None),
         ConversationMessage(role="user", content="Hva sier husleieloven om mugg?", created_at=None),
     ])
     print(reply.content)
@@ -74,70 +86,54 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-For the full runtime loop with router, tool dispatch, episodic write-back and
-turn logging, see the `persona-runtime` package and the hosted-API service.
+For the full conversation loop with router, tool dispatch, episodic
+write-back and per-turn logging, compose with `persona-runtime`.
 
-## Hosted version
+## Test
 
-The hosted web app composes `persona-core` with `persona-runtime` and
-`persona-api`: sign up, describe a persona in one sentence, watch the
-authoring flow produce a YAML, edit in the structured form, chat with
-streaming SSE + tool-call cards, and launch multi-step agentic runs. See the
-[demo screencast](<screencast URL>) and the architecture document for the
-eight-step flow.
+```bash
+uv run pytest packages/core                          # unit + contract (default)
+uv run pytest packages/core -m integration           # needs Postgres in Docker
+uv run mypy packages/core/src --strict
+uv run ruff check packages/core
+```
 
-## Architecture in one paragraph
+## Highlights
 
-A persona is a YAML document. The runtime loads it, builds a system prompt
-from the identity + constraints + retrieved typed-memory chunks, hands a tier-
-appropriate request to the configured model backend, dispatches any tool
-calls, and writes the resulting turn to the episodic store. Tier routing
-(small / mid / frontier) is rule-based, per-turn, and overridable per
-persona. Memory stores are deterministic, append-only with versioning, and
-audited. Skills are bundled by name and injected token-budget-aware (2k cap).
-See [ARCHITECTURE.md](https://github.com/yasinhessnawi1/open-persona/blob/main/docs/ARCHITECTURE.md) for
-the full picture.
+- Frozen Pydantic v2 boundary models, `extra="forbid"` everywhere
+- Deterministic chunk IDs: `{persona_id}::{store_kind}::{index:04d}`
+- Versioned append-only stores; identity is immutable at runtime
+- SHA-256 `content_hash` on every chunk; one `AuditEvent` per mutation
+- Three-source write policy: `system` / `user` / `persona_self`
+- 2k-token-budgeted skill injection (`SkillInjector.TOKEN_BUDGET`)
+- Native tool calls (Anthropic / OpenAI / DeepSeek / Groq / Together / NVIDIA /
+  OpenRouter) + prompt-shim fallback (Ollama / HF local)
+- MCP Streamable HTTP client + adapter
+- Sandboxed file tools (path resolver rejects `..`, abs paths, symlink
+  escape, NUL bytes, mixed separators)
+- Six built-in skill packs: `web_research`, `document_drafting`,
+  `docx_generation`, `pptx_generation`, `xlsx_generation`, `pdf_generation`
+- Image generation backends (OpenAI gpt-image-1, fal.ai Flux 1.1 [pro])
+  with three-layer safety + categorical hard-line filter
+- Vision input (`ImageContent`) + document ingestion + a `CodeSandbox`
+  protocol with `LocalDockerSandbox` reference implementation
+
+## Architecture role
+
+`persona-core` is layer 4 of the Open Persona stack: the source-available
+foundation. A persona is a YAML document; the schema, the typed memory
+stores, the model-provider adapters, and the tool/skill machinery all live
+here. `persona-runtime` composes the orchestration loop on top of this
+library; `persona-api` exposes it over HTTP; `persona-web` is the browser
+front-end. The dependency arrow points one way: `persona-core` imports
+nothing from the upper layers.
 
 ## Contribute
 
-Issues and PRs welcome — start with [CONTRIBUTING.md](https://github.com/yasinhessnawi1/open-persona/blob/main/CONTRIBUTING.md).
-
-Dev setup:
-
-```bash
-git clone https://github.com/yasinhessnawi1/open-persona.git
-cd open-persona
-uv sync --all-packages
-uv run pytest                              # unit + contract (skips integration/external)
-uv run ruff check && uv run mypy packages/core/src --strict
-```
-
-## Known Limitations (v0.1.0, September 2026)
-
-Honesty over polish — what isn't fixed in v0.1 is documented here, not hidden.
-
-- **Episodic eviction is post-September.** At v0.1 demo scale (~100
-  chunks/conversation) growth is bounded; a soak run measured it. An
-  age-based `evict()` is the planned v1.1 addition; the spec's
-  importance-based key was unbacked (neither write path stores `importance`).
-- **System-health (§6.3) dashboard is post-September.** §6.1 (per-persona
-  usage) and §6.2 (routing health) ship as committed Grafana JSON. §6.3
-  (per-endpoint p99, error rate, provider availability) needs request-
-  telemetry middleware no table currently captures.
-- **File-tool intermediate-path TOCTOU** is accepted for single-tenant CLI.
-  Multi-tenant hosting needs `openat2(RESOLVE_NO_SYMLINKS)` (Linux) — post-September.
-- **JWT key rotation is manual.** Production verifies against a static Clerk
-  PEM. JWKS-by-`kid` rotation is the post-September hardening; rotate the
-  PEM manually for now.
-- **Single API worker.** The in-process agentic-run event bus and the
-  in-memory rate limiter require one uvicorn worker. A Redis-backed
-  multi-worker deploy is post-September.
-- **Anthropic native tool-result path is not soak-verified.** DeepSeek is the
-  demo-primary model; Anthropic is the outage backup. The Anthropic assistant
-  tool_use block is emitted correctly, but the tool-result block uses a
-  passthrough user-message encoding rather than a structured top-level block.
-  Prefer DeepSeek for tool-heavy demos.
-
-## License
-
-Apache 2.0. See [LICENSE](LICENSE).
+Contributions welcome under the same PolyForm Noncommercial 1.0.0 license.
+The package is source-available for noncommercial use; commercial use
+requires a separate license (contact the rights holder). Issues and pull
+requests welcome at
+[github.com/yasinhessnawi1/Open-Persona](https://github.com/yasinhessnawi1/Open-Persona).
+See [LICENSE](LICENSE) and the package
+[`SPEC.md`](SPEC.md) for the public surface.

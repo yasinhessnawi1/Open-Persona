@@ -248,3 +248,79 @@ class TestVisualStyleAdditiveExtension:
                     "viual_style": "watercolour",  # typo
                 },
             )
+
+
+class TestAutonomyAdditiveExtension:
+    """Spec 21 T01 — ``Persona.autonomy`` is an additive Pydantic field (D-21-1).
+
+    Mirrors :class:`TestVisualStyleAdditiveExtension` (the D-01-12 additive
+    precedent): (a) personas authored before spec 21 round-trip byte-for-byte
+    and default to ``"cautious"``; (b) the field round-trips when present;
+    (c) ``extra="forbid"`` + the three-value ``Literal`` still reject typos and
+    out-of-set values at load time (fail-fast).
+    """
+
+    @pytest.mark.parametrize("fixture", VALID_FIXTURES, ids=lambda p: p.name)
+    def test_existing_personas_default_to_cautious_and_round_trip(self, fixture: Path) -> None:
+        """Regression: pre-spec-21 fixtures (no ``autonomy``) load as ``"cautious"``.
+
+        The field defaults to ``"cautious"``, the on-disk YAML must not contain
+        ``autonomy`` (we have not mutated fixtures), and the model round-trips
+        through ``model_dump``/``model_validate`` to an equal instance.
+        """
+        persona = Persona.from_yaml(fixture)
+
+        assert persona.autonomy == "cautious"
+
+        dumped = persona.model_dump(mode="json")
+        reloaded = Persona.model_validate(dumped)
+        assert reloaded == persona
+
+        raw = yaml.safe_load(fixture.read_text(encoding="utf-8"))
+        assert "autonomy" not in raw
+
+    def test_default_is_cautious(self) -> None:
+        """A minimal persona constructed without ``autonomy`` defaults to ``"cautious"``."""
+        p = Persona.model_validate(
+            {
+                "schema_version": "1.0",
+                "identity": {"name": "n", "role": "r", "background": "b"},
+            },
+        )
+        assert p.autonomy == "cautious"
+
+    @pytest.mark.parametrize("level", ["cautious", "balanced", "decisive"])
+    def test_each_literal_value_round_trips(self, level: str) -> None:
+        """All three valid levels load and survive a JSON round-trip."""
+        p = Persona.model_validate(
+            {
+                "schema_version": "1.0",
+                "identity": {"name": "n", "role": "r", "background": "b"},
+                "autonomy": level,
+            },
+        )
+        assert p.autonomy == level
+        assert p.model_dump(mode="json")["autonomy"] == level
+
+    def test_invalid_value_rejected_at_load(self) -> None:
+        """A value outside the three-literal set raises ``ValidationError`` (fail-fast)."""
+        with pytest.raises(ValidationError):
+            Persona.model_validate(
+                {
+                    "schema_version": "1.0",
+                    "identity": {"name": "n", "role": "r", "background": "b"},
+                    "autonomy": "aggressive",
+                },
+            )
+
+    def test_autonomy_is_immutable_after_construction(self) -> None:
+        """The field is frozen like the rest of the model (runtime change is via the learner)."""
+        p = Persona.model_validate(
+            {
+                "schema_version": "1.0",
+                "identity": {"name": "n", "role": "r", "background": "b"},
+                "autonomy": "balanced",
+            },
+        )
+        with pytest.raises(ValidationError):
+            p.autonomy = "decisive"  # type: ignore[misc]

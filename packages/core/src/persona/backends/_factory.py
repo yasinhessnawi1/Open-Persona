@@ -1,8 +1,8 @@
 """``load_backend()`` factory — dispatches a :class:`BackendConfig` to the
 right concrete :class:`ChatBackend`.
 
-Anthropic / OpenAI / DeepSeek / Groq / Together / **NVIDIA** (Spec 20) →
-:class:`OpenAICompatibleBackend`.
+Anthropic / OpenAI / DeepSeek / Groq / Together / **NVIDIA** (Spec 20) /
+**OpenRouter** (Spec 22) → :class:`OpenAICompatibleBackend`.
 Ollama → :class:`OllamaBackend`.
 Local HuggingFace → :class:`HFLocalBackend` (lazy import; raises a clear
 :class:`AuthenticationError` if ``[local]`` extras are missing).
@@ -30,9 +30,10 @@ __all__ = ["load_backend"]
 # allow-set) is in fact a FIVE-touch including this factory's allow-set
 # (omission would surface at app startup as ProviderError "unknown provider
 # 'nvidia'"). Production startup at 2026-06-10 19:11 UTC caught this gap
-# before commit.
+# before commit. Spec 22 T06/T15: ``openrouter`` joins the same path (the
+# T15 cross-spec integration test caught the identical omission here).
 _OPENAI_COMPAT_PROVIDERS = frozenset(
-    {"anthropic", "openai", "deepseek", "groq", "together", "nvidia"}
+    {"anthropic", "openai", "deepseek", "groq", "together", "nvidia", "openrouter"}
 )
 
 
@@ -66,6 +67,6 @@ def load_backend(config: BackendConfig) -> ChatBackend:
         return HFLocalBackend(config)
     raise ProviderError(
         f"unknown provider {provider!r}; expected one of "
-        "anthropic, openai, deepseek, groq, together, nvidia, ollama, local",
+        "anthropic, openai, deepseek, groq, together, nvidia, openrouter, ollama, local",
         context={"provider": provider},
     )
