@@ -57,6 +57,13 @@ def _persona() -> Persona:
             constraints=["Never give binding legal advice."],
         ),
         skills=["web_research", "document_drafting"],
+        # `decisive` opts out of vague_scope / missing_parameter question gating
+        # (only safety_critical_gap fires) — the spec 05 integration suite tests
+        # skill / tool dispatch end-to-end, not the spec 21 autonomy hook, so the
+        # test is insulated from the proactive-question interception that would
+        # otherwise fire on prompts like "draft a complaint" under default
+        # (cautious) autonomy. Spec 21 e2e lives in test_spec21_e2e.py.
+        autonomy="decisive",
     )
 
 

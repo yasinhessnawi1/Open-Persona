@@ -462,8 +462,13 @@ _RESOURCE_LIMITS: tuple[SecurityAttack, ...] = (
         name="fork_bomb",
         criterion=8,
         code=("import os\nwhile True:\n    try: os.fork()\n    except OSError: pass\n"),
-        description="Classic fork bomb — should be capped by pids-limit",
-        expected_outcomes=frozenset({"error", "killed", "timeout"}),
+        # pids-limit is the targeted defense, but each forked process also
+        # consumes memory; on hosts where the memory cgroup fires before the
+        # pids cap is hit (kernel OOM-killer → SIGKILL → exit 137 → outcome
+        # 'oom') the attack is still contained — the cap mechanism differs
+        # but the host stays protected. Mirrors `disk_filler` (same pattern).
+        description="Classic fork bomb — capped by pids-limit or memory cgroup",
+        expected_outcomes=frozenset({"error", "killed", "timeout", "oom"}),
     ),
     SecurityAttack(
         name="disk_filler",
