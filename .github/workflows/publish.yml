@@ -1,0 +1,125 @@
+name: Publish to PyPI
+
+# Publishes persona-core, persona-runtime, persona-voice (in dep order) to PyPI.
+# persona-api + persona-web stay private — NOT in scope.
+#
+# Triggers:
+#   - push of a tag matching v*.*.* (e.g. v0.2.0, v0.2.1) — the canonical
+#     release path. Push a tag → workflow fires → wheels build + publish.
+#   - workflow_dispatch — a manual button in the Actions tab, for re-runs after
+#     a partial failure or to re-publish from a fresh build.
+#
+# NOT triggered on:
+#   - push to main — PyPI rejects re-publish of an existing version (400), so
+#     this would fail on every commit unless the version bumped per commit.
+#   - pull_request — PRs from forks could publish arbitrary code; PyPI publish
+#     from PR is a supply-chain attack vector.
+#
+# One-time setup:
+#   1. Generate a project-scoped PyPI API token at
+#      https://pypi.org/manage/account/token/ (scope: the three persona-*
+#      projects, or All Projects).
+#   2. GitHub: Settings → Secrets and variables → Actions → New repository
+#      secret named ``PYPI_API_TOKEN``, paste the ``pypi-AgEI...`` value.
+#
+# Idempotency: ``uv publish --check-url`` queries the PyPI simple index for
+# the version-being-uploaded and skips if it already exists — so re-running
+# the workflow after a partial failure (e.g. network blip mid-runtime upload)
+# resumes from where it left off instead of erroring on the already-published
+# packages.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    # Serialize publishes so two near-simultaneous tag pushes can't race to
+    # upload the same version. ``cancel-in-progress: false`` because a publish
+    # in flight should never be interrupted mid-upload.
+    concurrency:
+      group: pypi-publish
+      cancel-in-progress: false
+
+    permissions:
+      # Default GITHUB_TOKEN scope — read only. We're using the PYPI_API_TOKEN
+      # secret for the actual publish auth; no PR/issue/contents writes needed.
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      # Sync the workspace so uv build can resolve the workspace member graph.
+      # ``--no-dev`` keeps the install slim (no pytest/mypy/ruff). All 3
+      # packages we publish are runtime-only.
+      - name: uv sync (workspace, no dev)
+        run: uv sync --all-packages --no-dev
+
+      - name: Build persona-core / runtime / voice
+        run: |
+          rm -rf dist/
+          for pkg in core runtime voice; do
+            echo "================ Building persona-$pkg ================"
+            (cd "packages/$pkg" && uv build --no-sources --out-dir ../../dist)
+          done
+          echo ""
+          echo "================ Built artefacts ================"
+          ls -la dist/
+
+      # Publish in dependency order: core first (runtime declares persona-core,
+      # voice declares persona-core[postgres]), so a downstream consumer that
+      # races us between the runtime and core publishes still sees a coherent
+      # dependency graph. ``--check-url`` makes each step idempotent.
+      - name: Publish persona-core
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          uv publish \
+            --check-url https://pypi.org/simple/persona-core/ \
+            dist/persona_core-*.whl \
+            dist/persona_core-*.tar.gz
+
+      - name: Publish persona-runtime
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          uv publish \
+            --check-url https://pypi.org/simple/persona-runtime/ \
+            dist/persona_runtime-*.whl \
+            dist/persona_runtime-*.tar.gz
+
+      - name: Publish persona-voice
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          uv publish \
+            --check-url https://pypi.org/simple/persona-voice/ \
+            dist/persona_voice-*.whl \
+            dist/persona_voice-*.tar.gz
+
+      # Smoke-verify all three landed on PyPI with the expected metadata.
+      # ``sleep 5`` gives the PyPI CDN a moment to propagate; the metadata
+      # API is usually current within seconds but is not synchronous with
+      # the upload acknowledgement.
+      - name: Verify all 3 on pypi.org
+        run: |
+          for pkg in persona-core persona-runtime persona-voice; do
+            sleep 5
+            echo "--- $pkg ---"
+            curl -fsS --max-time 15 "https://pypi.org/pypi/$pkg/json" \
+              | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          info = d['info']
+          print(f\"  ✓ {info['name']} {info['version']}\")
+          print(f\"    license: {info.get('license_expression')}\")
+          "
+          done
