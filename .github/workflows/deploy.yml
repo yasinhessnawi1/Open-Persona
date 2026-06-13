@@ -48,17 +48,17 @@ jobs:
       # need to pay the local Docker disk cost. `.dockerignore` keeps the
       # build context tiny (~5 MB) so the upload to Fly's builder is fast.
       #
-      # Path strategy: both ``--config`` and ``--dockerfile`` use ABSOLUTE
-      # paths via $WORKSPACE (= ${{ github.workspace }}, the repo checkout
-      # root). Relative paths are unreliable here: a prior attempt with
-      # ``--dockerfile packages/api/Dockerfile`` (no ``..``) still resolved
-      # to ``/home/runner/work/Open-Persona/packages/api/Dockerfile`` — one
-      # level ABOVE the checkout, missing the second ``Open-Persona/``
-      # segment. flyctl appears to apply ``../packages/api/Dockerfile`` from
-      # fly.toml's ``[build]`` setting and then re-resolve, so the leading
-      # ``..`` survives even when the flag is given. Absolute paths bypass
-      # that resolution entirely. $WORKSPACE is set from
-      # ``github.workspace`` (system-provided, not user-controllable).
+      # fly.toml lives at ``packages/api/fly.toml`` (next to the Dockerfile),
+      # tracked in git. The earlier ``deploy/fly.toml`` location was excluded
+      # by the ``deploy/*`` gitignore rule and so was absent on CI runners —
+      # flyctl logged ``Validating --config path unset--`` and then failed
+      # the build with a phantom dockerfile path. Co-locating fly.toml with
+      # the Dockerfile lets flyctl resolve ``dockerfile = "Dockerfile"``
+      # naturally (relative to fly.toml's directory). $WORKSPACE
+      # (= ``github.workspace``, system-provided) makes the ``--config`` path
+      # absolute, and the workflow's CWD is the repo root (default) so the
+      # build daemon receives the full workspace tree as build context — the
+      # Dockerfile's ``COPY packages/<member>/...`` paths require that.
       - name: flyctl deploy
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -66,8 +66,7 @@ jobs:
         run: |
           flyctl deploy \
             --remote-only \
-            --config "$WORKSPACE/deploy/fly.toml" \
-            --dockerfile "$WORKSPACE/packages/api/Dockerfile" \
+            --config "$WORKSPACE/packages/api/fly.toml" \
             --app open-persona-api \
             --strategy rolling \
             --wait-timeout 600

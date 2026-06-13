@@ -1,0 +1,93 @@
+# Open Persona — persona-api Fly.io app config (Spec 11, T10).
+# Companion walkthrough: deploy/FLY_DEPLOY.md
+#
+# Single Machine, single uvicorn worker (S08-4 / D-08-5) — the in-process
+# agentic-run event bus and in-memory rate limiter REQUIRE it. Never autoscale,
+# never autostop.
+
+app = "open-persona-api"                # rename: `flyctl apps create <your-name>` first
+primary_region = "fra"                  # Frankfurt — near Vercel `fra1` (D-11-2)
+kill_signal = "SIGINT"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+  # fly.toml lives next to the Dockerfile (packages/api/), so the dockerfile
+  # path is just "Dockerfile" (relative to fly.toml's directory). The Dockerfile
+  # itself uses ``COPY packages/<member>/...`` paths that assume the repo root
+  # as the build context — invoke flyctl from the repo root
+  # (``flyctl deploy -c packages/api/fly.toml`` or via the Deploy workflow's
+  # ``$WORKSPACE/packages/api/fly.toml`` absolute path) so the daemon receives
+  # the full workspace tree.
+
+[deploy]
+  # Migrations are NOT auto-run on startup (spec 07 §7). FLY_DEPLOY.md spells
+  # out the explicit `flyctl ssh console -C "alembic upgrade head"` step.
+  strategy = "rolling"
+
+[env]
+  PERSONA_LOG_LEVEL = "INFO"
+  PERSONA_API_JWT_ALGORITHMS = "RS256"
+  PERSONA_API_JWT_AUDIENCE = "persona-api"
+  # JSONL audit + turnlog roots; written to the mounted volume below.
+  # PERSONA_API_ prefix — APIConfig.audit_root field reads via Pydantic Settings
+  # with env_prefix="PERSONA_API_" (config.py:52). Surfaced at launch when the
+  # PERSONA_AUDIT_ROOT typo defaulted audit_root to "./.persona_audit" and the
+  # non-root container user got Permission denied on every persona create.
+  PERSONA_API_AUDIT_ROOT = "/var/lib/persona/audit"
+  PERSONA_TURNLOG_PATH = "/var/lib/persona/turnlogs"
+  # workspace_root — Spec 13 image uploads + Spec 14 documents + Spec 15
+  # generated images + Spec 16/17 produced files all land under this tree
+  # (`<workspace_root>/<owner_id>/<persona_id>/...`). Default falls back to
+  # `./.persona_work` (Path.cwd-relative), which on the deployed image
+  # resolves to `/app/.persona_work` — owned by root, NOT writable by the
+  # non-root persona user → PermissionError on lifespan startup. Same
+  # surface as PERSONA_API_AUDIT_ROOT above; co-located on the mounted
+  # volume so the bytes persist across deploys (D-15-X-workspace-coordination).
+  # First surfaced 2026-06-07 after the F3/F4 deploy that introduced the
+  # lifespan mkdir for image / document / produced-file storage.
+  PERSONA_API_WORKSPACE_ROOT = "/var/lib/persona/workspace"
+  # tools_sandbox_root — Spec 03 file_read / file_write tools (D-03-23) and
+  # the code_execution sandbox (spec 12) use this as the workspace root for
+  # tool I/O. Distinct from PERSONA_API_WORKSPACE_ROOT (which is the API's
+  # image / document / produced-file store) — different module, different
+  # Pydantic Settings instance, different env prefix (PERSONA_ vs
+  # PERSONA_API_). Defaults to `./.persona_work` which on the deployed
+  # image resolves to `/app/.persona_work` (root-owned, non-writable) →
+  # PermissionError when the persona invokes file_write. Co-located on the
+  # same mounted volume as the API workspace so produced files persist
+  # across deploys.
+  PERSONA_TOOLS_SANDBOX_ROOT = "/var/lib/persona/tools"
+
+[mounts]
+  source = "persona_audit"
+  destination = "/var/lib/persona"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # CRITICAL: single Machine. Don't autoscale (in-memory state) or autostop
+  # (cold-start adds 10+s to first request; SSE clients won't recover).
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 100
+    hard_limit = 200
+
+[[http_service.checks]]
+  grace_period = "30s"
+  interval = "30s"
+  method = "GET"
+  path = "/healthz"
+  timeout = "5s"
+
+[[vm]]
+  # bge-small-en-v1.5 (sentence-transformers) loads ~150 MB resident; FastAPI +
+  # Python ~ 150 MB; chat working set ~ 100 MB. 1 GB has headroom for soak +
+  # concurrency. Bump to 2 GB if OOM surfaces.
+  size = "shared-cpu-1x"
+  memory = "1024mb"
