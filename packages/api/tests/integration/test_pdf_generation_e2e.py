@@ -636,7 +636,9 @@ class TestT14PdfEndToEnd:
         # supplements directory so a M1a regression surfaces in this test
         # (the agentic loop's intercept extends ``self.deferred_input_files``
         # with collect_skill_supplements(spec) on every use_skill match).
-        pdf_spec = next(s for s in scanned if s.name == "pdf_generation")
+        # Spec 24 (D-24-9): pdf_generation folded into document_generation; the
+        # deprecated name resolves via the alias shim.
+        pdf_spec = next(s for s in scanned if s.name == "document_generation")
 
         # Production-shape persona workspace: <workspace_root>/<owner>/<persona>/<ref>.
         workspace_root = tmp_path / "workspaces"
@@ -699,7 +701,10 @@ class TestT14PdfEndToEnd:
                     tool_calls=[
                         ToolCall(
                             name="use_skill",
-                            args={"skill_name": "pdf_generation"},
+                            args={
+                                "skill_name": "document_generation",
+                                "parameters": {"format": "pdf"},
+                            },
                             call_id="us1",
                         )
                     ]

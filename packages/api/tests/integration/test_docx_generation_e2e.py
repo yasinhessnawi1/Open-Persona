@@ -359,14 +359,14 @@ _BUILTIN_ROOT = (
 
 
 def _scan_real_docx_skill() -> list[SkillSpec]:
-    """Scan the real packages/core/src/persona/skills/builtin/ for docx_generation.
+    """Scan the real builtin tree for the unified ``document_generation`` skill.
 
-    The SkillScanner reads the real on-disk SKILL.md + supplements/ tree at
-    ``packages/core/src/persona/skills/builtin/docx_generation/`` (mirrors the
-    pattern at ``packages/core/tests/integration/test_builtin_skills.py:43``).
-    ``collect_skill_supplements`` later rglobs ``spec.path / "supplements"``
-    for the M1a staging — the path the scanner records on the SkillSpec is
-    the real builtin directory.
+    Spec 24 (D-24-9) folded ``docx_generation`` into ``document_generation``;
+    the deprecated name still resolves via the alias shim. The SkillScanner
+    reads the real on-disk SKILL.md + supplements/ tree at
+    ``packages/core/src/persona/skills/builtin/document_generation/``.
+    ``collect_skill_supplements`` later globs ``spec.path / "supplements"``
+    for the M1a staging — the docx supplements ship as ``docx-<topic>.md``.
     """
     scanner = SkillScanner([_BUILTIN_ROOT])
     return scanner.scan(["docx_generation"], tool_allow_list=["code_execution"])
@@ -661,26 +661,30 @@ class TestT11DocxEndToEnd:
 
         scanned = _scan_real_docx_skill()
         assert len(scanned) == 1, (
-            f"expected exactly one docx_generation SkillSpec from the real "
-            f"builtin tree; got {[s.name for s in scanned]}"
+            f"expected exactly one SkillSpec (docx_generation → document_generation "
+            f"via the alias shim); got {[s.name for s in scanned]}"
         )
         docx_spec = scanned[0]
-        assert docx_spec.name == "docx_generation"
+        assert docx_spec.name == "document_generation"
 
         # Verify M1a supplements collection — produces relative paths
         # (post D-16-X-7 fix). This is a pre-test sanity, not the main
         # assertion (T08 + the unit tests already regression-guard the
         # producer; T11 verifies the integration with the real skill).
         supplements = collect_skill_supplements(docx_spec)
-        assert supplements, "docx_generation must have on-disk supplements/ files — staged via M1a"
+        assert supplements, (
+            "document_generation must have on-disk supplements/ files — staged via M1a"
+        )
         for entry in supplements:
             assert not entry.path.startswith("/"), (
                 f"D-16-X-7 violation: collect_skill_supplements emitted absolute "
                 f"path {entry.path!r}; must be relative"
             )
-            assert entry.path.startswith(".skills/docx_generation/supplements/"), (
+            assert entry.path.startswith(".skills/document_generation/supplements/"), (
                 f"D-16-2-path violation: {entry.path!r} does not match the staged shape"
             )
+        # The docx supplements survive the fold as docx-<topic>.md.
+        assert any(e.path.endswith("/docx-tables.md") for e in supplements)
 
         # Compose the persona workspace + sandbox.
         persona_workspace_root = tmp_path / "persona_workspace"
@@ -704,7 +708,10 @@ class TestT11DocxEndToEnd:
                     tool_calls=[
                         ToolCall(
                             name="use_skill",
-                            args={"skill_name": "docx_generation"},
+                            args={
+                                "skill_name": "document_generation",
+                                "parameters": {"format": "docx"},
+                            },
                             call_id="us1",
                         )
                     ]

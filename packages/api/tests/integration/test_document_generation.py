@@ -371,26 +371,26 @@ class TestAllowListGating:
 
 
 class TestCompositionEndToEnd:
-    """Criterion #7 — content/format composition end-to-end.
+    """Criterion #7 — content/format composition end-to-end (Spec 24 relocation).
+
+    Spec 24 (D-24-9) folded ``document_drafting`` + ``docx_generation`` into the
+    single ``document_generation`` skill, so the old two-skill chain is now ONE
+    skill that drafts-then-formats. The D-16-3 capability is preserved and still
+    verified: the bridge from drafted prose to the formatter is the model's own
+    CONTEXT (a Python string literal), NEVER a ``.md`` file read back in.
 
     Drives an :class:`AgenticLoop` through a four-step scripted scenario:
 
-    a. Tool call ``use_skill('document_drafting')`` → activated.
-    b. Text turn produces drafted prose IN model context (assert NO file
-       written by drafting — D-16-3 verification: drafting writes to
-       context, NOT a .md file the next skill reads back in).
-    c. Tool call ``use_skill('docx_generation')`` → activated.
-    d. Tool call ``code_execution`` with python-docx code embedding the
-       drafted prose as a Python string literal (the canonical
-       composition pattern D-16-3 prescribes).
-    e. Assert ``ExecutionResult.produced_files`` (surfaced via the tool
-       result's ``data['produced_files']``) contains exactly one ``.docx``
-       — sandbox-boundary level per T01 audit A2 scoping (the
-       persona-workspace persistence chain is out of scope; D-16-X-5).
+    a. Tool call ``use_skill('document_generation', {format: 'docx'})`` → activated.
+    b. Text turn produces drafted prose IN model context (no file write).
+    c. Tool call ``code_execution`` with python-docx code embedding the drafted
+       prose as a Python string literal.
+    d. Assert ``produced_files`` contains exactly one ``.docx`` (sandbox-boundary
+       level per T01 audit A2 scoping; persona-workspace persistence out of scope).
     """
 
     @pytest.mark.asyncio
-    async def test_document_drafting_then_docx_generation_composes_end_to_end(
+    async def test_document_generation_drafts_then_formats_to_docx_end_to_end(
         self,
         tmp_path: Path,
     ) -> None:
@@ -406,11 +406,14 @@ class TestCompositionEndToEnd:
                 "composition path."
             )
 
+        # The persona still declares the pre-Spec-24 names (proves an old YAML
+        # constructs); the scanner resolves them to the single document_generation
+        # skill the runtime actually uses (D-24-9 alias + dedup).
         persona = _persona(
             skills=["document_drafting", "docx_generation"],
             tools=["use_skill", "code_execution"],
         )
-        scanned = _scan(["document_drafting", "docx_generation"])
+        scanned = _scan(["document_generation"])
 
         # Real LocalDockerSandbox + real make_code_execution_tool — the
         # composition test is meaningful only when the actual sandbox runs
@@ -441,47 +444,35 @@ class TestCompositionEndToEnd:
 
             docx_code = _DOCX_CODE_TEMPLATE.format(prose=_DRAFTED_PROSE)
             chat_script = [
-                # (a) Activate document_drafting.
+                # (a) Activate the unified document_generation skill (format=docx).
                 _resp(
                     tool_calls=[
                         ToolCall(
                             name="use_skill",
-                            args={"skill_name": "document_drafting"},
+                            args={
+                                "skill_name": "document_generation",
+                                "parameters": {"format": "docx"},
+                            },
                             call_id="c1",
                         )
                     ]
                 ),
-                # (b) Drafting produces prose IN context (no file write —
-                # D-16-3: the bridge is the model's own context, NOT a .md
-                # file chain). Note: NO tool call, plain text — the loop
-                # treats this as a REASONING step and proceeds.
-                _resp(
-                    f"Draft: {_DRAFTED_PROSE} "
-                    "Now I will activate docx_generation to produce the .docx."
-                ),
-                # (c) Activate docx_generation.
-                _resp(
-                    tool_calls=[
-                        ToolCall(
-                            name="use_skill",
-                            args={"skill_name": "docx_generation"},
-                            call_id="c2",
-                        )
-                    ]
-                ),
-                # (d) code_execution embedding the drafted prose as a
-                # python string literal (composition WITHOUT a .md
-                # intermediate).
+                # (b) Draft prose IN context (no file write — D-16-3: the bridge
+                # is the model's own context, NOT a .md file chain). Plain text →
+                # the loop treats this as a REASONING step and proceeds.
+                _resp(f"Draft: {_DRAFTED_PROSE} Now I will produce the .docx."),
+                # (c) code_execution embedding the drafted prose as a python
+                # string literal (composition WITHOUT a .md intermediate).
                 _resp(
                     tool_calls=[
                         ToolCall(
                             name="code_execution",
                             args={"code": docx_code},
-                            call_id="c3",
+                            call_id="c2",
                         )
                     ]
                 ),
-                # (e) Final.
+                # (d) Final.
                 _resp("[FINAL] The .docx has been produced and is ready."),
             ]
             backend = _ScriptedBackend(chat_script)
@@ -499,26 +490,29 @@ class TestCompositionEndToEnd:
                 f"run did not complete: status={run.status} error={run.error!r}"
             )
 
-            # Step shape: 4 tool/reasoning steps + 1 final step.
+            # Step shape: 3 tool/reasoning steps + 1 final step (the two old
+            # use_skill activations collapse to one document_generation call).
             step_types = [s.type for s in run.steps]
             assert step_types == [
-                StepType.TOOL_CALL,  # (a) use_skill(document_drafting)
+                StepType.TOOL_CALL,  # (a) use_skill(document_generation, format=docx)
                 StepType.REASONING,  # (b) drafted prose in context
-                StepType.TOOL_CALL,  # (c) use_skill(docx_generation)
-                StepType.TOOL_CALL,  # (d) code_execution(python-docx)
-                StepType.FINAL,  # (e) [FINAL]
+                StepType.TOOL_CALL,  # (c) code_execution(python-docx)
+                StepType.FINAL,  # (d) [FINAL]
             ], f"unexpected step type sequence: {step_types}"
 
-            # D-16-3 verification: the drafting step produced prose in the
-            # model's content, NOT a file. The drafting tool call's result
-            # carries data={'skill_name': 'document_drafting'} (the
-            # use_skill activation envelope) — the actual prose lives in
-            # the SUBSEQUENT REASONING step's content.
-            drafting_call = run.steps[0]
-            assert drafting_call.tool_calls[0].name == "use_skill"
-            assert drafting_call.tool_calls[0].args == {"skill_name": "document_drafting"}
-            assert drafting_call.results[0].is_error is False
-            assert drafting_call.results[0].data == {"skill_name": "document_drafting"}
+            # The activation carries the format parameter; the prose lives in the
+            # SUBSEQUENT REASONING step's content (D-16-3: bridge = model context).
+            activate = run.steps[0]
+            assert activate.tool_calls[0].name == "use_skill"
+            assert activate.tool_calls[0].args == {
+                "skill_name": "document_generation",
+                "parameters": {"format": "docx"},
+            }
+            assert activate.results[0].is_error is False
+            assert activate.results[0].data == {
+                "skill_name": "document_generation",
+                "parameters": {"format": "docx"},
+            }
 
             drafting_reasoning = run.steps[1]
             assert drafting_reasoning.type is StepType.REASONING
@@ -527,13 +521,9 @@ class TestCompositionEndToEnd:
                 "(D-16-3: bridge = model context, NOT a .md file)"
             )
 
-            # D-16-3 verification continued: the .docx-producing
-            # code_execution step embeds the drafted prose as a Python
-            # string literal — NOT as a file read. Inspect the call args.
-            docx_gen_call = run.steps[2]
-            assert docx_gen_call.tool_calls[0].args == {"skill_name": "docx_generation"}
-
-            code_call_step = run.steps[3]
+            # The .docx-producing code_execution step embeds the drafted prose as
+            # a Python string literal — NOT as a file read.
+            code_call_step = run.steps[2]
             assert code_call_step.tool_calls[0].name == "code_execution"
             code_arg = code_call_step.tool_calls[0].args["code"]
             assert _DRAFTED_PROSE in code_arg, (
@@ -570,13 +560,12 @@ class TestCompositionEndToEnd:
                 f".docx produced_files entry has zero size: {docx_files[0]!r}"
             )
 
-            # Composition criterion #7: docx_generation's body is the
-            # injected skill content the loop appended to context AFTER
-            # the use_skill tool result (the loop's _maybe_inject_skill
-            # bridge). Sanity-check that the scanned spec carries the
-            # expected token budget — a regression guard symmetric to
-            # builtin-skills test_each_under_token_budget.
-            docx_spec = next(s for s in scanned if s.name == "docx_generation")
-            assert count_tokens(docx_spec.content) <= 2000
+            # Composition criterion #7: document_generation's body is the
+            # injected skill content the loop appended to context AFTER the
+            # use_skill tool result (the loop's _maybe_inject_skill bridge).
+            # Sanity-check the scanned spec's token budget — a regression guard
+            # symmetric to builtin-skills test_under_token_budget.
+            doc_spec = next(s for s in scanned if s.name == "document_generation")
+            assert count_tokens(doc_spec.content) <= 2000
         finally:
             await sandbox.aclose()

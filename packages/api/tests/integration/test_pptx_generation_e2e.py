@@ -496,21 +496,24 @@ class TestT12PptxEndToEnd:
         # OSError [Errno 30] Read-only file system).
         from persona.skills import collect_skill_supplements
 
+        # Spec 24 (D-24-9): pptx_generation folded into document_generation; the
+        # deprecated name resolves via the alias shim, pptx supplements ship as
+        # pptx-<topic>.md under document_generation/supplements/.
         scanned = _scan(["pptx_generation"])
-        pptx_spec = next(s for s in scanned if s.name == "pptx_generation")
+        pptx_spec = next(s for s in scanned if s.name == "document_generation")
         supplement_files = collect_skill_supplements(pptx_spec)
         assert len(supplement_files) >= 1, (
-            "pptx_generation must ship on-disk supplements/ markdown files "
-            "(T04 close-gate documented 3 supplements)"
+            "document_generation must ship on-disk supplements/ markdown files"
         )
         for sf in supplement_files:
             assert not sf.path.startswith("/"), (
                 f"D-16-X-7 regressed: collect_skill_supplements emitted absolute "
                 f"path {sf.path!r}; should be .skills/... relative."
             )
-            assert sf.path.startswith(".skills/pptx_generation/supplements/"), (
+            assert sf.path.startswith(".skills/document_generation/supplements/"), (
                 f"unexpected supplement path shape: {sf.path!r}"
             )
+        assert any(sf.path.endswith("/pptx-layouts.md") for sf in supplement_files)
 
         # 2) Build a real LocalDockerSandbox + composition root that mirrors
         # the api production wiring: deferred_input_files_provider (the
@@ -575,7 +578,10 @@ class TestT12PptxEndToEnd:
                     tool_calls=[
                         ToolCall(
                             name="use_skill",
-                            args={"skill_name": "pptx_generation"},
+                            args={
+                                "skill_name": "document_generation",
+                                "parameters": {"format": "pptx"},
+                            },
                             call_id="us1",
                         )
                     ]

@@ -166,9 +166,17 @@ class TestToolTurnEndToEnd:
 class TestUseSkillTurnEndToEnd:
     @pytest.mark.asyncio
     async def test_use_skill_injects_real_builtin_content(self) -> None:
+        # Spec 24 (D-24-9): the persona still declares the pre-Spec-24
+        # ``document_drafting`` name (see ``_persona`` skills) — the alias shim
+        # resolves it to ``document_generation`` at scan time, so the model
+        # sees + invokes the RESOLVED name in the index. Coverage relocated
+        # from document_drafting onto document_generation.
         backend = ScriptedBackend(
             [
-                ScriptedRound(tool_name="use_skill", tool_args={"skill_name": "document_drafting"}),
+                ScriptedRound(
+                    tool_name="use_skill",
+                    tool_args={"skill_name": "document_generation"},
+                ),
                 ScriptedRound(text="Drafting per the skill."),
             ]
         )
@@ -178,16 +186,18 @@ class TestUseSkillTurnEndToEnd:
         chunks = [c async for c in loop.turn(conv, "draft a complaint")]
 
         assert chunks[-1].is_final is True
-        assert writer.logs[0].skill_used == "document_drafting"
+        assert writer.logs[0].skill_used == "document_generation"
         await registry.aclose()
 
 
 class TestSkillIndexComposition:
     def test_scanner_finds_both_builtins(self) -> None:
+        # The deprecated ``document_drafting`` name resolves via the alias shim
+        # to ``document_generation`` (D-24-9); coverage relocated.
         scanner = SkillScanner([_BUILTIN_ROOT])
         scanned = scanner.scan(["web_research", "document_drafting"])
         names = {s.name for s in scanned}
-        assert names == {"web_research", "document_drafting"}
+        assert names == {"web_research", "document_generation"}
         index = render_skill_index(scanned)
         assert "web_research" in index
-        assert "document_drafting" in index
+        assert "document_generation" in index

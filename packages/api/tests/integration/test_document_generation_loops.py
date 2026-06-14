@@ -689,7 +689,10 @@ class TestBothLoopsProduceDocuments:
             rounds = [
                 _ScriptedRound(
                     tool_name="use_skill",
-                    tool_args={"skill_name": "xlsx_generation"},
+                    tool_args={
+                        "skill_name": "document_generation",
+                        "parameters": {"format": "xlsx"},
+                    },
                     call_id="cu1",
                 ),
                 _ScriptedRound(
@@ -763,7 +766,10 @@ class TestBothLoopsProduceDocuments:
                     tool_calls=[
                         ToolCall(
                             name="use_skill",
-                            args={"skill_name": "pdf_generation"},
+                            args={
+                                "skill_name": "document_generation",
+                                "parameters": {"format": "pdf"},
+                            },
                             call_id="us1",
                         )
                     ]
@@ -855,7 +861,10 @@ class TestErrorRecovery:
                     tool_calls=[
                         ToolCall(
                             name="use_skill",
-                            args={"skill_name": "docx_generation"},
+                            args={
+                                "skill_name": "document_generation",
+                                "parameters": {"format": "docx"},
+                            },
                             call_id="us1",
                         )
                     ]
