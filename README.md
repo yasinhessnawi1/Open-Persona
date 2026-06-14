@@ -88,10 +88,12 @@ audio I/O wrapped around the turn loop.
 - `persona-voice V2`: Deepgram streaming STT.
 - `persona-voice V3`: Cartesia Sonic streaming TTS plus per-persona voice as a
   first-class identity attribute.
+- `persona-voice V4`: turn-taking + barge-in — the conversational state machine,
+  automatic endpointing, fast-and-discriminating interruption, and full-loop
+  latency ownership (the orchestration core; pure-Python on the V1/V2/V3 seams).
 
 ### In development
 
-- `persona-voice V4`: turn-taking + barge-in.
 - `persona-voice V5`: model reply producer (wires the persona turn loop
   into the voice trunk).
 - `persona-voice V6`: frontend voice client.

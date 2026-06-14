@@ -3,7 +3,7 @@
 > Real-time voice service for Open Persona. WebRTC transport via LiveKit OSS.
 > Source-available; noncommercial use only.
 
-**Status:** PolyForm Noncommercial 1.0.0 · Source Available (Noncommercial Use Only) · V1–V3 shipped; V4–V6 pending
+**Status:** PolyForm Noncommercial 1.0.0 · Source Available (Noncommercial Use Only) · V1–V4 shipped; V5–V6 pending
 
 ## What it is
 
@@ -35,11 +35,21 @@ Shipped sub-trunks:
   utterance `cancel()` with discard-on-cancel for the future V4 barge-in
   foundation, in-process integration spine through STT → mocked-V5 →
   TTS → outbound.
+- **V4, Turn-taking + barge-in** (`persona-voice` `turn_taking/`): the
+  orchestration core — a four-state conversational machine
+  (Listening / UserSpeaking / Processing / PersonaSpeaking), automatic
+  endpointing (silence threshold + provider corroboration + a deterministic
+  hold-list textual-completion gate), fast-and-discriminating barge-in
+  (confirm-window + confidence gate + backchannel duration bar), the
+  model-invocation turn cycle with prompt cancellation on barge-in, a 2 s
+  cancel watchdog, barged-over memory honesty (`BargedReply` to the V5
+  memory seam), and dual-line full-loop latency attribution. Pure-Python
+  decision logic on the V1/V2/V3 seams; wired via `wire_orchestrated_loop`.
+  V1's loop gains additive `orchestrator=` / `turn_transcript_listener=`
+  ports (the auto-loop becomes the echo/dev baseline only).
 
 Not yet shipped (sub-trunks in research / planning):
 
-- **V4, Turn-taking + barge-in**: interrupt handling, end-of-utterance
-  detection, lifecycle hooks on `SessionEventListener`.
 - **V5, Model reply producer**: streams runtime token output into V3 with
   the canonical first-token-latency measurement convention.
 - **V6, Frontend voice experience**: the browser-side audio plumbing
@@ -47,7 +57,7 @@ Not yet shipped (sub-trunks in research / planning):
 
 ## Install
 
-From PyPI (planned, once V4–V6 close):
+From PyPI (planned, once V5–V6 close):
 
 ```bash
 pip install persona-voice

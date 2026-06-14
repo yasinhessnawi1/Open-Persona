@@ -72,12 +72,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AudioChunk",
+    "HeardReply",
     "ModelReplyProducer",
     "PassThroughEchoMode",
+    "ReplyHeardListener",
     "STTStream",
     "StreamingLoop",
     "TTSStream",
     "Transcript",
+    "TurnOrchestrator",
 ]
 
 
@@ -176,6 +179,72 @@ class ModelReplyProducer(Protocol):
     async def __call__(self, final_transcript: Transcript) -> AsyncIterator[str]: ...
 
 
+@runtime_checkable
+class TurnOrchestrator(Protocol):
+    """V4 — the turn-taking orchestrator seam the loop drives (spec V4 T05/T06).
+
+    A consumer-defined Protocol (the same discipline V1 uses for ``STTStream`` /
+    ``TTSStream``): the loop depends on this minimal surface, and V4's
+    :class:`persona_voice.turn_taking.orchestrator.ConversationalOrchestrator`
+    satisfies it structurally — so the loop never imports the orchestrator
+    (no cycle; the orchestrator imports :class:`Transcript` from here).
+
+    When a ``StreamingLoop`` is constructed with an ``orchestrator``, the
+    V1 auto-invocation loop is **disabled** (it is the echo/dev baseline only;
+    production always wires an orchestrator so no ungated auto-loop runs —
+    D-V4-X-t05-orchestrator-default). The loop instead feeds the orchestrator
+    each transcript and the model-first-audio / persona-finished signals; the
+    orchestrator decides *when* to call back into the loop's
+    :meth:`StreamingLoop.invoke_model_for_turn`.
+    """
+
+    async def on_transcript(self, transcript: Transcript) -> None: ...
+
+    async def notify_model_first_audio(self) -> None: ...
+
+    async def notify_persona_finished(self) -> None: ...
+
+    async def notify_processing_yielded_no_audio(self) -> None: ...
+
+
+class HeardReply(BaseModel):
+    """What the persona actually said on one turn (spec V4 T07 — D-V4-4).
+
+    The barged-over memory-honesty record. ``text`` is the reply text whose
+    audio was streamed onto the outbound rail up to the point the turn ended
+    (cleanly or via barge-in); ``truncated`` is ``True`` when the turn was cut
+    short (barge-in / continuation) so the unspoken remainder was never
+    synthesised. V5 consumes this to write episodic memory that reflects what
+    was *heard*, not what was *planned* (spec V4 §8 honesty risk).
+
+    Known limitation (carried into ``MAINTENANCE.md``): ``text`` is counted at
+    the token→TTS boundary, so it can over-count by the buffered-but-unplayed
+    tail that V3 flushes from the rail on barge-in. The refinement signal is
+    the persona referencing content the user did not hear; the fix is
+    playout-position tracking (V3 ``wait_for_playout``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    truncated: bool
+    token_count: int = Field(ge=0)
+
+
+@runtime_checkable
+class ReplyHeardListener(Protocol):
+    """Consumer-defined seam — notified once per turn with what was heard.
+
+    V1 emits a :class:`HeardReply` at the end of every
+    :meth:`StreamingLoop.invoke_model_for_turn` (clean or cancelled). V4's
+    ``HeardWordsBridge`` adapts it onto V5's memory-write seam
+    (``TurnTranscriptListener``). Implementations MUST NOT raise — this runs in
+    the invocation's ``finally``, including during barge-in cancellation.
+    """
+
+    async def on_reply_heard(self, reply: HeardReply) -> None: ...
+
+
 # ---------- the streaming loop ---------------------------------------------
 
 
@@ -206,6 +275,8 @@ class StreamingLoop:
         model: ModelReplyProducer | None = None,
         echo_mode: PassThroughEchoMode = PassThroughEchoMode.ECHO,
         speech_activity: SpeechActivityListener | None = None,
+        orchestrator: TurnOrchestrator | None = None,
+        turn_transcript_listener: ReplyHeardListener | None = None,
     ) -> None:
         # Spec V2 D-V2-X-streaming-loop-additivity-shape — ADDITIVE
         # ``speech_activity`` injected port; backwards-compatible default
@@ -221,6 +292,15 @@ class StreamingLoop:
         self._model = model
         self._echo_mode = echo_mode
         self._speech_activity = speech_activity
+        # Spec V4 D-V4-X-t05-orchestrator-default — ADDITIVE orchestrator port.
+        # When wired (production), the auto-invocation loop is disabled and V4
+        # drives invocation explicitly via invoke_model_for_turn; default None
+        # preserves V1's echo/dev auto-invoke baseline so every V1/V2/V3 test
+        # stays green.
+        self._orchestrator = orchestrator
+        # Spec V4 T07 — ADDITIVE barged-over memory-honesty port. Emits a
+        # HeardReply per turn (what was actually spoken); None preserves V1.
+        self._reply_listener = turn_transcript_listener
         self._pipeline_task: asyncio.Task[None] | None = None
         # V1 wires the inbound dispatcher into the VoiceRoom at construction
         # so frames that arrive during connect are not dropped on the floor.
@@ -239,6 +319,31 @@ class StreamingLoop:
     @speech_activity.setter
     def speech_activity(self, value: SpeechActivityListener | None) -> None:
         self._speech_activity = value
+
+    @property
+    def orchestrator(self) -> TurnOrchestrator | None:
+        """V4 additive — the registered :class:`TurnOrchestrator`, if any.
+
+        The composition root (T06 ``wire_orchestrated_loop``) sets this after
+        construction so the loop↔orchestrator pair can be built without a
+        chicken-and-egg (the orchestrator's actions are loop-backed). When set,
+        :meth:`start_pipeline` drains transcripts into the orchestrator instead
+        of auto-invoking the model.
+        """
+        return self._orchestrator
+
+    @orchestrator.setter
+    def orchestrator(self, value: TurnOrchestrator | None) -> None:
+        self._orchestrator = value
+
+    @property
+    def turn_transcript_listener(self) -> ReplyHeardListener | None:
+        """V4 T07 additive — the per-turn :class:`HeardReply` sink, if any."""
+        return self._reply_listener
+
+    @turn_transcript_listener.setter
+    def turn_transcript_listener(self, value: ReplyHeardListener | None) -> None:
+        self._reply_listener = value
 
     # ----- inbound + echo --------------------------------------------
 
@@ -291,39 +396,126 @@ class StreamingLoop:
         """
         if self._pipeline_task is not None and not self._pipeline_task.done():
             return
+        if self._orchestrator is not None:
+            # Orchestrator-driven (production): V4 invokes the model per its
+            # turn-end decision via invoke_model_for_turn. The loop only drains
+            # transcripts into the orchestrator; it never auto-invokes the model
+            # (D-V4-X-t05-orchestrator-default). Activity events reach the
+            # orchestrator via the ``speech_activity`` port (T06 wiring).
+            if self._stt is not None:
+                self._pipeline_task = asyncio.create_task(
+                    self._run_orchestrated_pipeline(self._stt, self._orchestrator),
+                    name="voice-orchestrated-pipeline",
+                )
+            return
         if self._stt is None or self._model is None or self._tts is None:
             # V2/V3/V5 not all wired — pipeline can't run. Echo mode keeps
             # the room duplex for T08; intelligence stays pending.
             return
         self._pipeline_task = asyncio.create_task(
-            self._run_pipeline(self._stt, self._model, self._tts),
+            self._run_pipeline(self._stt),
             name="voice-streaming-pipeline",
         )
 
-    async def _run_pipeline(
-        self,
-        stt: STTStream,
-        model: ModelReplyProducer,
-        tts: TTSStream,
+    async def _run_orchestrated_pipeline(
+        self, stt: STTStream, orchestrator: TurnOrchestrator
     ) -> None:
-        """Drive the V2 → V5 → V3 streaming chain.
+        """Feed V2 transcripts to V4 (orchestrator mode) — never auto-invoke.
 
-        For each *final* transcript V2 emits, V5 produces an
-        ``AsyncIterator[str]`` of tokens; V3 consumes that iterator
-        directly (no buffering) and yields audio chunks; the loop pushes
-        each chunk into the outbound rail as it arrives.
+        The orchestrator decides *when* to invoke the model (on its turn-end
+        decision) via :meth:`invoke_model_for_turn`; the loop's only job here is
+        to deliver each transcript so the endpointing policy has the text it
+        needs (the textual-completion gate, D-V4-1).
+        """
+        async for transcript in stt.transcripts():
+            await orchestrator.on_transcript(transcript)
+
+    async def _run_pipeline(self, stt: STTStream) -> None:
+        """Drive the V2 → V5 → V3 streaming chain (the V1 auto-invoke baseline).
+
+        For each *final* transcript V2 emits, the loop invokes the model and
+        streams the reply (:meth:`invoke_model_for_turn`). This path runs ONLY
+        when no orchestrator is wired (echo/dev baseline); production routes
+        invocation through V4 (D-V4-X-t05-orchestrator-default).
         """
         await self._ensure_outbound_published()
         async for transcript in stt.transcripts():
             if not transcript.is_final:
                 continue
-            await self._session.notify(SessionLifecycleEvent.AGENT_STARTED_SPEAKING)
-            try:
-                token_stream = await model(transcript)
-                async for chunk in tts.synthesize(token_stream):
-                    await self._push_audio_chunk(chunk)
-            finally:
-                await self._session.notify(SessionLifecycleEvent.AGENT_STOPPED_SPEAKING)
+            await self.invoke_model_for_turn(transcript)
+
+    async def invoke_model_for_turn(self, final_transcript: Transcript) -> None:
+        """Invoke V5 for one completed user turn and stream the reply to V3.
+
+        The single-turn invocation V4 calls explicitly on its ``TURN_ENDED``
+        decision (and the V1 auto-loop calls per final transcript). Hands the
+        transcript to the V5 model, pipes the token stream into V3 synthesis,
+        and pushes each audio chunk onto the outbound rail. A no-op if V5 or V3
+        is not wired. The ``AGENT_STARTED_SPEAKING`` / ``AGENT_STOPPED_SPEAKING``
+        lifecycle events bracket the invocation (the V6/audit hooks).
+
+        Cancellation: V4 cancels the task awaiting this coroutine on barge-in;
+        the ``CancelledError`` propagates into V3's ``synthesize`` iterator
+        (which ends exception-free via its sentinel) and into the V5 backend's
+        ``async with`` stream (clean connection close) — the three-things-
+        stopping-together (spec V4 §8). The ``finally`` always emits
+        ``AGENT_STOPPED_SPEAKING``.
+        """
+        if self._model is None or self._tts is None:
+            return
+        await self._ensure_outbound_published()
+        await self._session.notify(SessionLifecycleEvent.AGENT_STARTED_SPEAKING)
+        produced_audio = False
+        completed = False
+        heard: list[str] = []
+        try:
+            token_stream = await self._model(final_transcript)
+            async for chunk in self._tts.synthesize(self._accumulate_heard(token_stream, heard)):
+                await self._push_audio_chunk(chunk)
+                if not produced_audio:
+                    produced_audio = True
+                    # First persona audio on the rail → PROCESSING → PERSONA_SPEAKING.
+                    if self._orchestrator is not None:
+                        await self._orchestrator.notify_model_first_audio()
+            # Clean completion (not cancelled): tell V4 the turn is over so it
+            # returns the floor. An empty reply (no audio) resets to LISTENING.
+            completed = True
+            if self._orchestrator is not None:
+                if produced_audio:
+                    await self._orchestrator.notify_persona_finished()
+                else:
+                    await self._orchestrator.notify_processing_yielded_no_audio()
+        finally:
+            await self._session.notify(SessionLifecycleEvent.AGENT_STOPPED_SPEAKING)
+            # T07 barged-over memory honesty (D-V4-4): emit what was actually
+            # heard — the full reply on clean completion, the spoken-so-far
+            # prefix when cut short by barge-in/continuation (``completed`` is
+            # False if CancelledError unwound the stream). Runs in finally so it
+            # fires on both paths.
+            if self._reply_listener is not None:
+                await self._reply_listener.on_reply_heard(
+                    HeardReply(
+                        text="".join(heard),
+                        truncated=not completed,
+                        token_count=len(heard),
+                    )
+                )
+
+    @staticmethod
+    async def _accumulate_heard(
+        token_stream: AsyncIterator[str], sink: list[str]
+    ) -> AsyncIterator[str]:
+        """Tee the V5 token stream into ``sink`` as each token passes to V3.
+
+        The heard-words counter (D-V4-X-heard-words-counter): tokens are
+        recorded at the token→TTS boundary. On barge-in the iteration is
+        cancelled mid-stream, so ``sink`` holds exactly the prefix delivered for
+        synthesis — over-counting only by the buffered-but-unplayed tail V3
+        flushes (the documented MAINTENANCE.md limitation).
+        """
+        async for token in token_stream:
+            sink.append(token)
+            yield token
 
     async def _push_audio_chunk(self, chunk: AudioChunk) -> None:
         """Push one V3 :class:`AudioChunk` onto the outbound rail.
@@ -367,10 +559,21 @@ class StreamingLoop:
         quiet near-immediately rather than draining the jitter buffer (Spec
         V3 D-V3-5 step 4 — without it R-V3-5's "ghost audio" plays on).
         """
+        await self.flush_outbound_and_cancel_tts()
+        await self._session.notify(SessionLifecycleEvent.AGENT_STOPPED_SPEAKING)
+
+    async def flush_outbound_and_cancel_tts(self) -> None:
+        """The teardown half of barge-in — cancel TTS + clear the rail, no notify.
+
+        Shared by V1's :meth:`interrupt` (which adds the ``AGENT_STOPPED_SPEAKING``
+        notify) and V4's orchestrated barge-in (T06's ``LoopTurnActions.interrupt``,
+        where the cancelled model-invocation task's ``finally`` already emits the
+        single ``AGENT_STOPPED_SPEAKING`` — so this half must NOT notify again,
+        avoiding a duplicate lifecycle event).
+        """
         if self._tts is not None:
             await self._tts.cancel()
         self._voice_room.clear_outbound()
-        await self._session.notify(SessionLifecycleEvent.AGENT_STOPPED_SPEAKING)
 
     async def stop(self) -> None:
         """Stop the pipeline task cleanly (called by session teardown)."""
