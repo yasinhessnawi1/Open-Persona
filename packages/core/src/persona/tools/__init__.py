@@ -17,10 +17,24 @@ from persona.tools.audit import (
     ToolAuditEvent,
     ToolAuditLogger,
 )
+from persona.tools.builtin.calculator import make_calculator_tool
+from persona.tools.builtin.currency_convert import make_currency_convert_tool
+from persona.tools.builtin.datetime import make_datetime_tool
 from persona.tools.builtin.file_read import make_file_read_tool
 from persona.tools.builtin.file_write import make_file_write_tool
+from persona.tools.builtin.json_query import make_json_query_tool
+from persona.tools.builtin.regex_match import make_regex_match_tool
+from persona.tools.builtin.text_diff import make_text_diff_tool
+from persona.tools.builtin.text_summarize import make_text_summarize_tool
 from persona.tools.builtin.web_fetch import make_web_fetch_tool
 from persona.tools.builtin.web_search import make_web_search_tool
+from persona.tools.catalog import (
+    TOOL_CATALOG,
+    ToolCatalogEntry,
+    catalog_entry,
+    known_tool_names,
+    warn_unknown_declared_tools,
+)
 from persona.tools.errors import (
     MCPConnectionError,
     MCPServerUnavailableError,
@@ -44,10 +58,13 @@ __all__ = [
     "MCPServerUnavailableError",
     "MCPToolAdapter",
     "MemoryToolAuditLogger",
+    # Known-tool catalog (spec 26 T08)
+    "TOOL_CATALOG",
     # Errors
     "SandboxViolationError",
     "ToolAuditEvent",
     "ToolAuditLogger",
+    "ToolCatalogEntry",
     "ToolDescriptor",
     "ToolExecutionError",
     "ToolNotAllowedError",
@@ -55,11 +72,21 @@ __all__ = [
     "Toolbox",
     # Factory + composer
     "build_default_toolbox",
+    "catalog_entry",
     "format_tool_result",
+    "known_tool_names",
     "load_mcp_clients",
+    "make_calculator_tool",
+    "make_currency_convert_tool",
+    "make_datetime_tool",
     "make_file_read_tool",
     "make_file_write_tool",
+    "make_json_query_tool",
+    "make_regex_match_tool",
+    "make_text_diff_tool",
+    "make_text_summarize_tool",
     "make_web_fetch_tool",
     "make_web_search_tool",
     "tool",
+    "warn_unknown_declared_tools",
 ]

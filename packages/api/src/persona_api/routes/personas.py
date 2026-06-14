@@ -19,11 +19,13 @@ from persona_api.schemas import (
     AuthoringDraft,
     AuthorPersonaRequest,
     CreatePersonaRequest,
+    GrantToolRequest,
     PersonaCapabilities,
     PersonaDetail,
     PersonaSummary,
     RefinePersonaRequest,
     SetConsentRequest,
+    ToolRecommendationResponse,
     UpdatePersonaRequest,
 )
 from persona_api.services import (
@@ -33,6 +35,7 @@ from persona_api.services import (
     consent_service,
     credits_service,
     persona_service,
+    tool_consent_service,
 )
 
 if TYPE_CHECKING:
@@ -190,6 +193,84 @@ async def refine_persona(
         reason="persona_authoring_refine",
     )
     return draft
+
+
+@router.post(
+    "/recommend-tools",
+    response_model=ToolRecommendationResponse,
+    dependencies=[Depends(rate_limit("author"))],
+)
+async def recommend_tools(
+    body: AuthorPersonaRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ToolRecommendationResponse:
+    """Recommend a ranked tool subset for a persona description (spec 26 T09).
+
+    Authoring-time assist: given the natural-language description, a single
+    mid-tier call (D-26-2) returns up to 10 catalog-valid tool recommendations,
+    highest-confidence first. Reuses the description-only ``AuthorPersonaRequest``
+    body. Deducts the flat authoring credit (a mid-tier LLM call).
+    """
+    credits_service.require_credits(rls_engine=request.app.state.rls_engine, user_id=user.id)
+    backend = request.app.state.tier_registry.get("mid")
+    recommendations = await authoring_service.recommend_tools_for_persona(backend, body.description)
+    _deduct_and_audit(
+        request,
+        user,
+        "persona.recommend_tools",
+        authoring_service.RECOMMENDER_PROMPT_VERSION,
+        reason="persona_tool_recommend",
+    )
+    return ToolRecommendationResponse(
+        recommendations=recommendations,
+        prompt_version=authoring_service.RECOMMENDER_PROMPT_VERSION,
+    )
+
+
+@router.post(
+    "/{persona_id}/tools",
+    response_model=PersonaDetail,
+    dependencies=[Depends(rate_limit("default"))],
+)
+async def grant_tool(
+    persona_id: str,
+    body: GrantToolRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonaDetail:
+    """Enable a tool on the persona's allow-list via runtime consent (spec 26 T11).
+
+    Called when the user accepts a runtime tool-gap offer (T10). Adds the tool to
+    the persona's ``tools`` list (persisted in the YAML column — no migration)
+    and records the grant as a versioned ``persona_self`` self-fact (force +
+    confidence ≥ 0.8 + reason, D-26-X-self-facts-consent-write-contract). Returns
+    the updated persona detail. Idempotent: re-granting an already-enabled tool
+    is a no-op that still returns 200.
+    """
+    from datetime import UTC, datetime
+
+    tool_consent_service.grant_tool_consent(
+        rls_engine=request.app.state.rls_engine,
+        embedder=request.app.state.embedder,
+        audit_root=request.app.state.audit_root,
+        persona_id=persona_id,
+        owner_id=user.id,
+        tool_name=body.tool_name,
+        written_by=user.id,
+        now=datetime.now(UTC),
+        turn_index=body.turn_index,
+    )
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action="persona.tool_grant",
+        target=persona_id,
+    )
+    row = persona_service.get_persona(
+        rls_engine=request.app.state.rls_engine, persona_id=persona_id
+    )
+    return _persona_detail(row, tier_registry=_tier_registry(request))
 
 
 def _deduct_and_audit(

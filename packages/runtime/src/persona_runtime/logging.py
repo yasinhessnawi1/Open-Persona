@@ -228,6 +228,15 @@ class TurnLog(BaseModel):
     # the Postgres writer maps a fixed columnar subset, so NO migration.
     skills_invoked: list[SkillInvocation] = Field(default_factory=list)
     skill_budget_exceeded: bool = False
+    # Spec 26 T10/T12 (D-26-X-T12-turnlog-no-migration) — tool-gap telemetry.
+    # ``tool_gap_detected``: catalog tool names the model signalled it lacked
+    # this turn (runtime tool-gap detector). ``tool_consent_granted``: tool
+    # names the user enabled mid-conversation via the consent flow (populated by
+    # the API consent path; default empty on the chat-loop write). Runtime-only
+    # JSONL fields — the columnar Postgres writer maps a fixed subset, so these
+    # need NO migration.
+    tool_gap_detected: list[str] = Field(default_factory=list)
+    tool_consent_granted: list[str] = Field(default_factory=list)
 
     @field_validator("timestamp", mode="after")
     @classmethod

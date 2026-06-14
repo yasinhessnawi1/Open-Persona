@@ -29,6 +29,8 @@ __all__ = [
     "PersonaSummary",
     "RunStatusResponse",
     "ToolCallEvent",
+    "ToolRecommendation",
+    "ToolRecommendationResponse",
     "ToolResultEvent",
     "ToolSummary",
     "UsageEntry",
@@ -136,6 +138,34 @@ class AuthoringDraft(_Output):
     questions: list[ClarifyingQuestion] = Field(default_factory=list)
     prompt_version: str
     errors: list[str] | None = None
+
+
+class ToolRecommendation(_Output):
+    """One recommended tool for a persona (spec 26 T09, D-26-2).
+
+    Deliberately generic + trivially-unifiable (D-26-10): Spec 27 unifies
+    built-in + MCP recommendations by extending this shape (e.g. a ``provider``
+    field), so the v0.2 shape is a forward-compatible strict subset.
+
+    Attributes:
+        tool_name: A built-in tool name from the known-tool catalog
+            (``persona.tools.TOOL_CATALOG``). Hallucinated names are filtered
+            out post-hoc before this model is constructed.
+        rationale: One-line reason the tool fits this persona.
+        confidence: Recommender confidence in [0, 1]; entries below the floor
+            are dropped before return.
+    """
+
+    tool_name: str
+    rationale: str
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class ToolRecommendationResponse(_Output):
+    """The ranked tool-recommendation list returned by ``/personas/recommend-tools``."""
+
+    recommendations: list[ToolRecommendation] = Field(default_factory=list)
+    prompt_version: str
 
 
 # -- conversations ----------------------------------------------------------

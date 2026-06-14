@@ -80,6 +80,17 @@ class AuthorPersonaRequest(_Input):
     description: str = Field(min_length=1, max_length=4000)
 
 
+class GrantToolRequest(_Input):
+    """Enable a tool on a persona's allow-list via runtime consent (spec 26 T11).
+
+    Sent when the user accepts a runtime tool-gap offer. ``turn_index`` is the
+    conversation turn the offer came from (recorded in the persona_self audit).
+    """
+
+    tool_name: str = Field(min_length=1, max_length=128)
+    turn_index: int | None = None
+
+
 class RefinePersonaRequest(_Input):
     """Refine a draft persona by answering a clarifying question (spec 10, §4 / D-10-2).
 

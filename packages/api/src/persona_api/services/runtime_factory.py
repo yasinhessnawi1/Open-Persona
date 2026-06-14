@@ -36,7 +36,7 @@ from persona.stores import (
     WorldviewStore,
 )
 from persona.stores.postgres import PostgresBackend
-from persona.tools import build_default_toolbox
+from persona.tools import build_default_toolbox, make_text_summarize_tool
 from persona_runtime.agentic.loop import AgenticLoop
 from persona_runtime.loop import ConversationLoop
 from persona_runtime.prompt import PromptBuilder
@@ -289,6 +289,17 @@ class RuntimeFactory:
                     persona_visual_style=persona.identity.visual_style,
                 )
             )
+        # Spec 26 T07 — text_summarize is runtime-wired (D-26-7 / T1): it needs a
+        # model, so it is NOT a build_default_toolbox built-in. Compose it here
+        # with the SMALL tier (architecture §5.3 — summarization is boilerplate)
+        # so the persona's runtime can dispatch it. The persona's allow-list
+        # (inside build_default_toolbox) is still the final gate. Its AC-#2
+        # wiring proof is a runtime-factory integration test
+        # (D-26-X-text-summarize-wiring-test-kind). The registry is always
+        # present in production; the guard keeps partial test-composition paths
+        # (which stub the registry) booting cleanly.
+        if self._tier_registry is not None:
+            extra.append(make_text_summarize_tool(backend=self._tier_registry.get("small")))
         toolbox, mcp_clients = await build_default_toolbox(
             self._core_config,
             persona,

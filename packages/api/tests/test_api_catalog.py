@@ -43,6 +43,15 @@ def test_list_tools(client: TestClient) -> None:
         "file_write",
         "code_execution",
         "generate_image",
+        # Spec 26 T08 — the new built-ins must also surface in authoring so the
+        # wizard can offer them (sourced from persona-core TOOL_CATALOG).
+        "calculator",
+        "datetime",
+        "regex_match",
+        "json_query",
+        "text_diff",
+        "currency_convert",
+        "text_summarize",
     } <= names
     # each has a non-empty description
     assert all(t["description"] for t in resp.json())

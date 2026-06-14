@@ -11,6 +11,28 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Tools v2 — Tool Catalog Expansion + Persona-Driven Tool Selection (Spec 26; Phase 6 complete 2026-06-14, pending sign-off)
+
+> **Two coupled deliverables:** (1) **7 new general-utility built-in tools** that personas previously fabricated via `code_execution`; and (2) **persona-driven tool selection** — an authoring-time recommender + a runtime tool-gap detector that offers one-tap, consent-gated tool enabling. Purely additive to Spec 04; existing personas are byte-for-byte unaffected (verified). **19 decisions** ([`docs/specs/phase2/spec_26/decisions.md`](docs/specs/phase2/spec_26/decisions.md)). Operator pass **12/12 live, 0 FAIL** ([`operator_pass_2026_06_14.log`](docs/specs/phase2/spec_26/evidence/operator_pass_2026_06_14.log)). `mypy --strict` core (120) + `mypy` runtime (30) / api (57) clean; `ruff` clean; 3296 unit + 16 spec-26 integration tests pass.
+
+#### Added (persona-core)
+- **7 built-in tools** (`persona/tools/builtin/`): `calculator` (hand-rolled AST-whitelist arithmetic + `math.*`, no `eval`, DoS-capped), `datetime` (timezone math via stdlib `zoneinfo`), `currency_convert` (Frankfurter no-key default + provider-conditional key guard), `regex_match` (RE2/`google-re2` — ReDoS-immune by construction, since the pattern is model-supplied), `json_query` (JMESPath), `text_diff` (stdlib `difflib`), and the runtime-wired `text_summarize`. Each returns `ToolResult(is_error=True)` on failure — never raises (D-03-5).
+- **Known-tool catalog** (`persona/tools/catalog.py`, `TOOL_CATALOG`) — the single declarative vocabulary of every platform tool (incl. runtime-wired `code_execution`/`generate_image`/`text_summarize`); drives the recommender's catalog-validity filter + the runtime gap-detector's phrase→tool map. `warn_unknown_declared_tools` is soft-WARN only (no hard validation — backward-compat, D-26-X-known-tool-catalog).
+- New domain exception `CalculatorError`.
+- **Dependencies:** `jmespath>=1.0,<2` (pure-Python, zero transitive), `tzdata>=2024.1` (pure-data, cross-platform tz), `google-re2>=1.1,<2` (ReDoS-immune; cp312 `manylinux_2_28` x86_64 wheel — installs as a wheel in `python:3.12-slim`, no source build).
+
+#### Added (persona-runtime)
+- **`proactive_tool_gap.py`** — `detect_tool_gap` (post-generation; a capability-gap phrase + a catalog keyword for a tool NOT in the persona's allow-list) + `build_tool_gap_question` (Spec-21 3+1 consent offer). Wired into `ConversationLoop.turn` as a post-generation hook (Spec 21's pre-generation question hook untouched).
+- **`TurnLog`** gains `tool_gap_detected` + `tool_consent_granted` (runtime-only JSONL; no migration). `turn()` gains an additive `consent_granted_tools` kwarg.
+
+#### Added (persona-api)
+- **Tool recommender** — `recommend_tools_for_persona` (`authoring_service`) + `POST /v1/personas/recommend-tools` (mid-tier, forced-JSON + catalog-filtered + confidence-floored + capped at 10). New `ToolRecommendation`/`ToolRecommendationResponse`.
+- **Tool consent** — `tool_consent_service.grant_tool_consent` + `POST /v1/personas/{id}/tools`: adds the tool to the persona's allow-list (YAML column, no migration) and records a versioned `persona_self` self-fact (`force=True` + confidence ≥ 0.8 + reason). Idempotent; unknown tool → `ToolNotAllowedError`.
+- `catalog_service.list_tools` now sources from the core `TOOL_CATALOG` so the new tools surface in authoring.
+
+#### Changed
+- **D-26-1:** `markdown_render` dropped from the launch set (no first-party HTML consumer; the model emits markdown natively). Reinstatement path recorded (`mistune` + mandatory `nh3` sanitizer).
+
 ### Spec 23 — Intelligent Routing: Cost/Quality/Latency-Aware Model Selection (Phase 4 complete; operator-pass green, pending final sign-off)
 
 > **Opt-in, metadata-driven model selection WITHIN a tier.** The rule-based router still picks the tier (frontier/mid/small — ARCHITECTURE §5.3 / §9 intact); a new `IntelligentRouter` then scores the candidate models in that tier's MODELS list on cost / quality / latency (+ a hard capability gate) and picks the best, re-wrapping the tier backend so the chosen model is primary (Spec 20 fallback chain preserved). Deterministic scoring on **published metadata** — no router model, no embeddings (§9.10 editorial enrichment). Default **off**; existing personas route byte-identically (criterion 11, proven via a router-present-but-disabled contract test). Zero new dependencies.

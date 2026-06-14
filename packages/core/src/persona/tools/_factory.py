@@ -14,8 +14,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from persona.logging import get_logger
+from persona.tools.builtin.calculator import make_calculator_tool
+from persona.tools.builtin.currency_convert import make_currency_convert_tool
+from persona.tools.builtin.datetime import make_datetime_tool
 from persona.tools.builtin.file_read import make_file_read_tool
 from persona.tools.builtin.file_write import make_file_write_tool
+from persona.tools.builtin.json_query import make_json_query_tool
+from persona.tools.builtin.regex_match import make_regex_match_tool
+from persona.tools.builtin.text_diff import make_text_diff_tool
 from persona.tools.builtin.web_fetch import make_web_fetch_tool
 from persona.tools.builtin.web_search import make_web_search_tool
 from persona.tools.mcp.client import load_mcp_clients
@@ -82,6 +88,21 @@ async def build_default_toolbox(
             sandbox_root=config.tools_sandbox_root,
             audit_logger=tool_audit_logger,
             persona_id=persona.persona_id,
+        ),
+        # Spec 26 — general-utility built-ins (deny-by-default; the persona's
+        # allow-list still gates whether each is advertised).
+        make_calculator_tool(),
+        make_datetime_tool(),
+        make_regex_match_tool(),
+        make_json_query_tool(),
+        make_text_diff_tool(),
+        make_currency_convert_tool(
+            provider_name=config.currency_provider,
+            api_key=(
+                config.currency_api_key.get_secret_value()
+                if config.currency_api_key is not None
+                else None
+            ),
         ),
     ]
 

@@ -20,6 +20,7 @@ __all__ = [
     "AuditWriteError",
     "AuthenticationError",
     "BrokenVersionChainError",
+    "CalculatorError",
     "CreditsExhaustedError",
     "MCPConnectionError",
     "MCPServerUnavailableError",
@@ -122,6 +123,20 @@ class AuditWriteError(PersonaError):
 
 class ToolNotAllowedError(PersonaError):
     """Raised when a tool call targets a tool not in the persona's allow-list."""
+
+
+class CalculatorError(PersonaError):
+    """Raised when the ``calculator`` tool rejects an expression.
+
+    Spec 26 (D-26-X-calculator-ast-scope). The ``calculator`` tool evaluates a
+    strict whitelist of arithmetic AST nodes (no ``eval``); this exception
+    surfaces a disallowed node type (e.g. attribute access, a non-whitelisted
+    function/name), a parse error, or a DoS-guard violation (expression too
+    long, exponent/AST too large, factorial argument too big). The ``@tool``
+    decorator boundary turns it into a ``ToolResult(is_error=True)`` so the
+    model sees a recoverable error rather than a raised exception. ``context``
+    carries the offending fragment + the guard that tripped.
+    """
 
 
 class ToolExecutionError(PersonaError):

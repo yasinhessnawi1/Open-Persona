@@ -45,6 +45,11 @@ class PersonaCoreConfig(BaseSettings):
             Read from ``PERSONA_WEB_SEARCH_API_KEY``; never logged.
         tools_sandbox_root: Per-CWD-relative sandbox root for the
             ``file_read``/``file_write`` tools (spec 03, D-03-23).
+        currency_provider: Exchange-rate backend for the ``currency_convert``
+            tool (spec 26, D-26-6). ``frankfurter`` (default, no key) and
+            ``exchangerate_api`` (no key) are wired.
+        currency_api_key: Optional API key for keyed currency providers
+            (spec 26). Read from ``PERSONA_CURRENCY_API_KEY``; never logged.
         mcp_servers: Mapping of MCP server name → URL parsed from
             ``PERSONA_MCP_SERVERS`` (comma-separated ``name=url`` per
             D-03-22). Empty dict when the env var is unset.
@@ -65,6 +70,14 @@ class PersonaCoreConfig(BaseSettings):
     web_search_provider: Literal["brave", "tavily", "serpapi"] = "brave"
     web_search_api_key: SecretStr | None = None
     tools_sandbox_root: Path = Path("./.persona_work")
+    # Spec 26 T04 — currency_convert. ``frankfurter`` (ECB-class reference
+    # rates) is the default and needs NO key, so the tool works out of the box
+    # on ``pip install`` (D-26-X-currency-no-key-default-rationale).
+    # ``exchangerate_api`` is a no-key alternate. ``currency_api_key`` is only
+    # consulted for keyed providers added later (provider-conditional guard,
+    # D-26-6); never logged.
+    currency_provider: Literal["frankfurter", "exchangerate_api"] = "frankfurter"
+    currency_api_key: SecretStr | None = None
     # `mcp_servers` is stored as the raw comma-separated string so Pydantic
     # Settings doesn't try to JSON-parse the env value. The dict is computed
     # via `mcp_servers_parsed` below; downstream code uses that. D-03-22.

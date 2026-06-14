@@ -161,6 +161,22 @@ ignore_missing_imports = true
 module = ["regex", "regex.*"]
 ignore_missing_imports = true
 
+# google-re2 (persona-core, spec 26 T03 regex_match) imports as ``re2``; it is a
+# C++ extension (pybind11) shipping no py.typed marker. ReDoS-immune linear-time
+# matching is the reason it's used (model-supplied patterns are untrusted); the
+# API surface we touch (``compile``, ``Pattern.search/findall``, ``error``) is
+# small + stable. Mirror the regex/docker/pgvector discipline.
+[[tool.mypy.overrides]]
+module = ["re2", "re2.*"]
+ignore_missing_imports = true
+
+# jmespath (persona-core, spec 26 T05 json_query) ships no py.typed marker and
+# the ``types-jmespath`` stubs are partial; the surface we touch (``search`` +
+# ``exceptions.JMESPathError``) is tiny + stable. Mirror the re2/regex discipline.
+[[tool.mypy.overrides]]
+module = ["jmespath", "jmespath.*"]
+ignore_missing_imports = true
+
 # livekit (persona-voice [packages/voice], spec V1 T02) — D-V1-1 branch (A)
 # LiveKit OSS substrate. The PyPI `livekit` package (Room/Participant/Track SDK)
 # and `livekit-api` package (AccessToken issuance, import path `livekit.api`)

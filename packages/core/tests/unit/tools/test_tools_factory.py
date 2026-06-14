@@ -174,7 +174,10 @@ class TestBuildDefaultToolboxBasics:
         # If the user wanted to enforce "no tools" they must pass [] explicitly
         # through Toolbox; this factory leaves the development convenience in place.
         # Document: production callers should pass non-empty persona.tools.
-        assert len(toolbox.names()) == 4  # all four built-ins available
+        names = toolbox.names()
+        # The spec-03 originals plus the spec-26 additions are all advertised.
+        assert {"web_search", "web_fetch", "file_read", "file_write"}.issubset(names)
+        assert "calculator" in names  # spec 26 T01
 
     @pytest.mark.asyncio
     async def test_returned_tools_satisfy_async_tool(self, tmp_path: Path) -> None:
@@ -277,3 +280,30 @@ class TestBuildDefaultToolboxWithMCP:
         # server_unavailable audited.
         unavail = [e for e in audit.events if e.action == "server_unavailable"]
         assert len(unavail) == 1
+
+
+# Section: Spec 26 — built-in tools are wired into build_default_toolbox
+# (AC #2 — no Spec 15 §2.9 wiring gap: every new factory has an integration
+# test proving the composed Toolbox advertises it when allow-listed).
+
+# Extended per task as Cluster A/B tools land.
+_SPEC26_BUILTIN_NAMES = [
+    "calculator",
+    "datetime",
+    "regex_match",
+    "currency_convert",
+    "json_query",
+    "text_diff",
+]
+
+
+class TestSpec26BuiltinsWired:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", _SPEC26_BUILTIN_NAMES)
+    async def test_builtin_registered_and_advertised(self, tool_name: str, tmp_path: Path) -> None:
+        config = PersonaCoreConfig(tools_sandbox_root=tmp_path)
+        persona = _persona(tools=[tool_name])
+        toolbox, _ = await build_default_toolbox(config, persona)
+        # Registered AND advertised to the model when the persona allows it.
+        assert tool_name in toolbox.names()
+        assert tool_name in [s.name for s in toolbox.get_specs()]

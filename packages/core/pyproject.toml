@@ -77,6 +77,32 @@ dependencies = [
     # vs the prior persona-api-only install (jose was already pulled in via
     # the workspace dep chain).
     "python-jose[cryptography]>=3.3,<4",
+    # Spec 26 T02 — the ``datetime`` built-in tool resolves IANA timezones via
+    # stdlib ``zoneinfo``, which reads the OS tz database and falls back to the
+    # PyPI ``tzdata`` package only when it is installed. Slim/distroless/Alpine
+    # container images (and Windows) ship no ``/usr/share/zoneinfo`` → an
+    # unguarded ``ZoneInfo("Europe/Oslo")`` raises ``ZoneInfoNotFoundError``.
+    # ``tzdata`` is pure data, zero-code, zero transitive deps, CPython-core
+    # maintained — it makes timezone behaviour deterministic across platforms.
+    # (R-26-2 / D-26-X-launch-deps.)
+    "tzdata>=2024.1",
+    # Spec 26 T05 — the ``json_query`` built-in tool runs JMESPath queries over
+    # JSON. ``jmespath`` is pure Python with ZERO transitive dependencies (the
+    # AWS-CLI query language); lighter than ``jsonpath-ng`` (pulls ``ply``).
+    # (R-26-2 / D-26-X-launch-deps.)
+    "jmespath>=1.0,<2",
+    # Spec 26 T03 — the ``regex_match`` built-in tool runs MODEL-supplied
+    # patterns, which are effectively untrusted: catastrophic backtracking
+    # (ReDoS) triggers on short inputs, so an input-length cap is NOT a
+    # sufficient guard, and Python ``re`` has no async-safe way to time out a
+    # runaway match (signal.alarm is main-thread/Unix-only; a worker thread
+    # cannot stop the CPU burn). ``google-re2`` uses a linear-time automaton —
+    # ReDoS-immune by construction — so the tool needs no timeout machinery.
+    # C++ extension via pybind11; ZERO Python transitive deps; binary wheels
+    # for Linux + macOS (x86_64/aarch64). Un-defers the re2 escalation named in
+    # R-26-2 / D-26-X-regex-trust-model (see D-26-X-regex-re2-undefer). Trade:
+    # no backreferences/lookaround — acceptable for a match/find/replace tool.
+    "google-re2>=1.1,<2",
 ]
 
 [project.optional-dependencies]

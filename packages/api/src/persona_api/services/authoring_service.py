@@ -15,15 +15,17 @@ testable with a scripted backend.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import yaml
 from persona.schema.conversation import ConversationMessage
 from persona.schema.persona import Persona
+from persona.tools import TOOL_CATALOG, known_tool_names
 from pydantic import ValidationError
 
-from persona_api.schemas.responses import AuthoringDraft
+from persona_api.schemas.responses import AuthoringDraft, ToolRecommendation
 from persona_api.services.authoring_parse import split_response
 from persona_api.services.authoring_prompt import (
     AUTHORING_PROMPT_VERSION,
@@ -35,7 +37,19 @@ from persona_api.services.authoring_prompt import (
 if TYPE_CHECKING:
     from persona.backends import ChatBackend
 
-__all__ = ["generate_authoring_draft", "refine_authoring_draft"]
+__all__ = [
+    "RECOMMENDER_PROMPT_VERSION",
+    "generate_authoring_draft",
+    "recommend_tools_for_persona",
+    "refine_authoring_draft",
+]
+
+#: Tool-recommender prompt version (spec 26 T09). Bump when the rubric changes.
+RECOMMENDER_PROMPT_VERSION = "v1"
+#: Hard cap on returned recommendations (D-26-X-recommender-output-mechanism).
+_MAX_RECOMMENDATIONS = 10
+#: Confidence floor; weaker "just in case" tools are dropped.
+_CONFIDENCE_FLOOR = 0.5
 
 
 def _validate_yaml(yaml_text: str) -> list[str]:
@@ -163,3 +177,123 @@ async def refine_authoring_draft(
         current_yaml, question, answer, available_tools, available_skills
     )
     return await _generate(backend, messages)
+
+
+# -- tool recommender (spec 26 T09) -----------------------------------------
+
+
+def _catalog_block() -> str:
+    """Render the known-tool catalog as the recommender's candidate list."""
+    return "\n".join(f"- {e.name}: {e.description}" for e in TOOL_CATALOG)
+
+
+def _recommender_messages(description: str) -> list[ConversationMessage]:
+    """Build the rubric-based recommender prompt (D-26-X-recommender-output-mechanism).
+
+    The full catalog is enumerated inline; the rubric biases toward precision so
+    the model returns a small advertised set — which the tool-count literature
+    shows preserves downstream selection accuracy (research R-26-1). The output
+    contract is a bare JSON array, validated + catalog-filtered after the call.
+    """
+    now = datetime.now(UTC)
+    system = (
+        "You recommend a SMALL set of tools for an AI persona, given its "
+        "description. Choose only from this catalog:\n\n"
+        f"{_catalog_block()}\n\n"
+        "Rules:\n"
+        "- Recommend a tool ONLY if the persona's identity, role, or tasks imply "
+        "a RECURRING need for it. Prefer precision over recall.\n"
+        "- Never recommend a tool 'just in case'. A focused persona needs 3-8 "
+        "tools; never more than 10.\n"
+        "- A smaller, well-matched set makes the persona MORE accurate at "
+        "picking the right tool at runtime — extra tools hurt.\n"
+        "- Use ONLY tool names from the catalog above. Do not invent names.\n\n"
+        'Output ONLY a JSON array of objects, each {"tool_name": str, '
+        '"rationale": str (one line), "confidence": number 0-1}. No prose, no '
+        "code fences. Example:\n"
+        '[{"tool_name": "web_search", "rationale": "Looks up current case law.", '
+        '"confidence": 0.9}]'
+    )
+    return [
+        ConversationMessage(role="system", content=system, created_at=now),
+        ConversationMessage(role="user", content=description, created_at=now),
+    ]
+
+
+def _extract_json_array(text: str) -> list[object] | None:
+    """Extract the first JSON array from ``text`` (tolerates surrounding prose)."""
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def _parse_recommendations(raw: list[object]) -> list[ToolRecommendation]:
+    """Validate raw items → ToolRecommendation, dropping invalid/hallucinated/weak.
+
+    Applies the post-hoc guards (D-26-X-recommender-output-mechanism):
+    catalog-membership filter (drop hallucinated names), confidence floor, dedup
+    keeping the highest confidence per tool, sort descending, cap at the max.
+    """
+    catalog = known_tool_names()
+    best: dict[str, ToolRecommendation] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            rec = ToolRecommendation.model_validate(item)
+        except ValidationError:
+            continue
+        if rec.tool_name not in catalog or rec.confidence < _CONFIDENCE_FLOOR:
+            continue
+        existing = best.get(rec.tool_name)
+        if existing is None or rec.confidence > existing.confidence:
+            best[rec.tool_name] = rec
+    ranked = sorted(best.values(), key=lambda r: r.confidence, reverse=True)
+    return ranked[:_MAX_RECOMMENDATIONS]
+
+
+async def recommend_tools_for_persona(
+    backend: ChatBackend,
+    description: str,
+) -> list[ToolRecommendation]:
+    """Recommend a ranked tool subset for a persona description (spec 26 T09).
+
+    Uses a single mid-tier call (the route injects the mid backend, D-26-2) with
+    a rubric prompt enumerating the known-tool catalog, then validates +
+    catalog-filters the result in code. Retries once if the model returns no
+    parseable JSON array. Never raises — an unparseable second attempt yields an
+    empty list (the authoring form simply shows no recommendations).
+
+    Args:
+        backend: The mid-tier chat backend (injected; D-26-2).
+        description: The user's natural-language persona description.
+
+    Returns:
+        Up to 10 :class:`ToolRecommendation`s, highest-confidence first, each
+        with a catalog-valid ``tool_name`` and ``confidence >= 0.5``.
+    """
+    messages = _recommender_messages(description)
+    response = await backend.chat(messages, temperature=0.0)
+    raw = _extract_json_array(response.content)
+    if raw is None:
+        now = datetime.now(UTC)
+        retry_messages = [
+            *messages,
+            ConversationMessage(role="assistant", content=response.content, created_at=now),
+            ConversationMessage(
+                role="user",
+                content="Return ONLY a JSON array as specified — no prose, no code fences.",
+                created_at=now,
+            ),
+        ]
+        retry = await backend.chat(retry_messages, temperature=0.0)
+        raw = _extract_json_array(retry.content)
+        if raw is None:
+            return []
+    return _parse_recommendations(raw)

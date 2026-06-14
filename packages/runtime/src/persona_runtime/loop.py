@@ -58,6 +58,7 @@ from persona_runtime.logging import (
     detect_tool_refusals,
     estimate_cost_cents,
 )
+from persona_runtime.proactive_tool_gap import build_tool_gap_question, detect_tool_gap
 from persona_runtime.prompt import DocumentContext, RetrievedContext
 from persona_runtime.question_author import TemplateQuestionAuthor
 from persona_runtime.questions import QuestionRegistry
@@ -301,6 +302,7 @@ class ConversationLoop:
         *,
         turn_has_image: bool = False,
         document_context: DocumentContext | None = None,
+        consent_granted_tools: list[str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Process one user turn, yielding StreamChunks for the response.
 
@@ -330,6 +332,11 @@ class ConversationLoop:
                 Caller computes this from the raw user message before
                 normalising to ``str``. Defaults to ``False`` for the legacy
                 text-only call sites.
+            consent_granted_tools: Tools the user enabled (via the runtime
+                tool-consent flow, spec 26 T11) immediately before this turn —
+                recorded on the turn's ``TurnLog.tool_consent_granted`` for
+                telemetry (T12). ``None``/empty for ordinary turns; the API
+                passes the granted names on the retry-after-consent message.
 
         Yields:
             :class:`StreamChunk` objects ending with ``is_final=True``.
@@ -602,6 +609,15 @@ class ConversationLoop:
                     tier=tier,
                 )
 
+        # Spec 26 T10 (D-26-4): runtime tool-gap detection — AFTER generation
+        # (the mirror of Spec 25's refusal detector above). If the model said it
+        # can't do something a known-tool-catalog tool would enable AND the
+        # persona's allow-list lacks that tool, we offer one-tap consent via a
+        # Spec-21 ProactiveQuestion (emitted below, after write-back). The
+        # pre-generation Spec 21 hook is untouched. One offer per turn.
+        gap_signal = detect_tool_gap(assistant_text, self._toolbox.names())
+        tool_gap_detected = [gap_signal.tool_name] if gap_signal is not None else []
+
         # 7. Post-generation write-back — the LAST step before the final chunk
         #    (D-05-12). An early consumer-exit mid-stream never reaches here
         #    because the generator stays suspended at an earlier yield.
@@ -624,6 +640,8 @@ class ConversationLoop:
             routing_latency_ms=routing_latency_ms,
             reasoning_text=reasoning_buffer,
             assistant_text=assistant_text,
+            tool_gap_detected=tool_gap_detected,
+            tool_consent_granted=consent_granted_tools or [],
         )
         now = datetime.now(UTC)
         conversation.messages.append(
@@ -632,6 +650,30 @@ class ConversationLoop:
         conversation.messages.append(
             ConversationMessage(role="assistant", content=assistant_text, created_at=now)
         )
+
+        # Spec 26 T10: surface the tool-gap consent offer as a follow-up to the
+        # answer (appended after the assistant's reply so the offer reads as a
+        # post-script). The user's pick is applied by the API consent path (T11).
+        if gap_signal is not None:
+            gap_question = build_tool_gap_question(gap_signal)
+            if on_event is not None:
+                await on_event(
+                    RunEvent.asking_user(
+                        -1,
+                        gap_question.question,
+                        options=gap_question.options,
+                        allow_free_form=gap_question.allow_free_form,
+                    )
+                )
+            yield _text_chunk("\n\n" + gap_question.question)
+            conversation.messages.append(
+                ConversationMessage(
+                    role="assistant",
+                    content=gap_question.question,
+                    created_at=datetime.now(UTC),
+                    metadata={"tool_gap_offer": gap_signal.tool_name},
+                )
+            )
 
         # 8. The authoritative end of the turn — yielded last, after write-back.
         yield _final_chunk(usage)
@@ -1078,6 +1120,8 @@ class ConversationLoop:
         assistant_text: str = "",
         refusal_retry_engaged: bool = False,
         session_recreated: bool = False,
+        tool_gap_detected: list[str] | None = None,
+        tool_consent_granted: list[str] | None = None,
     ) -> None:
         prompt_tokens = usage.prompt_tokens if usage is not None else 0
         completion_tokens = usage.completion_tokens if usage is not None else 0
@@ -1148,6 +1192,8 @@ class ConversationLoop:
                 fallback_rate_alert=fallback_rate_alert,
                 refusal_retry_engaged=refusal_retry_engaged,
                 sandbox_session_recreated=session_recreated,
+                tool_gap_detected=tool_gap_detected or [],
+                tool_consent_granted=tool_consent_granted or [],
                 **fallback_kwargs,
             )
         )

@@ -14,8 +14,10 @@ Groq, Together, NVIDIA, OpenRouter, local Ollama, or local HF), with four
 typed memory stores (identity, self-facts, worldview, episodic) backed by
 ChromaDB or Postgres + pgvector. Ships the schema, the four memory stores
 behind a `MemoryStore` protocol, the backend layer behind a `ChatBackend`
-protocol, a sandboxed tool layer (`Toolbox`, MCP client, built-in
-`web_search` / `web_fetch` / `file_read` / `file_write`), a skills layer
+protocol, a sandboxed tool layer (`Toolbox`, MCP client, a known-tool
+catalog, and built-in tools — `web_search` / `web_fetch` / `file_read` /
+`file_write` / `calculator` / `datetime` / `currency_convert` / `regex_match` /
+`json_query` / `text_diff` / `text_summarize`), a skills layer
 (`SkillScanner` + `SkillInjector` + skill composition + a `skills.toml`
 catalog + four built-in skill packs), a vision
 layer (`ImageContent` + `ImageBackend`), document ingestion + generation,
@@ -114,6 +116,10 @@ uv run ruff check packages/core
 - MCP Streamable HTTP client + adapter
 - Sandboxed file tools (path resolver rejects `..`, abs paths, symlink
   escape, NUL bytes, mixed separators)
+- General-utility built-in tools: `calculator` (safe AST eval), `datetime`,
+  `currency_convert`, `regex_match` (RE2, ReDoS-immune), `json_query`
+  (JMESPath), `text_diff`, `text_summarize`; a `TOOL_CATALOG` enumerates the
+  full set for persona-driven tool selection
 - Four built-in skill packs: `web_research`, `data_analysis`,
   `document_generation` (one parameterized skill spanning docx/pdf/pptx/xlsx/
   md/txt), `code_review` (deprecated `*_generation` / `document_drafting`
