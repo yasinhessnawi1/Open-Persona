@@ -19,6 +19,7 @@ for the spec and ``docs/specs/phase2/spec_15/decisions.md`` for D-15-1..5
 from __future__ import annotations
 
 from persona.imagegen._factory import load_image_backend, load_image_backend_from_env
+from persona.imagegen.avatar_prompt import craft_avatar_prompt
 from persona.imagegen.config import ImageBackendConfig, ImageProvider
 from persona.imagegen.errors import (
     ContentRejectedError,
@@ -65,6 +66,7 @@ __all__ = [
     "ImageSize",
     "MultiModelImageBackend",
     "NvidiaImageBackend",
+    "craft_avatar_prompt",
     "hash_prompt_for_audit",
     "is_hard_line_violation",
     "load_image_backend",

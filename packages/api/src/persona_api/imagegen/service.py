@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from persona.imagegen import (
@@ -69,10 +70,13 @@ from persona.imagegen import (
     GenerationResult,
     ImageGenError,
     ImageGenOptions,
+    hash_prompt_for_audit,
+    is_hard_line_violation,
 )
 from persona.imagegen._merge import merge_visual_style
 from persona.logging import get_logger
 from persona.tools._sandbox import resolve_sandbox_path
+from persona.tools.audit import ToolAuditEvent
 
 from persona_api.errors import ConcurrencyCappedError
 from persona_api.imagegen.concurrency import acquire_user_concurrency
@@ -83,9 +87,22 @@ if TYPE_CHECKING:
 
     from persona.imagegen.protocol import ImageBackend
     from persona.imagegen.result import ImageMediaType
+    from persona.tools.audit import ToolAuditLogger
     from sqlalchemy import Engine
 
-__all__ = ["DEFAULT_COST_PER_IMAGE_CREDITS", "generate"]
+__all__ = ["DEFAULT_COST_PER_IMAGE_CREDITS", "generate", "generate_avatar"]
+
+
+#: The avatar tool-name recorded on the audit event. Distinct from
+#: ``generate_image`` so an operator can separate build-time auto-avatar
+#: events from model-/operator-requested image generation.
+_AVATAR_TOOL_NAME: str = "generate_avatar"
+
+#: Fixed avatar generation preset (D-29-3). A single square portrait —
+#: ``count=1`` (one face per persona), ``1024x1024`` (square avatar), and
+#: the ``standard`` quality preset. Deterministic + minimal (the avatar is
+#: a stable function of the persona; multi-image variation is out of scope).
+_AVATAR_OPTIONS: ImageGenOptions = ImageGenOptions(size="1024x1024", count=1, quality="standard")
 
 
 _LOG = get_logger("imagegen.service")
@@ -404,3 +421,214 @@ def _persist_bytes(
         )
 
     return relative
+
+
+async def generate_avatar(
+    *,
+    workspace_root: Path,
+    backend: ImageBackend,
+    user_id: str,
+    persona_id: str,
+    prompt: str,
+    audit_logger: ToolAuditLogger | None = None,
+) -> GenerationResult:
+    """Generate + persist a persona avatar at build time (Spec 29, D-29-2/3).
+
+    The build-time sibling of :func:`generate`. It composes the SAME backend
+    + persistence + hard-line filter primitives but is **free** — no
+    ``credits_service.deduct``/``refund`` and **no** per-user concurrency
+    advisory lock (D-29-2): auto-avatar-gen is system-initiated at create,
+    not a user-requested generation, so neither the user's ledger nor their
+    image-gen concurrency state moves. Each call emits exactly one JSONL
+    :class:`~persona.tools.audit.ToolAuditEvent` (no migration) tagged
+    ``system_initiated=true`` / ``credits_charged=0`` so an operator can
+    count auto-gen outcomes without touching the ledger.
+
+    Unlike :func:`generate`, the prompt is **already crafted** by
+    :func:`persona.imagegen.craft_avatar_prompt` (which has merged
+    ``visual_style`` per D-29-1) — so this entry does NOT re-merge a visual
+    style. It DOES run the hard-line categorical filter explicitly: the
+    operator/service path does not otherwise run it (only the runtime tool
+    factory does), so this is the D-29-1 defense-in-depth backstop that
+    catches an adversarial *declared* ``visual_style`` reflected verbatim
+    into the prompt (the crafter is clean by construction; the filter is the
+    backstop for whatever a user declares).
+
+    The function **raises** the imagegen domain exceptions on failure
+    (``ContentRejectedError`` for the hard-line trigger or provider
+    moderation; ``ImageGenError`` family for auth/rate/transient/timeout) —
+    the build-time hook (Spec 29 T3) catches the full surface and fail-softs
+    to ``avatar_url=null`` so persona-create never fails (D-29-X-fail-soft).
+    The ``backend is None`` and wall-clock-timeout cases are the hook's to
+    handle (the hook guards ``app.state.image_backend`` and wraps this call
+    in ``asyncio.wait_for``); this entry requires a live backend.
+
+    Args:
+        workspace_root: Per-deployment workspace root. Bytes land at
+            ``workspace_root / user_id / persona_id / uploads / <blake2b><ext>``,
+            served by the existing uploads route (provenance-blind).
+        backend: A live :class:`~persona.imagegen.protocol.ImageBackend`.
+        user_id: Authenticated owner — workspace path segment + audit.
+        persona_id: The persona being built — workspace path + audit.
+        prompt: The already-crafted avatar prompt (incl. the ``visual_style``
+            merge). Passed to the backend verbatim; NOT re-merged.
+        audit_logger: Optional JSONL tool-audit sink. When provided, one
+            ``ToolAuditEvent`` is emitted per call recording the outcome.
+
+    Returns:
+        A :class:`GenerationResult` whose single image has
+        ``workspace_path`` populated and ``image_bytes`` zeroed.
+
+    Raises:
+        ContentRejectedError: The hard-line filter tripped (prompt never
+            persisted — hash only) OR provider moderation refused the
+            prompt/bytes.
+        ImageGenError: Other backend failure (auth/rate/transient/timeout/
+            unsupported option).
+    """
+    options = _AVATAR_OPTIONS
+
+    # 1. Hard-line categorical filter — the D-29-1 defense-in-depth backstop.
+    #    Runs BEFORE the provider call; on trigger the provider is never
+    #    consulted, the prompt is NEVER persisted (hash only), and we raise
+    #    so the hook fail-softs to null.
+    triggered, category = is_hard_line_violation(prompt)
+    if triggered:
+        prompt_sha256 = hash_prompt_for_audit(prompt)
+        _emit_avatar_audit(
+            audit_logger=audit_logger,
+            persona_id=persona_id,
+            provider=backend.provider_name,
+            model=backend.model_name,
+            outcome="content_rejected_hard_line",
+            is_error=True,
+            resource=f"sha256:{prompt_sha256}",
+            extra={"category": category or "", "prompt_sha256": prompt_sha256},
+        )
+        _LOG.warning(
+            "generate_avatar hard-line trigger; provider not called",
+            persona_id=persona_id,
+            category=category or "",
+            prompt_sha256=prompt_sha256,
+        )
+        raise ContentRejectedError(
+            "avatar prompt rejected by hard-line filter",
+            context={
+                "reason": "hard_line",
+                "category": category or "",
+                "prompt_sha256": prompt_sha256,
+            },
+        )
+
+    # 2. Backend dispatch — free (no pre-deduct) + cap-free (no advisory
+    #    lock). Provider exceptions are audited then re-raised for the hook.
+    try:
+        result = await backend.generate(prompt, options=options)
+    except ContentRejectedError as exc:
+        _emit_avatar_audit(
+            audit_logger=audit_logger,
+            persona_id=persona_id,
+            provider=backend.provider_name,
+            model=backend.model_name,
+            outcome="content_rejected_provider",
+            is_error=True,
+            resource=backend.provider_name,
+            extra={
+                "stage": exc.context.get("stage", ""),
+                "reason": exc.context.get("reason", "provider_moderation"),
+            },
+        )
+        raise
+    except ImageGenError as exc:
+        error_type = type(exc).__name__
+        _emit_avatar_audit(
+            audit_logger=audit_logger,
+            persona_id=persona_id,
+            provider=backend.provider_name,
+            model=backend.model_name,
+            outcome="error",
+            is_error=True,
+            resource=backend.provider_name,
+            extra={"error_type": error_type, "reason": exc.context.get("reason", error_type)},
+        )
+        raise
+
+    # 3. Persist bytes to the workspace (D-13-4 layout) — same content-
+    #    addressed write as ``generate``; the avatar is one square image.
+    sandbox_root = workspace_root / user_id / persona_id
+    sandbox_root.mkdir(parents=True, exist_ok=True)
+    stored_images: list[GeneratedImage] = []
+    for img in result.images:
+        relative = _persist_bytes(
+            sandbox_root=sandbox_root,
+            image_bytes=img.image_bytes,
+            media_type=img.media_type,
+            conversation_id=None,
+        )
+        stored_images.append(
+            img.model_copy(update={"workspace_path": relative, "image_bytes": b""})
+        )
+
+    # 4. Success — one zero-cost system audit event.
+    _emit_avatar_audit(
+        audit_logger=audit_logger,
+        persona_id=persona_id,
+        provider=result.provider,
+        model=result.model,
+        outcome="ok",
+        is_error=False,
+        resource=result.provider,
+        extra={"image_count": str(len(stored_images)), "latency_ms": f"{result.latency_ms:.1f}"},
+    )
+    _LOG.info(
+        "avatar generation completed",
+        user_id=user_id,
+        persona_id=persona_id,
+        provider=result.provider,
+        model=result.model,
+    )
+    return result.model_copy(update={"images": stored_images})
+
+
+def _emit_avatar_audit(
+    *,
+    audit_logger: ToolAuditLogger | None,
+    persona_id: str,
+    provider: str,
+    model: str,
+    outcome: str,
+    is_error: bool,
+    resource: str,
+    extra: dict[str, str] | None = None,
+) -> None:
+    """Emit one avatar-gen :class:`ToolAuditEvent` (JSONL, no migration).
+
+    Tagged ``system_initiated=true`` / ``credits_charged=0`` so the free,
+    system-initiated nature of build-time avatar generation (D-29-2) is
+    visible in the audit trail. ``outcome`` mirrors the ``generate_image``
+    tool-factory vocabulary (``ok`` / ``content_rejected_hard_line`` /
+    ``content_rejected_provider`` / ``error``). No-ops when no logger is
+    wired (CLI / tests that don't assert on audit).
+    """
+    if audit_logger is None:
+        return
+    metadata: dict[str, str] = {
+        "outcome": outcome,
+        "provider": provider,
+        "model": model,
+        "system_initiated": "true",
+        "credits_charged": "0",
+    }
+    if extra:
+        metadata.update(extra)
+    audit_logger.emit(
+        ToolAuditEvent(
+            timestamp=datetime.now(UTC),
+            persona_id=persona_id,
+            tool_name=_AVATAR_TOOL_NAME,
+            action="execute",
+            resource=resource,
+            is_error=is_error,
+            metadata=metadata,
+        )
+    )

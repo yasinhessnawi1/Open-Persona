@@ -202,6 +202,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # tool artefacts. Resolved up front so routes/services can rely on it.
     app.state.workspace_root = Path(config.workspace_root)
     app.state.workspace_root.mkdir(parents=True, exist_ok=True)
+    # Spec 29 D-29-3: the wall-clock bound the create hook applies to
+    # build-time avatar generation (env: PERSONA_API_AVATAR_GEN_TIMEOUT_S).
+    app.state.avatar_gen_timeout_s = config.avatar_gen_timeout_s
     # Rate limiter (§6, D-08-5). Postgres-backed when a non-RLS engine is
     # available; in-memory otherwise. The buckets table is NOT under RLS, so the
     # Postgres store uses a plain (non-listener) engine.

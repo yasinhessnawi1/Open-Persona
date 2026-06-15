@@ -8,12 +8,18 @@ business logic lives in the services; the routes are thin.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Request, status
+from persona.imagegen import ContentRejectedError, ImageGenError, craft_avatar_prompt
+from persona.logging import get_logger
+from persona.tools.audit import JSONLToolAuditLogger, ToolAuditEvent
 
 from persona_api.auth import AuthenticatedUser, get_current_user
 from persona_api.errors import RefinementLimitError
+from persona_api.imagegen import service as imagegen_service
 from persona_api.middleware.rate_limit import rate_limit
 from persona_api.schemas import (
     AuthoringDraft,
@@ -44,6 +50,13 @@ if TYPE_CHECKING:
 # The 3-round refinement cap (D-10-5): the UI owns the counter, the server is
 # the backstop. `round` is the count of refinements already applied.
 _MAX_REFINE_ROUNDS = 3
+
+#: Fallback avatar-gen wall-clock bound if app.state didn't thread the config
+#: value (e.g. a test that builds the app without the Spec-29 lifespan line).
+#: The authoritative value is ``APIConfig.avatar_gen_timeout_s`` (D-29-3).
+_DEFAULT_AVATAR_GEN_TIMEOUT_S = 25.0
+
+_LOG = get_logger("routes.personas")
 
 router = APIRouter(prefix="/v1/personas", tags=["personas"])
 
@@ -100,13 +113,119 @@ def _persona_detail(
     )
 
 
+def _emit_avatar_build_audit(
+    audit: JSONLToolAuditLogger,
+    persona_id: str,
+    *,
+    reason: str,
+    detail: str | None = None,
+) -> None:
+    """Emit the build-hook's own fail-soft audit (backend-absent / timeout / unexpected).
+
+    Covers the two outcomes ``generate_avatar`` cannot reach (no backend
+    configured, and the wall-clock timeout that cancels it mid-flight) plus a
+    defensive catch-all. The generation-specific outcomes (hard-line / provider
+    rejection / provider error) are audited inside ``generate_avatar`` itself.
+    Tagged zero-cost system event (D-29-2), JSONL, no migration.
+    """
+    metadata: dict[str, str] = {
+        "outcome": "error",
+        "reason": reason,
+        "system_initiated": "true",
+        "credits_charged": "0",
+    }
+    if detail is not None:
+        metadata["detail"] = detail
+    audit.emit(
+        ToolAuditEvent(
+            timestamp=datetime.now(UTC),
+            persona_id=persona_id,
+            tool_name="generate_avatar",
+            action="execute",
+            resource="build_hook",
+            is_error=True,
+            metadata=metadata,
+        )
+    )
+
+
+async def _maybe_generate_avatar(
+    request: Request, *, owner_id: str, persona_id: str, yaml_str: str
+) -> None:
+    """Build-time avatar auto-generation hook (Spec 29 D-29-3, fail-soft).
+
+    Runs after the persona row is committed, only when the builder supplied no
+    avatar (the caller guards on ``body.avatar_url is None``). Crafts a
+    demographic-safe prompt (D-29-1), generates through the free build-time
+    entry bounded by ``avatar_gen_timeout_s`` (D-29-3), and on success points
+    ``avatar_url`` at the served uploads path. **Every failure mode fail-softs
+    to ``avatar_url=null`` and audits — this coroutine never raises into the
+    create path** (D-29-X-fail-soft): a persona must never fail to exist because
+    its avatar could not be drawn. F1's default renders until one is set.
+    """
+    state = request.app.state
+    audit = JSONLToolAuditLogger(state.audit_root)
+
+    # Backend absent (no PERSONA_IMAGEGEN_API_KEY) → fail-soft + audit.
+    backend = getattr(state, "image_backend", None)
+    if backend is None:
+        _emit_avatar_build_audit(audit, persona_id, reason="backend_not_configured")
+        return
+
+    # Re-parse the just-validated YAML to reach identity (cheap; create_persona
+    # already proved it validates, so this does not raise in practice).
+    persona = persona_service.load_persona_from_yaml(
+        yaml_str, persona_id=persona_id, owner_id=owner_id
+    )
+    prompt = craft_avatar_prompt(persona.identity)
+    timeout_s = getattr(state, "avatar_gen_timeout_s", _DEFAULT_AVATAR_GEN_TIMEOUT_S)
+
+    try:
+        result = await asyncio.wait_for(
+            imagegen_service.generate_avatar(
+                workspace_root=state.workspace_root,
+                backend=backend,
+                user_id=owner_id,
+                persona_id=persona_id,
+                prompt=prompt,
+                audit_logger=audit,
+            ),
+            timeout=timeout_s,
+        )
+    except (ContentRejectedError, ImageGenError):
+        # generate_avatar already audited the specific outcome (hard-line /
+        # provider rejection / provider error). Fail-soft to null.
+        return
+    except TimeoutError:
+        _emit_avatar_build_audit(audit, persona_id, reason="timeout")
+        return
+    except Exception as exc:  # noqa: BLE001 — avatar-gen must NEVER break create
+        _emit_avatar_build_audit(audit, persona_id, reason="unexpected", detail=str(exc)[:200])
+        _LOG.warning("avatar build hook unexpected error", persona_id=persona_id, error=str(exc))
+        return
+
+    workspace_path = result.images[0].workspace_path if result.images else None
+    if not workspace_path:
+        return  # defensive — nothing to point at
+    # The served path through the existing uploads GET route (provenance-blind).
+    avatar_url = f"/v1/personas/{persona_id}/uploads/{workspace_path}"
+    persona_service.set_avatar_url(
+        rls_engine=state.rls_engine, persona_id=persona_id, avatar_url=avatar_url
+    )
+
+
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=PersonaDetail)
 async def create_persona(
     body: CreatePersonaRequest,
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> PersonaDetail:
-    """Create a persona from YAML; populate its memory stores (D-08-8)."""
+    """Create a persona from YAML; populate memory stores; auto-generate an avatar.
+
+    The avatar is generated only when the builder supplied none (D-29-3); the
+    generation is fail-soft so create never fails on an imagegen problem
+    (D-29-X-fail-soft). A user-supplied ``avatar_url`` always wins (criterion 6).
+    """
     persona_id = persona_service.create_persona(
         rls_engine=request.app.state.rls_engine,
         embedder=request.app.state.embedder,
@@ -121,6 +240,11 @@ async def create_persona(
         action="persona.create",
         target=persona_id,
     )
+    # Spec 29: auto-generate an avatar when the builder supplied none. Fail-soft.
+    if body.avatar_url is None:
+        await _maybe_generate_avatar(
+            request, owner_id=user.id, persona_id=persona_id, yaml_str=body.yaml
+        )
     row = persona_service.get_persona(
         rls_engine=request.app.state.rls_engine, persona_id=persona_id
     )

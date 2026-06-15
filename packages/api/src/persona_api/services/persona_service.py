@@ -48,6 +48,7 @@ __all__ = [
     "get_persona",
     "list_personas",
     "load_persona_from_yaml",
+    "set_avatar_url",
     "summary_of",
     "update_persona",
 ]
@@ -158,6 +159,23 @@ def update_persona(
             raise PersonaNotFoundError("persona not found", context={"id": persona_id})
     registry = _build_registry(rls_engine, embedder, audit_root)
     registry.load_persona(persona)
+
+
+def set_avatar_url(*, rls_engine: Engine, persona_id: str, avatar_url: str) -> None:
+    """Set a persona's ``avatar_url`` presentation field (Spec 29 D-29-3).
+
+    A narrow, RLS-scoped write for the build-time avatar auto-generation hook:
+    unlike :func:`update_persona` it does NOT re-validate the YAML or re-index
+    memory — it touches only the ``avatar_url`` column. Silent if the row is
+    absent (the create transaction just committed it; a concurrent delete is a
+    no-op rather than an error, per the idempotency standard). The auto-gen hook
+    runs only when ``avatar_url`` was null at create, so this never overwrites a
+    user-supplied avatar (D-29 criterion 6).
+    """
+    with rls_engine.begin() as conn:
+        conn.execute(
+            update(personas_t).where(personas_t.c.id == persona_id).values(avatar_url=avatar_url)
+        )
 
 
 def get_persona(*, rls_engine: Engine, persona_id: str) -> dict[str, object]:

@@ -11,6 +11,19 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Persona Avatar Auto-Generation (close-out pending; operator pass pending sign-off)
+
+> When a persona is created from the builder's details and no avatar is supplied, the system **auto-generates a role-appropriate, demographic-safe avatar** through the existing image-generation pipeline, persists it, and sets `avatar_url`. The user can still replace it by upload (existing path — a user-supplied avatar always wins). Generation is **fail-soft**: if image generation is unavailable, content-rejected, errors, or times out, the persona is still created with `avatar_url=null` and the build succeeds (the initials/identicon default renders). Purely additive — no schema field, no migration, existing create/PATCH/upload behavior unchanged. **Zero new dependencies.**
+
+#### Added (persona-core)
+- **`craft_avatar_prompt`** (`persona/imagegen/avatar_prompt.py`): a deterministic, demographic-safe avatar-prompt crafter. Builds a role-anchored professional portrait from the persona's declared identity. Demographic handling is **declared-first**: `role` is the professional anchor, `visual_style` is the only channel through which apparent gender/age/appearance enters the prompt, `name` is omitted (no name-based stereotyping, no PII), and `background` prose is never parsed (the demographic-leakage vector). Pure function — the same identity yields a byte-identical prompt; it emits only professional-portrait vocabulary, so it passes the hard-line categorical filter clean by construction. Exported from `persona.imagegen`.
+
+#### Added (persona-api)
+- **Build-time avatar generation hook** in `POST /v1/personas`: after the persona row is committed and only when no `avatar_url` was supplied, crafts the prompt → generates → sets `avatar_url` to the served uploads path. Bounded by a wall-clock timeout (`PERSONA_API_AVATAR_GEN_TIMEOUT_S`, default 25s) and fail-soft across the full failure surface (backend-absent, content-rejection, provider error, timeout, unexpected) → `avatar_url=null` + a zero-cost system audit event; never raises into create.
+- **`imagegen.service.generate_avatar`**: a free build-time generation entry — no credit deduct, no per-user concurrency lock (D-29-2). Runs the hard-line categorical filter explicitly (the service path otherwise does not) as the demographic-safety backstop for a verbatim declared `visual_style`; emits a JSONL audit event per outcome (no migration).
+- **`persona_service.set_avatar_url`**: a narrow RLS-scoped presentation-field write (no YAML re-validate / memory re-index).
+- **`PERSONA_API_AVATAR_GEN_TIMEOUT_S`** config (`APIConfig`, default 25.0s).
+
 ### MCP v1 — Built-in MCP Servers + Curated Catalog + Authoring Integration (Spec 27; close-out 2026-06-15, pending sign-off)
 
 > **Three coupled deliverables:** (1) the Spec-04 MCP infrastructure **verified end-to-end** against a real Streamable-HTTP server (no wiring gap — Spec 15 §2.9 pattern checked); (2) **4 built-in MCP servers** (zero → four) shipped as thin FastMCP Streamable-HTTP subprocesses, **lazily spawned** and loopback-only; and (3) **persona-driven MCP selection** — the Spec-26 recommender generalised to rank built-in tools, skills, and MCP servers together, plus a runtime MCP-gap proactive-consent prompt. Purely additive to Spec 04 + Spec 26; existing personas are unaffected. **Zero new dependencies** (`mcp`/`tzdata`/`httpx` already present).

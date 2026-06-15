@@ -129,7 +129,9 @@ uv run ruff check packages/core
   md/txt), `code_review` (deprecated `*_generation` / `document_drafting`
   names still resolve via the alias shim)
 - Image generation backends (OpenAI gpt-image-1, fal.ai Flux 1.1 [pro])
-  with three-layer safety + categorical hard-line filter
+  with three-layer safety + categorical hard-line filter; plus
+  `craft_avatar_prompt` — a deterministic, demographic-safe avatar-prompt
+  crafter (role-anchored; appearance only when declared in `visual_style`)
 - Vision input (`ImageContent`) + document ingestion + a `CodeSandbox`
   protocol with `LocalDockerSandbox` reference implementation
 

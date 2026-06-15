@@ -102,6 +102,14 @@ class APIConfig(BaseSettings):
     # the process cwd so a clean checkout runs without env setup.
     workspace_root: Path = Field(default_factory=lambda: Path.cwd() / ".persona_work")
 
+    # Spec 29 D-29-3: wall-clock bound on build-time avatar auto-generation.
+    # The hook in ``POST /v1/personas`` wraps ``imagegen.generate_avatar`` in
+    # ``asyncio.wait_for(..., timeout=avatar_gen_timeout_s)`` so persona-create
+    # latency stays bounded (NOT the imagegen provider's 120s ``request_timeout_s``
+    # ceiling). On timeout the build fail-softs to ``avatar_url=null`` (D-29-X-
+    # fail-soft). Read from ``PERSONA_API_AVATAR_GEN_TIMEOUT_S``.
+    avatar_gen_timeout_s: float = Field(default=25.0, gt=0.0)
+
     @property
     def effective_app_database_url(self) -> str:
         """The DSN the request path connects with (RLS-enforced).

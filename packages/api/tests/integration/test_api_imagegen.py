@@ -565,10 +565,16 @@ def test_imagegen_provider_rejection_returns_422(
 ) -> None:
     """Provider moderation rejection surfaces as 422 with structured body."""
     c, uid_a, _uid_b, workspace_root, su = client
-    pid = _create_persona(c, uid_a)
-
-    # Swap the backend to one that rejects.
+    # Spec 29: persona-create now auto-generates an avatar via the wired
+    # image_backend, which would land a file in the persona's uploads dir and
+    # break the "no files on disk" assertion below. Set the rejecting backend
+    # BEFORE create so the create-time avatar gen also rejects (fail-soft to
+    # null, free → no ledger movement, no bytes) — leaving the workspace
+    # genuinely empty so the assertion is about the rejected imagegen POST, not
+    # the create-time avatar. The ledger deduct/refund pair below is the POST's
+    # (avatar generation is free and contributes no ledger rows).
     c.app.state.image_backend = _RejectingBackend()
+    pid = _create_persona(c, uid_a)
 
     resp = c.post(
         f"/v1/personas/{pid}/imagegen",

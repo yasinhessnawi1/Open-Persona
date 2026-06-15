@@ -22,7 +22,9 @@ Routes (under `/v1`):
 - `documents` + `uploads`: document ingestion (txt/md/code/csv/docx/xlsx/pdf)
   and image upload (vision)
 - `imagegen`: image generation with pre-deduct credits + per-user
-  advisory-lock cap
+  advisory-lock cap. Persona create also auto-generates a demographic-safe
+  avatar (free, fail-soft to null; bounded by
+  `PERSONA_API_AVATAR_GEN_TIMEOUT_S`, default 25s) when none is supplied
 - `artifacts`: chart + image serve
 - `tools`: toolbox introspection
 - `me`: credits balance + per-turn usage
