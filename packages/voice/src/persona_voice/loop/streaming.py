@@ -81,6 +81,7 @@ __all__ = [
     "TTSStream",
     "Transcript",
     "TurnOrchestrator",
+    "VoiceCaptionListener",
 ]
 
 
@@ -245,6 +246,24 @@ class ReplyHeardListener(Protocol):
     async def on_reply_heard(self, reply: HeardReply) -> None: ...
 
 
+@runtime_checkable
+class VoiceCaptionListener(Protocol):
+    """Consumer-defined seam — the live caption/transcript broadcast (spec V6 A1).
+
+    The V6 :class:`persona_voice.transport.broadcast.DataChannelBroadcaster`
+    implements this to push partial/final captions to the browser over the data
+    channel (D-V6-2 dual-region captions; D-V6-E2 same envelope as state). User
+    captions stream from V2 transcripts; persona captions stream verbatim from
+    the V5 reply tokens (the TTS source text — perfect, not ASR). Additive port,
+    default ``None`` (V1/V2/V5 behaviour unchanged when unwired). Implementations
+    MUST NOT raise — a caption broadcast runs on the live turn path.
+    """
+
+    async def on_user_transcript(self, transcript: Transcript) -> None: ...
+
+    async def on_persona_text(self, text: str, *, is_final: bool) -> None: ...
+
+
 # ---------- the streaming loop ---------------------------------------------
 
 
@@ -277,6 +296,7 @@ class StreamingLoop:
         speech_activity: SpeechActivityListener | None = None,
         orchestrator: TurnOrchestrator | None = None,
         turn_transcript_listener: ReplyHeardListener | None = None,
+        caption_listener: VoiceCaptionListener | None = None,
     ) -> None:
         # Spec V2 D-V2-X-streaming-loop-additivity-shape — ADDITIVE
         # ``speech_activity`` injected port; backwards-compatible default
@@ -301,6 +321,10 @@ class StreamingLoop:
         # Spec V4 T07 — ADDITIVE barged-over memory-honesty port. Emits a
         # HeardReply per turn (what was actually spoken); None preserves V1.
         self._reply_listener = turn_transcript_listener
+        # Spec V6 A1 — ADDITIVE live-caption broadcast port. Forwards each V2
+        # user transcript (partial+final) + the V5 persona reply text (streamed
+        # verbatim) to the data-channel broadcaster; None preserves V1/V2/V5.
+        self._caption_listener = caption_listener
         self._pipeline_task: asyncio.Task[None] | None = None
         # V1 wires the inbound dispatcher into the VoiceRoom at construction
         # so frames that arrive during connect are not dropped on the floor.
@@ -344,6 +368,20 @@ class StreamingLoop:
     @turn_transcript_listener.setter
     def turn_transcript_listener(self, value: ReplyHeardListener | None) -> None:
         self._reply_listener = value
+
+    @property
+    def caption_listener(self) -> VoiceCaptionListener | None:
+        """V6 A1 additive — the live-caption broadcast sink, if any.
+
+        The composition root (A0 ``build_agent_session``) sets this to the
+        :class:`DataChannelBroadcaster` after construction so user transcripts +
+        persona reply text are pushed to the browser over the data channel.
+        """
+        return self._caption_listener
+
+    @caption_listener.setter
+    def caption_listener(self, value: VoiceCaptionListener | None) -> None:
+        self._caption_listener = value
 
     # ----- inbound + echo --------------------------------------------
 
@@ -429,6 +467,9 @@ class StreamingLoop:
         """
         async for transcript in stt.transcripts():
             await orchestrator.on_transcript(transcript)
+            # V6 A1 — stream the user's caption (partial+final) to the browser.
+            if self._caption_listener is not None:
+                await self._caption_listener.on_user_transcript(transcript)
 
     async def _run_pipeline(self, stt: STTStream) -> None:
         """Drive the V2 → V5 → V3 streaming chain (the V1 auto-invoke baseline).
@@ -470,7 +511,14 @@ class StreamingLoop:
         heard: list[str] = []
         try:
             token_stream = await self._model(final_transcript)
-            async for chunk in self._tts.synthesize(self._accumulate_heard(token_stream, heard)):
+            source = self._accumulate_heard(token_stream, heard)
+            # V6 A1 — tee the persona reply text to the caption broadcast as it
+            # streams (verbatim from the TTS source, per D-V6-2). The final
+            # caption is emitted in ``finally`` so it fires on the barge-in path
+            # too (heard = spoken-so-far prefix).
+            if self._caption_listener is not None:
+                source = self._tee_persona_captions(source, heard)
+            async for chunk in self._tts.synthesize(source):
                 await self._push_audio_chunk(chunk)
                 if not produced_audio:
                     produced_audio = True
@@ -500,6 +548,12 @@ class StreamingLoop:
                         token_count=len(heard),
                     )
                 )
+            # V6 A1 — the persona's FINAL caption (D-V6-2): the full reply on
+            # clean completion, the spoken-so-far prefix on barge-in. Fires on
+            # both paths (in finally) so the client's persona caption settles to
+            # a final even when the turn was cut short.
+            if self._caption_listener is not None:
+                await self._caption_listener.on_persona_text("".join(heard), is_final=True)
 
     @staticmethod
     async def _accumulate_heard(
@@ -515,6 +569,26 @@ class StreamingLoop:
         """
         async for token in token_stream:
             sink.append(token)
+            yield token
+
+    async def _tee_persona_captions(
+        self, source: AsyncIterator[str], heard: list[str]
+    ) -> AsyncIterator[str]:
+        """Emit a running persona caption per token while passing tokens through.
+
+        ``source`` is :meth:`_accumulate_heard`, which appends each token to
+        ``heard`` BEFORE yielding it — so ``"".join(heard)`` is the running reply
+        text at the point the token reaches this tee. Each emit is a partial
+        (``is_final=False``); the client mutate-and-replaces the current persona
+        segment (D-V6-2 anti-flicker). The final is emitted in
+        :meth:`invoke_model_for_turn`'s ``finally``. Only runs when a caption
+        listener is wired, so the per-token broadcast costs nothing otherwise.
+        """
+        async for token in source:
+            # heard already includes this token (appended by _accumulate_heard).
+            await self._caption_listener.on_persona_text(  # type: ignore[union-attr]
+                "".join(heard), is_final=False
+            )
             yield token
 
     async def _push_audio_chunk(self, chunk: AudioChunk) -> None:

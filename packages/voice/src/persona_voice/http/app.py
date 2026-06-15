@@ -168,6 +168,21 @@ def build_app(config: VoiceConfig) -> FastAPI:
     if config.database_url:
         app.state.ownership_engine = create_engine(config.database_url, pool_size=1)
 
+    # Spec V6 A0 (D-V6-X-agent-worker) — the dev/operator-pass-grade in-process
+    # agent launcher. When enabled, the token endpoint spawns the agent that
+    # joins the call's Room and becomes the persona. Default-off keeps the
+    # token-only deployment + every existing test unaffected.
+    app.state.agent_launcher = None
+    if config.agent_inprocess:
+        from persona_voice.agent import InProcessAgentLauncher
+
+        launcher = InProcessAgentLauncher(config)
+        app.state.agent_launcher = launcher
+
+        @app.on_event("shutdown")
+        async def _close_agent_launcher() -> None:
+            await launcher.aclose()
+
     @app.exception_handler(AuthenticationError)
     async def _auth_error_handler(_req: Request, exc: AuthenticationError) -> object:
         from fastapi.responses import JSONResponse
@@ -212,6 +227,18 @@ def build_app(config: VoiceConfig) -> FastAPI:
             conversation_id=body.conversation_id,
             ttl_s=cfg.livekit_token_ttl_s,
         )
+        # Spec V6 A0 — launch the agent into the call's Room (dev path only;
+        # default-off). The user joins ``room_name``; the agent joins the same
+        # Room and becomes the persona. Fire-and-forget — a failed launch never
+        # blocks the token response (the launcher catches + logs).
+        launcher = getattr(request.app.state, "agent_launcher", None)
+        if launcher is not None:
+            launcher.launch(
+                session_id=session_id,
+                user_id=user.id,
+                persona_id=body.persona_id,
+                conversation_id=body.conversation_id,
+            )
         return TokenResponse(
             token=token.token,
             room_name=token.room_name,

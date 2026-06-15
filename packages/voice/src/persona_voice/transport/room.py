@@ -284,6 +284,35 @@ class VoiceRoom:
             raise RuntimeError(msg)
         await self._outbound_source.capture_frame(frame)
 
+    async def publish_data(
+        self, payload: bytes, *, reliable: bool = True, topic: str | None = None
+    ) -> None:
+        """Publish a data-channel frame to the Room (spec V6 A1, D-V6-E1).
+
+        The transport primitive the V6 :class:`DataChannelBroadcaster` uses to
+        push conversational-state transitions + transcript captions to the
+        browser over the same peer connection the audio rides. ``reliable=True``
+        (ordered + retransmit) is the default — a dropped ``thinking→speaking``
+        transition would desync the client's state visualisation.
+
+        **Room-scoped, owner-only delivery (D-V6-X-additive-no-migration).** No
+        ``destination_identities`` is passed, so LiveKit delivers the frame to
+        the Room's participants ONLY — and the Room (``persona:{session_id}``) is
+        per-session, joinable solely by the call's own room-scoped token (the V1
+        issuer grants ``room=<this room>`` only). Per-session room + room-scoped
+        token + no cross-room destination compose to: the broadcast reaches the
+        call's own authenticated owner and nobody else. There is no API path to
+        target another tenant's participant from here.
+        """
+        kwargs: dict[str, object] = {"reliable": reliable}
+        if topic is not None:
+            kwargs["topic"] = topic
+        # local_participant.publish_data is async in livekit-rtc 1.x; the
+        # substrate Protocol types local_participant as ``object`` (it abstracts
+        # only the subset VoiceRoom depends on), so the call is attr-ignored —
+        # the real rtc.Room satisfies it structurally (mirrors publish_track).
+        await self._room.local_participant.publish_data(payload, **kwargs)  # type: ignore[attr-defined]
+
     def clear_outbound(self) -> None:
         """Drop any queued-but-unplayed outbound audio (Spec V3 D-V3-5 step 4).
 

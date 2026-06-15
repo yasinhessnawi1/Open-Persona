@@ -15,5 +15,28 @@ services:
       timeout: 5s
       retries: 5
 
+  # Spec V6 (D-V6-X-docker-livekit) — LiveKit OSS server for local voice dev +
+  # the D2 real-browser operator pass. The browser connects to ws://localhost:7880
+  # (the `livekit_url` the token endpoint returns); persona-voice signs tokens with
+  # the matching dev key/secret (PERSONA_VOICE_LIVEKIT_API_KEY / _API_SECRET ⇒
+  # devkey / secret below). Dev-only credentials — production uses a real deploy
+  # (a separate forward-item; its image must carry ca-certificates for the
+  # Cartesia websocket per the V5 note). `--dev` enables the in-memory dev mode
+  # (no Redis) suitable for a single-session local call.
+  livekit:
+    image: livekit/livekit-server:v1.8
+    command: ["--dev", "--bind", "0.0.0.0"]
+    environment:
+      LIVEKIT_KEYS: "devkey: secret"
+    ports:
+      - "7880:7880" # WebSocket signaling (the client connects here)
+      - "7881:7881" # TCP ICE/TURN fallback
+      - "7882:7882/udp" # UDP ICE
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:7880 >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:

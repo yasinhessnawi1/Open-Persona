@@ -1,7 +1,11 @@
+import { Mic } from "lucide-react";
+import Link from "next/link";
 import { notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { ChatWindow } from "@/components/chat/chat-window";
 import type { ChatMessageView } from "@/components/chat/message-element";
 import { PersonaIdentityHeader } from "@/components/persona/persona-identity-header";
+import { buttonVariants } from "@/components/ui/button";
 import { unwrap } from "@/lib/api";
 import { serverApi } from "@/lib/api/server";
 import { parsePersonaYaml } from "@/lib/persona";
@@ -25,6 +29,7 @@ export default async function ChatPage({
   params: Promise<{ conversationId: string }>;
 }) {
   const { conversationId } = await params;
+  const t = await getTranslations("voice");
   const api = await serverApi();
 
   const convRes = await api.GET("/v1/conversations/{conversation_id}", {
@@ -62,12 +67,20 @@ export default async function ChatPage({
 
   return (
     <div className="flex h-[calc(100svh-3.5rem)] flex-col">
-      <div className="border-b px-4 py-2.5">
+      <div className="flex items-center justify-between gap-2 border-b px-4 py-2.5">
         <PersonaIdentityHeader
           persona={personaForDisplay}
           size="md"
           showConstraints
         />
+        {/* V6 D-V6-4 — "Talk to {persona}" entry; binds this conversation. */}
+        <Link
+          href={`/chat/${conversationId}/voice`}
+          aria-label={t("talk", { name })}
+          className={buttonVariants({ variant: "secondary", size: "icon" })}
+        >
+          <Mic />
+        </Link>
       </div>
       <ChatWindow
         conversationId={conversationId}

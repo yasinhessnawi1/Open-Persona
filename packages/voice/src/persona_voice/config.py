@@ -59,6 +59,15 @@ class VoiceConfig(BaseSettings):
     # every connection via the request-scoped contextvar.
     database_url: str = Field(default="")
 
+    # --- Dev agent worker (spec V6 A0, D-V6-X-agent-worker) ---
+    # When true, ``POST /v1/voice/token`` ALSO launches an in-process agent
+    # session that joins the call's Room and becomes the persona on the call
+    # (the dev/operator-pass-grade composition-root runner). Default FALSE —
+    # production worker-ops are a separate forward-item, and existing token-only
+    # deployments + tests are unaffected. Requires ``database_url`` +
+    # ``livekit_api_*`` + the provider keys (PERSONA_STT_*/PERSONA_TTS_*/tiers).
+    agent_inprocess: bool = Field(default=False)
+
     @field_validator("jwt_algorithms", mode="before")
     @classmethod
     def _normalise_algorithms(cls, v: object) -> str:
