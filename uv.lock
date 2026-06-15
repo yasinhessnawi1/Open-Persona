@@ -3127,6 +3127,7 @@ dependencies = [
     { name = "livekit" },
     { name = "livekit-api" },
     { name = "persona-core", extra = ["postgres"] },
+    { name = "persona-runtime" },
     { name = "silero-vad-lite" },
 ]
 
@@ -3137,6 +3138,7 @@ requires-dist = [
     { name = "livekit", specifier = ">=1.1,<2" },
     { name = "livekit-api", specifier = ">=1.1,<2" },
     { name = "persona-core", extras = ["postgres"], editable = "packages/core" },
+    { name = "persona-runtime", editable = "packages/runtime" },
     { name = "silero-vad-lite", specifier = ">=0.2,<1" },
 ]
 

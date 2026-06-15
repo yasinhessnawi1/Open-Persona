@@ -18,6 +18,12 @@ else:
 - **`PromptBuilder`** + `RetrievedContext`: assembles the system prompt
   from identity + constraints + retrieved chunks + skill index, with a
   context-window budget reducer.
+- **`retrieve_context`** (`persona_runtime.retrieval`): the per-turn
+  conditioning retrieval (identity via `get_all`, the rest via `query`),
+  extracted from the conversation loop so the voice trunk (`persona-voice` V5)
+  shares the *same* conditioning — never reimplemented. The loop delegates to
+  it; an optional `identity=` hook lets a long-lived session cache the
+  constant identity read.
 - **Routing**: `Router` (`@runtime_checkable` Protocol) with two concrete
   implementations. `HeuristicRouter` (rule-based, per-turn,
   per-persona-overridable) and `UnifiedRouter` (two-layer: hard-filter via

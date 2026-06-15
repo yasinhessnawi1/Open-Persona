@@ -1,0 +1,351 @@
+"""The persona-conditioned voice ModelReplyProducer (spec V5 T4 + T7).
+
+This fills V4's ``ModelReplyProducer`` seam (``async __call__(final_transcript)
+-> AsyncIterator[str]``) with the real generation: the model V4 invokes per turn
+is Persona's tier-routed, persona-conditioned, streaming model — the same
+conditioning as the text persona (criteria 1+2; the §8 persona-bypass line), not
+a thin voice prompt.
+
+One turn:
+
+1. build the full persona-conditioned prompt via :class:`VoicePromptAssembler`
+   (shared ``PromptBuilder`` + retrieval — D-V5-6, no bypass);
+2. choose the tier (rule-based, instant — Spec 05) and, within it, the best model
+   meeting the voice first-token-latency gate via :class:`VoiceRoutingPolicy`
+   (D-V5-2); reorder the tier backend so the chosen model is primary (the Spec 23
+   ``reorder_primary`` seam, mirroring the text loop);
+3. stream the reply token-by-token from ``ChatBackend.chat_stream`` straight into
+   V3 — only ``chunk.delta`` (spoken text) is yielded; ``chunk.reasoning`` is
+   never forwarded (the practical "force non-reasoning" for voice, D-V5-2);
+4. tools (T7, D-V5-4/5, the conservative-conversational v1): the voice-viable +
+   deferred subset is offered to the model. A **voice-viable** tool call is
+   narrated with a first-class preamble ("let me look that up"), run under a hard
+   latency bound, and its result fed back for one re-prompt (one tool round — the
+   conservative v1, not the text loop's multi-round sub-loop). A **deferred**
+   (heavy) tool call is acknowledged in voice and emitted as a
+   :class:`DeferredArtifact` intent to be produced off the live path (F5);
+5. first-token latency is stamped per round into the shared
+   :class:`~persona_runtime.routing.FirstTokenLatencyTracker` (the D-V5-2 routing
+   refinement + the same number Spec 18 records) and the optional
+   ``first_token_listener`` is notified with the wall-clock instant (the VoiceLog
+   ``llm_first_token_at`` stamping seam).
+
+Cancellation (R-V5-4, verified in T5): the generator is a plain ``async for`` over
+``chat_stream``; when V4 cancels the consuming task on barge-in the
+``CancelledError`` propagates into ``chat_stream`` whose ``async with`` provider
+stream closes cleanly — no fire-and-forget escapes this scope.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+from persona.schema.conversation import ConversationMessage
+from persona.schema.tools import ToolCall
+from persona.tools import format_tool_result
+from persona_runtime.routing import RoutingContext, classifiers
+from persona_runtime.routing.model_selection import reorder_primary
+
+from persona_voice.model.history import VoiceHistoryCompactor
+from persona_voice.model.prompt_assembler import VoicePromptAssembler
+from persona_voice.model.routing import VoiceRoutingPolicy
+from persona_voice.model.tools import (
+    DEFAULT_VOICE_TOOL_TIMEOUT_S,
+    DeferredArtifact,
+    VoiceToolDisposition,
+    VoiceToolNarrator,
+    VoiceToolPolicy,
+    run_tool_with_latency_bound,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable
+
+    from persona.backends import ChatBackend
+    from persona.backends.types import ToolSpec
+
+    from persona_voice.loop.streaming import Transcript
+    from persona_voice.model.memory import VoiceTurnRecorder
+    from persona_voice.model.turn_context import VoiceTurnContext
+
+__all__ = ["VoiceModelReplyProducer"]
+
+_DEFAULT_MAX_TOKENS = 4096
+
+
+@dataclass
+class _RoundTiming:
+    """Per-generation first-token bookkeeping (reset per round; notified once)."""
+
+    t_start: float
+    notified: bool = False
+
+
+class VoiceModelReplyProducer:
+    """Persona-conditioned, tier-routed, streaming, cancellable voice generation.
+
+    Constructed once per voice session over a :class:`VoiceTurnContext`. Satisfies
+    V4's ``ModelReplyProducer`` Protocol; V4 invokes it per turn and cancels it on
+    barge-in.
+
+    Args:
+        context: The session-bound runtime collaborators.
+        routing_policy: The voice first-token-latency routing policy (D-V5-2); a
+            default :class:`VoiceRoutingPolicy` is built if omitted.
+        tool_policy: The voice-tools scope policy (D-V5-4); default built if omitted.
+        narrator: The preamble-as-contract narrator (D-V5-5); default if omitted.
+        tool_timeout_s: Hard wall-clock bound for a live voice tool (D-V5-4).
+        first_token_listener: Optional callback notified with the wall-clock
+            instant the LLM's first token arrives — the VoiceLog
+            ``llm_first_token_at`` stamping seam. MUST NOT raise.
+        deferred_artifact_listener: Optional callback notified when a deferred
+            (heavy) tool is acknowledged in voice — the off-path F5 intent
+            (D-V5-4-f5-artifact-shape). MUST NOT raise.
+        clock: UTC-now provider (injected for deterministic tests).
+    """
+
+    def __init__(
+        self,
+        context: VoiceTurnContext,
+        *,
+        routing_policy: VoiceRoutingPolicy | None = None,
+        tool_policy: VoiceToolPolicy | None = None,
+        narrator: VoiceToolNarrator | None = None,
+        tool_timeout_s: float = DEFAULT_VOICE_TOOL_TIMEOUT_S,
+        first_token_listener: Callable[[datetime], None] | None = None,
+        deferred_artifact_listener: Callable[[DeferredArtifact], None] | None = None,
+        turn_recorder: VoiceTurnRecorder | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._ctx = context
+        self._assembler = VoicePromptAssembler(context)
+        self._routing = routing_policy or VoiceRoutingPolicy()
+        self._history = VoiceHistoryCompactor(context.history_manager)
+        self._tool_policy = tool_policy or VoiceToolPolicy()
+        self._narrator = narrator or VoiceToolNarrator()
+        self._tool_timeout_s = tool_timeout_s
+        self._first_token_listener = first_token_listener
+        self._deferred_listener = deferred_artifact_listener
+        # The unified-memory recorder (T8). The producer notes this turn's user
+        # transcript so the recorder can correlate it with the heard reply on
+        # commit (D-V5-X-memory-write-on-commit); the actual write happens on V4's
+        # on_reply_committed, never here (no speculative mid-stream write).
+        self._turn_recorder = turn_recorder
+        self._clock = clock or (lambda: datetime.now(UTC))
+        # Rotates the preamble across turns so the filler is not robotic (D-V5-5).
+        self._preamble_index = 0
+
+    async def __call__(self, final_transcript: Transcript) -> AsyncIterator[str]:
+        """Return the token stream for one completed user turn (V4 awaits this)."""
+        return self._generate(final_transcript)
+
+    async def _generate(self, final_transcript: Transcript) -> AsyncIterator[str]:
+        """Stream the persona-conditioned reply token-by-token (spoken text only)."""
+        ctx = self._ctx
+        user_message = final_transcript.text
+        # Note this turn's user transcript for the unified-memory write that the
+        # recorder performs on commit (T8 correlation key — D-V5-X).
+        if self._turn_recorder is not None:
+            self._turn_recorder.note_user_message(user_message)
+
+        routing_context = self._routing_context(user_message)
+        tier = self._choose_tier(routing_context)
+        selection = self._routing.select_model(ctx, tier=tier, routing_context=routing_context)
+        backend = ctx.tier_registry.get(tier)
+        if ctx.intelligent_router is not None and ctx.persona.routing.intelligent.enabled:
+            # Make the gated model primary (no-op when it already is — Spec 23 seam).
+            backend = reorder_primary(backend, selection.model)
+
+        max_tokens = self._max_tokens(backend)
+        prompt = self._assembler.build(
+            user_message,
+            # The fast, never-blocking history view (D-V5-3); the slow compaction
+            # runs off the critical path in a background inter-turn task (T8).
+            history=self._history.live_history(ctx.conversation),
+            max_tokens=max_tokens,
+        )
+
+        timing = _RoundTiming(t_start=time.perf_counter())
+        tools = self._offered_specs(backend)
+
+        # First round: stream the reply (and any tool call the model decides on).
+        round_text: list[str] = []
+        calls: list[ToolCall] = []
+        async for delta in self._stream(
+            backend, prompt, tools, max_tokens, timing, round_text, calls
+        ):
+            yield delta
+
+        if not calls:
+            return  # plain answer — already streamed
+
+        # Conservative v1: at most one tool, one re-prompt round (D-V5-4).
+        async for delta in self._handle_tool_call(
+            backend, prompt, max_tokens, timing, round_text, calls[0]
+        ):
+            yield delta
+
+    async def _handle_tool_call(
+        self,
+        backend: ChatBackend,
+        base_prompt: list[ConversationMessage],
+        max_tokens: int,
+        timing: _RoundTiming,
+        round_text: list[str],
+        call: ToolCall,
+    ) -> AsyncIterator[str]:
+        """Run the conservative single voice tool round (D-V5-4/5)."""
+        disposition = self._tool_policy.classify(call.name)
+        if disposition is VoiceToolDisposition.DEFERRED:
+            # Heavy capability — acknowledge in voice, produce off-path (F5).
+            ack = self._narrator.deferral_line
+            yield ack
+            if self._deferred_listener is not None:
+                self._deferred_listener(
+                    DeferredArtifact(
+                        tool_name=call.name, arguments=call.args, spoken_acknowledgement=ack
+                    )
+                )
+            return
+        if disposition is not VoiceToolDisposition.VOICE_VIABLE or self._ctx.toolbox is None:
+            return  # text-only (not offered) / no toolbox — nothing to run
+
+        # Voice-viable: narrate the preamble (contract), run bounded, re-prompt once.
+        yield self._narrator.preamble(index=self._preamble_index)
+        self._preamble_index += 1
+        outcome = await run_tool_with_latency_bound(
+            self._ctx.toolbox.dispatch(call), timeout_s=self._tool_timeout_s
+        )
+        if outcome.timed_out or outcome.result is None:
+            yield self._narrator.overflow_line  # never strand the call (D-V5-4)
+            return
+
+        followup = self._followup_prompt(backend, base_prompt, round_text, call, outcome.result)
+        async for delta in self._stream(backend, followup, None, max_tokens, timing, [], []):
+            yield delta
+
+    async def _stream(
+        self,
+        backend: ChatBackend,
+        prompt: list[ConversationMessage],
+        tools: list[ToolSpec] | None,
+        max_tokens: int,
+        timing: _RoundTiming,
+        text_out: list[str],
+        calls_out: list[ToolCall],
+    ) -> AsyncIterator[str]:
+        """Stream one model round: yield spoken deltas, collect tool calls + timing.
+
+        Spoken text only — ``chunk.reasoning`` is never forwarded to TTS. First
+        token latency is measured from this round's start (``timing.t_start`` reset
+        here) and recorded once per generation.
+        """
+        timing.t_start = time.perf_counter()
+        names: dict[str, str] = {}
+        args_json: dict[str, str] = {}
+        order: list[str] = []
+        async for chunk in backend.chat_stream(
+            prompt, tools=tools, temperature=0.0, max_tokens=max_tokens
+        ):
+            if chunk.delta:
+                if not timing.notified:
+                    timing.notified = True
+                    if self._ctx.latency_tracker is not None:
+                        self._ctx.latency_tracker.record(
+                            backend.model_name, (time.perf_counter() - timing.t_start) * 1000.0
+                        )
+                    if self._first_token_listener is not None:
+                        self._first_token_listener(self._clock())
+                text_out.append(chunk.delta)
+                yield chunk.delta
+            tcd = chunk.tool_call_delta
+            if tcd is not None:
+                if tcd.call_id not in names:
+                    order.append(tcd.call_id)
+                    names[tcd.call_id] = ""
+                    args_json[tcd.call_id] = ""
+                names[tcd.call_id] += tcd.name_delta
+                args_json[tcd.call_id] += tcd.arguments_delta
+        calls_out.extend(self._build_call(cid, names[cid], args_json[cid]) for cid in order)
+
+    def _followup_prompt(
+        self,
+        backend: ChatBackend,
+        base_prompt: list[ConversationMessage],
+        round_text: list[str],
+        call: ToolCall,
+        result: object,
+    ) -> list[ConversationMessage]:
+        """Build the re-prompt carrying the tool result (one round; mirrors the loop)."""
+        from persona.schema.tools import ToolResult
+
+        assert isinstance(result, ToolResult)
+        messages = list(base_prompt)
+        if backend.supports_native_tools:
+            # Native providers require the assistant tool_calls message before the
+            # tool result (Spec 11 soak finding).
+            messages.append(
+                ConversationMessage(
+                    role="assistant",
+                    content="".join(round_text),
+                    created_at=datetime.now(UTC),
+                    tool_calls=[call],
+                )
+            )
+        messages.append(format_tool_result(call, result, provider_name=backend.provider_name))
+        return messages
+
+    def _offered_specs(self, backend: ChatBackend) -> list[ToolSpec] | None:  # noqa: ARG002 — backend reserved for future per-provider gating
+        """The voice-offered tool specs (viable + deferred), or ``None`` if none."""
+        if self._ctx.toolbox is None:
+            return None
+        specs = self._tool_policy.offered_specs(self._ctx.toolbox.get_specs())
+        return specs or None
+
+    def _routing_context(self, user_message: str) -> RoutingContext:
+        """Build this turn's routing context (voice: never an image turn).
+
+        Reuses the public routing classifiers (D-V5-6 — routing mechanics compose
+        the shared parts; this is not conditioning, so it is not the shared
+        retrieval/prompt path). Mirrors the text loop's context shape.
+        """
+        conversation = self._ctx.conversation
+        is_first = conversation.turn_count == 0
+        return RoutingContext(
+            requires_vision=False,
+            estimated_input_tokens=len(user_message) // 4,
+            requires_strong_tools=False,
+            is_first_turn=is_first,
+            is_identity_sensitive=classifiers.is_persona_critical(user_message, self._ctx.persona),
+            is_boilerplate=classifiers.is_boilerplate(user_message),
+            conversation_phase="opening" if is_first else "middle",
+            profile="text_default",
+        )
+
+    def _choose_tier(self, routing_context: RoutingContext) -> str:
+        """Pick the tier — persona override wins, else the rule-based router."""
+        override = self._ctx.persona.routing.tier_for_generation
+        if override != "auto":
+            return override
+        return self._ctx.router.route(routing_context).tier
+
+    @staticmethod
+    def _build_call(call_id: str, name: str, raw_args: str) -> ToolCall:
+        """Reconstruct a ToolCall from streamed deltas (fail-safe args parse)."""
+        try:
+            args = json.loads(raw_args) if raw_args else {}
+        except json.JSONDecodeError:
+            args = {}  # the @tool decorator validates downstream
+        if not isinstance(args, dict):
+            args = {}
+        return ToolCall(name=name, args=args, call_id=call_id)
+
+    @staticmethod
+    def _max_tokens(backend: object) -> int:
+        """Best-effort prompt-window budget (mirrors the text loop's helper)."""
+        value = getattr(backend, "max_tokens", None)
+        return value if isinstance(value, int) and value > 0 else _DEFAULT_MAX_TOKENS

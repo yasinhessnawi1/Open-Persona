@@ -263,3 +263,56 @@ class TestSelectModelLatencyOverride:
         sel = router.select_model("frontier", _ctx(), intelligent=cfg, budget=_NO_BUDGET)
         # slow_static observed 10ms beats fast_static static 100ms.
         assert sel.model == "deepseek/slow_static"
+
+
+class TestSelectModelCandidateFilter:
+    """Spec V5 D-V5-2 — the additive hard pre-gate (the voice TTFT gate hook)."""
+
+    def _router(self) -> IntelligentRouter:
+        reg = _registry(_wrapper(("anthropic", "fast_hi_q"), ("deepseek", "slow_hi_q")))
+        resolver = _MapResolver(
+            {
+                "anthropic/fast_hi_q": _md(latency=300.0, quality=0.80),
+                "deepseek/slow_hi_q": _md(latency=2000.0, quality=0.95),
+            }
+        )
+        return IntelligentRouter(tier_registry=reg, metadata_resolver=resolver)
+
+    def test_default_none_is_byte_identical(self) -> None:
+        # No filter: pure quality weight picks the higher-quality (slow) model.
+        cfg = IntelligentRoutingConfig(
+            enabled=True,
+            weights={"cost": 0.0, "quality": 1.0, "latency": 0.0},  # type: ignore[arg-type]
+        )
+        sel = self._router().select_model("frontier", _ctx(), intelligent=cfg, budget=_NO_BUDGET)
+        assert sel.model == "deepseek/slow_hi_q"
+        assert sel.fallback_engaged is False
+
+    def test_gate_excludes_slow_model_then_scores_survivors(self) -> None:
+        # Same quality-only weights, but the gate excludes the slow high-quality
+        # model → the fast one wins despite lower quality (gate-then-score).
+        cfg = IntelligentRoutingConfig(
+            enabled=True,
+            weights={"cost": 0.0, "quality": 1.0, "latency": 0.0},  # type: ignore[arg-type]
+        )
+        sel = self._router().select_model(
+            "frontier",
+            _ctx(),
+            intelligent=cfg,
+            budget=_NO_BUDGET,
+            candidate_filter=lambda _cid, md: md.latency_p50_ms <= 600.0,
+        )
+        assert sel.model == "anthropic/fast_hi_q"
+        assert sel.fallback_engaged is False
+
+    def test_gate_emptying_set_degrades_latency_gated(self) -> None:
+        sel = self._router().select_model(
+            "frontier",
+            _ctx(),
+            intelligent=_INTELLIGENT,
+            budget=_NO_BUDGET,
+            candidate_filter=lambda _cid, _md: False,  # gate everything out
+        )
+        assert sel.fallback_engaged is True
+        assert sel.fallback_reason == "latency_gated"
+        assert sel.model == "anthropic/fast_hi_q"  # rule-based slot-0

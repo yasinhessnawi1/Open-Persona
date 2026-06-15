@@ -11,6 +11,21 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Persona, Runtime & Memory Integration for Voice (Spec V5; close-out 2026-06-14, pending sign-off)
+
+> **The integration thread that makes the voice persona *the same persona*.** Fills V4's `ModelReplyProducer` seam with real persona-conditioned, tier-routed, streaming, cancellable generation, and writes voice turns to the **same** episodic store as text (unified memory). The binding constraint — *voice must never become a persona-bypass* — is enforced structurally: the voice turn composes the **shared** `PromptBuilder.build` + the **extracted** `retrieve_context` (never a thinner "voice prompt"). Operator pass **0 FAIL** across every V5 surface, live against real backends (S1 constraint refusal + S3/S9 real-memory recall) ([`operator_pass_2026_06_14.log`](docs/specs/phase2/spec_V5/evidence/operator_pass_2026_06_14.log)). `mypy --strict` voice (53) + runtime (35) + core (144) clean; `ruff` clean; 4378 unit + the V5 full-turn-cycle integration test pass. **Zero new external dependencies; one internal workspace edge (`persona-voice` → `persona-runtime`).**
+
+#### Added (persona-voice)
+- **`persona_voice.model`** — the persona-conditioned model side of the voice loop: `VoiceTurnContext` (session-bound DI container, fail-fast on a missing typed store), `VoicePromptAssembler` (D-V5-1 — caches the constant persona block once per session, retrieves the variable stores per turn, builds via the shared `PromptBuilder`), `VoiceRoutingPolicy` (D-V5-2 — a hard first-token-latency gate then best-quality-under-gate, layered on Spec 23's `IntelligentRouter`; degrades to rule-based slot-0), `VoiceModelReplyProducer` (fills the V4 seam: streaming spoken-text-only generation, `chunk.reasoning` never synthesised, first-token stamping; the conservative single voice tool round), `VoiceHistoryCompactor` (D-V5-3 — fast live-history view + off-critical-path background compaction), the voice-tools design (`VoiceToolPolicy` / `VoiceToolNarrator` / `run_tool_with_latency_bound` / `DeferredArtifact`, D-V5-4/5), and `VoiceTurnRecorder` (D-V5-X — unified voice→episodic write on commit only, barge-over-honest).
+- **`persona-runtime` workspace dependency** added (the one structural edge; voice→runtime→core stays acyclic).
+
+#### Added (persona-runtime)
+- **`persona_runtime.retrieval.retrieve_context`** — the per-turn conditioning retrieval **extracted from `ConversationLoop._retrieve`** (D-V5-6) so the voice turn shares it verbatim (never reimplemented — the anti-bypass guarantee). The text loop now delegates to it, byte-identical; an added `identity=` keyword is the D-V5-1 session-cache hook.
+- **`IntelligentRouter.select_model`** gains an additive, defaulted `candidate_filter` (the gate-then-score hook D-V5-2 passes the voice TTFT gate through). Byte-identical for the existing caller.
+
+#### Operator-pass finding (recorded for fast-follow — see `MAINTENANCE.md`)
+- Real model-slice first-token latency for the configured slot-0 model (NVIDIA nemotron) measured at **≈1.6–2.4 s across runs — ~2.7–4× over the ~600 ms voice gate**. The D-V5-2 gate fixes this when intelligent routing is enabled (it selects the fast small-tier model already configured, e.g. Groq `llama-3.1-8b`). Open fast-follow: should the voice TTFT gate apply **unconditionally** to voice turns rather than only under opt-in intelligent routing?
+
 ### Tools v2 — Tool Catalog Expansion + Persona-Driven Tool Selection (Spec 26; Phase 6 complete 2026-06-14, pending sign-off)
 
 > **Two coupled deliverables:** (1) **7 new general-utility built-in tools** that personas previously fabricated via `code_execution`; and (2) **persona-driven tool selection** — an authoring-time recommender + a runtime tool-gap detector that offers one-tap, consent-gated tool enabling. Purely additive to Spec 04; existing personas are byte-for-byte unaffected (verified). **19 decisions** ([`docs/specs/phase2/spec_26/decisions.md`](docs/specs/phase2/spec_26/decisions.md)). Operator pass **12/12 live, 0 FAIL** ([`operator_pass_2026_06_14.log`](docs/specs/phase2/spec_26/evidence/operator_pass_2026_06_14.log)). `mypy --strict` core (120) + `mypy` runtime (30) / api (57) clean; `ruff` clean; 3296 unit + 16 spec-26 integration tests pass.

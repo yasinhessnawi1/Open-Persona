@@ -59,9 +59,9 @@ from persona_runtime.logging import (
     estimate_cost_cents,
 )
 from persona_runtime.proactive_tool_gap import build_tool_gap_question, detect_tool_gap
-from persona_runtime.prompt import DocumentContext, RetrievedContext
 from persona_runtime.question_author import TemplateQuestionAuthor
 from persona_runtime.questions import QuestionRegistry
+from persona_runtime.retrieval import retrieve_context
 from persona_runtime.routing import (
     FirstTokenLatencyTracker,
     HeuristicRouter,
@@ -85,7 +85,7 @@ if TYPE_CHECKING:
     from persona.tools import Toolbox
 
     from persona_runtime.logging import TurnLogWriter
-    from persona_runtime.prompt import PromptBuilder
+    from persona_runtime.prompt import DocumentContext, PromptBuilder, RetrievedContext
     from persona_runtime.question_author import QuestionAuthor
     from persona_runtime.questions import ProactiveQuestion
     from persona_runtime.routing import IntelligentRouter, Router
@@ -95,7 +95,6 @@ __all__ = ["ConversationLoop"]
 
 _logger = get_logger("runtime.loop")
 
-_RETRIEVE_TOP_K = 3
 _DEFAULT_MAX_TOKENS = 4096
 _MAX_TOOL_ROUNDS_NUDGE = (
     "You have used the maximum number of tool calls for this turn. "
@@ -817,17 +816,14 @@ class ConversationLoop:
         return _ComposedSkill(merged, None, record)
 
     def _retrieve(self, persona_id: str, user_message: str) -> RetrievedContext:
-        """Retrieve per-turn context using the real store signatures (§4.1)."""
-        identity = self._stores["identity"].get_all(persona_id)
-        self_facts = self._stores["self_facts"].query(persona_id, user_message, _RETRIEVE_TOP_K)
-        worldview = self._stores["worldview"].query(persona_id, user_message, _RETRIEVE_TOP_K)
-        episodic = self._stores["episodic"].query(persona_id, user_message, _RETRIEVE_TOP_K)
-        return RetrievedContext(
-            identity=identity,
-            self_facts=self_facts,
-            worldview=worldview,
-            episodic=episodic,
-        )
+        """Retrieve per-turn context using the real store signatures (§4.1).
+
+        Delegates to the shared :func:`persona_runtime.retrieval.retrieve_context`
+        (extracted spec V5 D-V5-6 so the voice turn shares the *same*
+        conditioning retrieval — never reimplemented). Behaviour is byte-identical
+        to the prior inline implementation.
+        """
+        return retrieve_context(self._stores, persona_id, user_message)
 
     async def _manage_history(
         self, conversation: Conversation

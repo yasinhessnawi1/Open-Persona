@@ -3,7 +3,7 @@
 > Real-time voice service for Open Persona. WebRTC transport via LiveKit OSS.
 > Source-available; noncommercial use only.
 
-**Status:** PolyForm Noncommercial 1.0.0 · Source Available (Noncommercial Use Only) · V1–V4 shipped; V5–V6 pending
+**Status:** PolyForm Noncommercial 1.0.0 · Source Available (Noncommercial Use Only) · V1–V5 shipped; V6 pending
 
 ## What it is
 
@@ -47,17 +47,26 @@ Shipped sub-trunks:
   decision logic on the V1/V2/V3 seams; wired via `wire_orchestrated_loop`.
   V1's loop gains additive `orchestrator=` / `turn_transcript_listener=`
   ports (the auto-loop becomes the echo/dev baseline only).
+- **V5, Persona/runtime/memory integration** (`persona_voice.model`): fills
+  V4's `ModelReplyProducer` seam with the real persona-conditioned,
+  tier-routed, streaming, cancellable generation, and writes voice turns to
+  the **same** episodic store as text (unified memory). Composes the shared
+  `persona-runtime` pieces (`PromptBuilder`, the router, the extracted
+  `retrieve_context`) — the voice persona *is* the persona, never a thin
+  prompt bypass. Adds a voice first-token-latency routing gate, a fast
+  live-history view with off-critical-path compaction, a
+  conservative-conversational voice-tools layer (preamble + latency bound +
+  deferred F5 artifacts), and barge-over-honest memory writes. Depends on
+  `persona-runtime` (the one new workspace edge).
 
 Not yet shipped (sub-trunks in research / planning):
 
-- **V5, Model reply producer**: streams runtime token output into V3 with
-  the canonical first-token-latency measurement convention.
 - **V6, Frontend voice experience**: the browser-side audio plumbing
   and UI in `persona-web`.
 
 ## Install
 
-From PyPI (planned, once V5–V6 close):
+From PyPI (planned, once V6 closes):
 
 ```bash
 pip install persona-voice
@@ -107,14 +116,17 @@ vars are set.
 
 ## Architecture role
 
-`persona-voice` sits beside `persona-runtime` as a sibling consumer of
-`persona-core`. It does not depend on `persona-runtime` and is not
-imported by it; voice routes through the API which composes both. The
-voice trunk owns: the LiveKit substrate, audio frame plumbing, the
-streaming STT and TTS Protocols + concrete backends, the session
-lifecycle, voice-call concurrency, and the additive `VoiceLog`. Per-
-minute billing, V4 turn-taking, V5 model wiring, and the V6 frontend
-land post-V3.
+`persona-voice` consumes both `persona-core` and (from V5) `persona-runtime`
+— the layering stays acyclic: voice → runtime → core, and `persona-runtime`
+never imports `persona-voice`. V1–V4 depended only on `persona-core`; V5 added
+the `persona-runtime` workspace dependency so the voice turn composes the same
+persona-conditioning machinery (`PromptBuilder`, the router, the shared
+`retrieve_context`) the text loop uses — the voice persona *is* the persona, not
+a bypass. The voice trunk owns: the LiveKit substrate, audio frame plumbing, the
+streaming STT and TTS Protocols + concrete backends, the session lifecycle,
+voice-call concurrency, the persona-conditioned reply producer + unified-memory
+write (`persona_voice.model`), and the additive `VoiceLog`. Per-minute billing
+and the V6 frontend land later.
 
 ## Contribute
 

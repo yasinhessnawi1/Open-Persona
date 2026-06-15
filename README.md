@@ -91,16 +91,21 @@ audio I/O wrapped around the turn loop.
 - `persona-voice V4`: turn-taking + barge-in — the conversational state machine,
   automatic endpointing, fast-and-discriminating interruption, and full-loop
   latency ownership (the orchestration core; pure-Python on the V1/V2/V3 seams).
+- `persona-voice V5`: persona/runtime/memory integration — fills V4's reply-producer
+  seam with the real persona-conditioned, tier-routed, streaming, cancellable
+  generation and writes voice turns to the same episodic store as text (unified
+  memory). The voice persona *is* the persona (shared prompt-building + retrieval,
+  never a bypass), with a voice latency-routing gate, off-critical-path compaction,
+  conversational voice tools, and barge-over-honest memory.
 
 ### In development
 
-- `persona-voice V5`: model reply producer (wires the persona turn loop
-  into the voice trunk).
 - `persona-voice V6`: frontend voice client.
 
 The four-layer text platform (`core` + `runtime` + `api` + `web`) is at v0.1
-and usable end-to-end. The voice trunk is partially live; real-time
-two-way conversation lands when V4-V6 complete.
+and usable end-to-end. The voice trunk is live through V5 (transport, STT, TTS,
+turn-taking, and persona-conditioned generation + unified memory); real-time
+two-way conversation completes when V6 (the frontend voice client) lands.
 
 ---
 

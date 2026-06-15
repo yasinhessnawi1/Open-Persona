@@ -1,0 +1,164 @@
+"""Unified voice→episodic memory write (spec V5 T8; D-V5-X-memory-write-on-commit).
+
+A voice call is a conversation in the *same* model as a text chat (Spec 01/07):
+its turns are written to the *same* episodic store, so something said by voice is
+remembered when the user next types, and vice versa (criterion 3 — one continuous
+persona, no separate voice store).
+
+The write is **on commit only** (D-V5-X-memory-write-on-commit, the cancel↔write
+race fix): V4's loop emits the per-turn ``HeardReply`` in its ``finally`` *after*
+barge-in cancellation resolves, which the ``HeardWordsBridge`` adapts to a
+:class:`~persona_voice.turn_taking.heard_words.BargedReply` and forwards to this
+listener's :meth:`on_reply_committed`. So memory records what was *heard*
+(truncated-as-heard on a barge-in), never what was *planned* (D-V4-4) — race-safe
+by construction, because there is never a speculative mid-stream write.
+
+The user side of the turn is correlated by turn key: the
+:class:`~persona_voice.model.reply_producer.VoiceModelReplyProducer` calls
+:meth:`note_user_message` with the transcribed user turn at generation start; the
+matching :meth:`on_reply_committed` pairs it with the heard reply into one
+combined episodic chunk (the same ``USER:…/ASSISTANT:…`` shape the text loop
+writes — unified memory).
+
+History compaction is scheduled here, in the inter-turn gap after the turn is
+recorded — off the user-stops→persona-starts critical path (D-V5-3).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+from persona.schema.chunks import ChunkProvenance, PersonaChunk, WriteSource, make_chunk_id
+from persona.schema.conversation import ConversationMessage
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Coroutine
+
+    from persona_voice.model.history import VoiceHistoryCompactor
+    from persona_voice.model.turn_context import VoiceTurnContext
+    from persona_voice.turn_taking.heard_words import BargedReply
+
+__all__ = ["VoiceTurnRecorder"]
+
+_WRITTEN_BY = "voice.turn"
+
+
+def _default_scheduler(coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+    """Schedule a background coroutine on the running loop (fire-and-forget)."""
+    return asyncio.create_task(coro)
+
+
+class VoiceTurnRecorder:
+    """Writes the heard voice turn to the unified episodic store (D-V5-X).
+
+    Implements V4's ``TurnTranscriptListener`` seam. Construct once per voice
+    session over the :class:`VoiceTurnContext`.
+
+    Args:
+        context: The session-bound runtime collaborators (stores, conversation).
+        compactor: Optional off-critical-path history compactor (D-V5-3). When
+            given with ``summariser``, compaction is scheduled after each recorded
+            turn if due.
+        summariser: Optional async small-tier summariser for background compaction.
+        scheduler: Schedules the background compaction coroutine; defaults to
+            ``asyncio.create_task``. Injectable for deterministic tests.
+        clock: UTC-now provider (injected for deterministic tests).
+    """
+
+    def __init__(
+        self,
+        context: VoiceTurnContext,
+        *,
+        compactor: VoiceHistoryCompactor | None = None,
+        summariser: Callable[[list[ConversationMessage]], Awaitable[str]] | None = None,
+        scheduler: Callable[[Coroutine[Any, Any, Any]], Any] | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._ctx = context
+        self._compactor = compactor
+        self._summariser = summariser
+        self._schedule = scheduler or _default_scheduler
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._pending_user: str | None = None
+        # Hold references to background compaction tasks so they are not GC'd
+        # mid-flight (the standard asyncio fire-and-forget guard).
+        self._bg_tasks: set[Any] = set()
+
+    def note_user_message(self, text: str) -> None:
+        """Record this turn's transcribed user message (correlation key)."""
+        self._pending_user = text
+
+    async def on_reply_committed(self, reply: BargedReply) -> None:
+        """Write the heard turn to episodic memory (V4 calls this on commit).
+
+        MUST NOT raise (V4 runs this in the invocation's ``finally``, including on
+        barge-in). Writes the combined user/heard-assistant chunk to the unified
+        episodic store, appends both messages to the live conversation, and
+        schedules off-path compaction if due. A no-op if no user turn was noted
+        (nothing to correlate).
+        """
+        user = self._pending_user
+        self._pending_user = None
+        if user is None:
+            return
+
+        heard = reply.heard_text
+        self._write_episodic(user, heard)
+
+        now = self._clock()
+        self._ctx.conversation.messages.append(
+            ConversationMessage(role="user", content=user, created_at=now)
+        )
+        # The assistant message records what was HEARD (truncated-as-heard on a
+        # barge-in), so the conversation history is honest too (D-V4-4).
+        self._ctx.conversation.messages.append(
+            ConversationMessage(
+                role="assistant",
+                content=heard,
+                created_at=now,
+                metadata={"modality": "voice", "truncated": str(reply.truncated).lower()},
+            )
+        )
+        self._maybe_schedule_compaction()
+
+    def _write_episodic(self, user_text: str, heard_text: str) -> None:
+        """Write one combined episodic chunk per turn (mirrors the text loop)."""
+        persona_id = self._ctx.persona_id
+        store = self._ctx.stores["episodic"]
+        index = len(store.get_all(persona_id, include_superseded=True))
+        chunk_id = make_chunk_id(persona_id, "episodic", index)
+        now = self._clock()
+        store.write(
+            persona_id,
+            [
+                PersonaChunk(
+                    id=chunk_id,
+                    text=f"USER: {user_text}\nASSISTANT: {heard_text}",
+                    metadata={"importance": "0.5", "modality": "voice"},
+                    created_at=now,
+                    provenance=ChunkProvenance(
+                        source=WriteSource.SYSTEM,
+                        logical_id=chunk_id,
+                        version=1,
+                        written_at=now,
+                        written_by=_WRITTEN_BY,
+                    ),
+                ),
+            ],
+            source=WriteSource.SYSTEM,
+            written_by=_WRITTEN_BY,
+        )
+
+    def _maybe_schedule_compaction(self) -> None:
+        """Schedule off-critical-path compaction if due (D-V5-3)."""
+        if self._compactor is None or self._summariser is None:
+            return
+        if not self._compactor.is_compaction_due(self._ctx.conversation):
+            return
+        task = self._schedule(self._compactor.compact(self._ctx.conversation, self._summariser))
+        # Keep a reference until done so the task is not garbage-collected.
+        if isinstance(task, asyncio.Task):
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)

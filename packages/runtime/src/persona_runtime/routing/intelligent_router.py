@@ -107,8 +107,20 @@ class IntelligentRouter:
         budget: RoutingBudgetConfig,
         session_spent_cents: float = 0.0,
         day_spent_cents: float = 0.0,
+        candidate_filter: Callable[[str, ModelMetadata], bool] | None = None,
     ) -> ModelSelection:
         """Select the best model in ``tier`` for this turn (D-23-X-seam-shape).
+
+        Args:
+            candidate_filter: Optional ``(canonical_id, ModelMetadata) -> bool``
+                hard pre-gate applied to the resolved candidates *before*
+                scoring. ``None`` (the default) preserves the Spec 23 behaviour
+                byte-identically. Spec V5 D-V5-2 passes the voice first-token-
+                latency gate here ("gate-then-score, layered on the
+                IntelligentRouter"): when the gate empties the candidate set the
+                selection degrades to the rule-based slot-0 model with reason
+                ``"latency_gated"`` — never raises (a tier with no fast-enough
+                model must still answer; the floor returns to the user).
 
         Raises:
             BudgetExceededError: The per-turn hard cap admits no candidate
@@ -135,6 +147,18 @@ class IntelligentRouter:
                 reason="metadata_miss",
                 allow_fallback=intelligent.fallback_to_rule_based_on_miss,
             )
+        if candidate_filter is not None:
+            gated = [(cid, md) for cid, md in candidates if candidate_filter(cid, md)]
+            if not gated:
+                # The hard gate (e.g. Spec V5's voice TTFT gate) admitted nothing —
+                # degrade to slot-0 so the turn still answers (never strand it).
+                _LOG.warning("model selection gate emptied candidate set reason=latency_gated")
+                return ModelSelection(
+                    model=primary_id,
+                    fallback_engaged=True,
+                    fallback_reason="latency_gated",
+                )
+            candidates = gated
 
         weights = routing_budget.effective_weights(
             _weights_from_config(intelligent),
