@@ -19,6 +19,7 @@ import { useTranslations } from "next-intl";
 import { useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { IdentityOrb } from "@/components/voice/identity-orb";
+import { VoiceCaptions } from "@/components/voice/voice-captions";
 import { usePersonaAvatarSrc } from "@/lib/voice/use-persona-avatar-src";
 import { useVoiceCall } from "@/lib/voice/use-voice-call";
 
@@ -118,6 +119,8 @@ export function VoiceCallSurface({
           ? ` — ${state.error.message}`
           : null}
       </p>
+
+      <VoiceCaptions captions={call.captions} personaName={persona.name} />
 
       {state.needsAudioGesture ? (
         <Button variant="secondary" onClick={() => void enableAudio()}>

@@ -1,4 +1,4 @@
-import { Mic } from "lucide-react";
+import { Phone } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
@@ -79,7 +79,7 @@ export default async function ChatPage({
           aria-label={t("talk", { name })}
           className={buttonVariants({ variant: "secondary", size: "icon" })}
         >
-          <Mic />
+          <Phone />
         </Link>
       </div>
       <ChatWindow

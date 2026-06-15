@@ -39,6 +39,7 @@ import {
   INITIAL_CALL_STATE,
   type VoiceCallState,
 } from "./call-state";
+import { type CaptionSegment, upsertCaption } from "./captions";
 import { fetchVoiceToken } from "./token";
 import { agentVisualState, isBargeIn, parseVoiceEvent } from "./voice-events";
 
@@ -50,6 +51,8 @@ export interface UseVoiceCallOptions {
 
 export interface VoiceCall {
   state: VoiceCallState;
+  /** Live caption segments (user ASR + persona verbatim) for the D-V6-2 surface. */
+  captions: CaptionSegment[];
   /** Start the call (must be called from a user gesture so audio autoplay unlocks). */
   start: () => Promise<void>;
   /** End the call cleanly and release the mic. */
@@ -76,6 +79,7 @@ interface MintedToken {
 
 export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
   const [state, setState] = useState<VoiceCallState>(INITIAL_CALL_STATE);
+  const [captions, setCaptions] = useState<CaptionSegment[]>([]);
 
   const roomRef = useRef<Room | null>(null);
   const audioElsRef = useRef<HTMLMediaElement[]>([]);
@@ -116,8 +120,13 @@ export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
 
   const handleData = useCallback((payload: Uint8Array) => {
     const event = parseVoiceEvent(payload);
-    if (event === null || event.type !== "state") return;
-    // transcript frames feed captions (C1); decoded here, rendered there.
+    if (event === null) return;
+    if (event.type === "transcript") {
+      // C1 — accumulate the caption segment (mutate-and-replace by id). The
+      // dual-region ARIA split (visual vs SR) is the renderer's concern.
+      setCaptions((c) => upsertCaption(c, event));
+      return;
+    }
     if (isBargeIn(event)) {
       // Bump the barge-in signal so the orb fires its visible yield off the REAL
       // V4 transition (criterion 4) — we reflect, never compute.
@@ -224,6 +233,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
     if (roomRef.current) return;
     endedByUserRef.current = false;
     reconnectTriedRef.current = false;
+    setCaptions([]);
     patch({ phase: "connecting", error: null });
 
     let token: MintedToken;
@@ -301,6 +311,7 @@ export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
 
   return {
     state,
+    captions,
     start,
     end,
     toggleMute,
