@@ -23,10 +23,23 @@ import { useEffect, useState } from "react";
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE;
 const DIRECT_URL = /^(https?:|blob:|data:)/;
+/** The trailing `uploads/<file>` workspace ref, however the value is wrapped. */
+const UPLOADS_REF = /(uploads\/[^/]+)$/;
 
 /** Whether an avatar_url is a directly-loadable URL (vs a workspace ref). */
 export function isDirectAvatarUrl(avatarUrl: string): boolean {
   return DIRECT_URL.test(avatarUrl);
+}
+
+/**
+ * Normalise an avatar value to the bare workspace ref the serve route expects
+ * (`uploads/<hash>.<ext>`). Tolerates either the bare ref OR a full route path
+ * (`/v1/personas/:id/uploads/uploads/<hash>.png`) so the route prefix is never
+ * doubled — the column has been observed to hold both shapes.
+ */
+export function avatarWorkspaceRef(avatarUrl: string): string {
+  const match = avatarUrl.match(UPLOADS_REF);
+  return match ? match[1] : avatarUrl.replace(/^\/+/, "");
 }
 
 export function usePersonaAvatarSrc(
@@ -58,7 +71,7 @@ export function usePersonaAvatarSrc(
           TEMPLATE ? { template: TEMPLATE } : undefined,
         );
         const res = await fetch(
-          `${API}/v1/personas/${encodeURIComponent(personaId)}/uploads/${avatarUrl}`,
+          `${API}/v1/personas/${encodeURIComponent(personaId)}/uploads/${avatarWorkspaceRef(avatarUrl)}`,
           {
             signal: controller.signal,
             headers: token ? { Authorization: `Bearer ${token}` } : {},

@@ -1,6 +1,7 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  avatarWorkspaceRef,
   isDirectAvatarUrl,
   usePersonaAvatarSrc,
 } from "./use-persona-avatar-src";
@@ -16,6 +17,18 @@ describe("isDirectAvatarUrl", () => {
     expect(isDirectAvatarUrl("blob:abc")).toBe(true);
     expect(isDirectAvatarUrl("data:image/png;base64,AAAA")).toBe(true);
     expect(isDirectAvatarUrl("uploads/abc123.png")).toBe(false);
+  });
+});
+
+describe("avatarWorkspaceRef", () => {
+  it("normalises both the bare ref and a full route path to the bare ref", () => {
+    expect(avatarWorkspaceRef("uploads/abc123.png")).toBe("uploads/abc123.png");
+    expect(
+      avatarWorkspaceRef("/v1/personas/p1/uploads/uploads/abc123.png"),
+    ).toBe("uploads/abc123.png");
+    expect(avatarWorkspaceRef("/uploads/abc123.png")).toBe(
+      "uploads/abc123.png",
+    );
   });
 });
 
@@ -73,5 +86,27 @@ describe("usePersonaAvatarSrc", () => {
       "http://localhost:8000/v1/personas/p1/uploads/uploads/abc123.png",
     );
     expect(capturedAuth).toBe("Bearer jwt-x");
+  });
+
+  it("does NOT double the route when avatar_url is already a full path", async () => {
+    let capturedUrl = "";
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      capturedUrl = String(url);
+      return {
+        ok: true,
+        status: 200,
+        blob: async () => new Blob(["x"]),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() =>
+      usePersonaAvatarSrc("p1", "/v1/personas/p1/uploads/uploads/abc123.png"),
+    );
+
+    await waitFor(() => expect(result.current).toBe("blob:fake"));
+    // Normalised to a single prefix — never `/uploads//v1/personas/...`.
+    expect(capturedUrl).toBe(
+      "http://localhost:8000/v1/personas/p1/uploads/uploads/abc123.png",
+    );
   });
 });
