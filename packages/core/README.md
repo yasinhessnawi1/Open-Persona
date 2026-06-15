@@ -115,7 +115,9 @@ uv run ruff check packages/core
   with `collection:` refs
 - Native tool calls (Anthropic / OpenAI / DeepSeek / Groq / Together / NVIDIA /
   OpenRouter) + prompt-shim fallback (Ollama / HF local)
-- MCP Streamable HTTP client + adapter
+- MCP Streamable HTTP client + adapter, plus **built-in MCP servers**
+  (`time` / `calculator` / `filesystem` / `weather`) as thin FastMCP
+  Streamable-HTTP subprocesses, indexed by a declarative `mcp_catalog.toml`
 - Sandboxed file tools (path resolver rejects `..`, abs paths, symlink
   escape, NUL bytes, mixed separators)
 - General-utility built-in tools: `calculator` (safe AST eval), `datetime`,

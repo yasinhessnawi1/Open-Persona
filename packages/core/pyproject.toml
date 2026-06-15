@@ -166,4 +166,6 @@ include = [
     "src/persona/skills/builtin/**/SKILL.md",
     "src/persona/skills/builtin/**/supplements/*.md",
     "src/persona/skills/builtin/**/templates/*.md",
+    # Spec 27 (D-27-1) — declarative built-in MCP server catalog.
+    "src/persona/tools/mcp/catalog.toml",
 ]

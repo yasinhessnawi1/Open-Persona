@@ -53,6 +53,16 @@ class PersonaCoreConfig(BaseSettings):
         mcp_servers: Mapping of MCP server name → URL parsed from
             ``PERSONA_MCP_SERVERS`` (comma-separated ``name=url`` per
             D-03-22). Empty dict when the env var is unset.
+        mcp_builtin_enabled: Which authored built-in MCP servers the operator
+            opts into (``PERSONA_MCP_BUILTIN_ENABLED``, comma-separated; Spec 27
+            D-27-4). Unset → the catalog default-enabled safe subset; expose the
+            parsed tuple via :attr:`mcp_builtin_enabled_parsed`.
+        mcp_builtin_uid: Optional POSIX uid the built-in MCP server subprocesses
+            drop to at spawn (``PERSONA_MCP_BUILTIN_UID``; Spec 27 D-27-12). Unset
+            (default) → children inherit the API process's user — in production the
+            API runs as the non-root persona user (uid 1000), so its children do
+            too. Set this only when the API itself runs as root and must drop
+            privileges for the spawned servers.
     """
 
     model_config = SettingsConfigDict(env_prefix="PERSONA_", extra="ignore")
@@ -107,6 +117,51 @@ class PersonaCoreConfig(BaseSettings):
             return {}
         return _parse_mcp_servers_string(self.mcp_servers)
 
+    # Spec 27 (D-27-4) — which built-in MCP servers an operator opts into. Stored
+    # as a raw string so the "unset" case (None → catalog safe-subset) is
+    # distinguishable from the "explicit empty" case ("" → opt out of all). The
+    # tuple is computed via `mcp_builtin_enabled_parsed`; downstream uses that.
+    mcp_builtin_enabled: str | None = Field(default=None, repr=False)
+    # Spec 27 (D-27-12) — optional privilege-drop for spawned built-in MCP
+    # servers. None → children inherit the API process uid (the production
+    # default: the API container runs as the non-root persona user).
+    mcp_builtin_uid: int | None = Field(default=None)
+
+    @field_validator("mcp_builtin_enabled", mode="after")
+    @classmethod
+    def _validate_mcp_builtin_enabled(cls, value: str | None) -> str | None:
+        """Validate the comma-separated built-in server list (D-27-4).
+
+        ``None`` (env unset) → the catalog's default-enabled safe subset. An
+        empty string opts out of all built-ins. Otherwise every name must be an
+        **authored** built-in (``kind="builtin"`` in the catalog) — external
+        bring-your-own servers (fetch/github) are configured via
+        ``PERSONA_MCP_SERVERS``, not enabled here, so naming one fails loud
+        (fail-fast on operator misconfiguration). Empty entries are skipped.
+        """
+        if value is None or not value.strip():
+            return value
+        # Side-effect: raises on an unknown / non-authored name.
+        _parse_mcp_builtin_enabled(value)
+        return value
+
+    @property
+    def mcp_builtin_enabled_parsed(self) -> tuple[str, ...]:
+        """The enabled built-in MCP servers, de-duplicated, in declared order.
+
+        ``None`` (unset) yields the catalog default-enabled subset (D-27-4); an
+        explicit empty string yields ``()`` (opt out of all). "Enabled" means
+        "registered + available", NOT "running" — lazy spawning (D-27-3) starts
+        a server only on first use.
+        """
+        from persona.tools.mcp.catalog import default_enabled_server_names
+
+        if self.mcp_builtin_enabled is None:
+            return default_enabled_server_names()
+        if not self.mcp_builtin_enabled.strip():
+            return ()
+        return _parse_mcp_builtin_enabled(self.mcp_builtin_enabled)
+
 
 def _parse_mcp_servers_string(value: str) -> dict[str, str]:
     """Implementation of the D-03-22 parser used by validator + property."""
@@ -145,3 +200,39 @@ def _parse_mcp_servers_string(value: str) -> dict[str, str]:
             raise ValueError(msg)
         result[name] = url
     return result
+
+
+def _parse_mcp_builtin_enabled(value: str) -> tuple[str, ...]:
+    """Parse + validate ``PERSONA_MCP_BUILTIN_ENABLED`` (D-27-4).
+
+    Each comma-separated name must be an authored built-in server (``kind``
+    ``"builtin"`` in the catalog). External servers are configured via
+    ``PERSONA_MCP_SERVERS``, so naming one (or an unknown name) raises with a
+    pointer to the right mechanism. Returns the de-duplicated names in order.
+    """
+    from persona.tools.mcp.catalog import authored_server_names, mcp_server_entry
+
+    authored = authored_server_names()
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in value.split(","):
+        name = raw.strip()
+        if not name:
+            continue
+        if name not in authored:
+            entry = mcp_server_entry(name)
+            if entry is not None and entry.kind == "external":
+                msg = (
+                    f"{name!r} is a bring-your-own external MCP server; configure it via "
+                    "PERSONA_MCP_SERVERS, not PERSONA_MCP_BUILTIN_ENABLED"
+                )
+            else:
+                msg = (
+                    f"unknown built-in MCP server in PERSONA_MCP_BUILTIN_ENABLED: {name!r} "
+                    f"(authored built-ins: {', '.join(sorted(authored))})"
+                )
+            raise ValueError(msg)
+        if name not in seen:
+            seen.add(name)
+            result.append(name)
+    return tuple(result)

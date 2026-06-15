@@ -22,6 +22,7 @@ __all__ = [
     "BrokenVersionChainError",
     "CalculatorError",
     "CreditsExhaustedError",
+    "MCPBuiltinServerError",
     "MCPConnectionError",
     "MCPServerUnavailableError",
     "PersonaError",
@@ -181,6 +182,16 @@ class MCPServerUnavailableError(PersonaError):
     Subclass of :class:`PersonaError` (flat hierarchy per D-03-1). Used by
     :class:`persona.tools.mcp.client.MCPClient` when ``strict=True`` and the
     underlying transport fails.
+    """
+
+
+class MCPBuiltinServerError(PersonaError):
+    """Raised for a built-in MCP server problem (Spec 27, flat per D-03-1).
+
+    Covers an unknown built-in server name at the serve entrypoint and the
+    launcher's spawn/health-probe failures. Distinct from
+    :class:`MCPServerUnavailableError` (a *configured external* server is
+    unreachable) — this is about a *built-in* server Persona ships and launches.
     """
 
 

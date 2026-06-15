@@ -141,24 +141,30 @@ class AuthoringDraft(_Output):
 
 
 class ToolRecommendation(_Output):
-    """One recommended tool for a persona (spec 26 T09, D-26-2).
+    """One recommended capability for a persona (spec 26 T09 / spec 27 T10).
 
-    Deliberately generic + trivially-unifiable (D-26-10): Spec 27 unifies
-    built-in + MCP recommendations by extending this shape (e.g. a ``provider``
-    field), so the v0.2 shape is a forward-compatible strict subset.
+    Spec 27 realises the D-26-10 unification: the same shape now carries a
+    provider tag so built-in tools, skills, and MCP servers rank together. The
+    ``provider`` field defaults to ``"builtin"`` so the Spec-26 shape (and its
+    callers/tests) stay a forward-compatible strict subset.
 
     Attributes:
-        tool_name: A built-in tool name from the known-tool catalog
-            (``persona.tools.TOOL_CATALOG``). Hallucinated names are filtered
-            out post-hoc before this model is constructed.
-        rationale: One-line reason the tool fits this persona.
+        tool_name: The capability name — a built-in tool name from
+            ``persona.tools.TOOL_CATALOG``, a skill id, or an ``mcp:<server>``
+            reference. Hallucinated names are filtered out post-hoc.
+        rationale: One-line reason the capability fits this persona.
         confidence: Recommender confidence in [0, 1]; entries below the floor
             are dropped before return.
+        provider: Where the capability comes from — ``"builtin"`` (tool),
+            ``"skill"``, ``"mcp:builtin"`` (default-enabled MCP server), or
+            ``"mcp:optional"`` (opt-in / BYO MCP server). The UI groups by
+            provider but ranks across all (spec 27 §2.3 / D-27-13).
     """
 
     tool_name: str
     rationale: str
     confidence: float = Field(ge=0.0, le=1.0)
+    provider: str = "builtin"
 
 
 class ToolRecommendationResponse(_Output):

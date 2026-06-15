@@ -11,6 +11,22 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### MCP v1 — Built-in MCP Servers + Curated Catalog + Authoring Integration (Spec 27; close-out 2026-06-15, pending sign-off)
+
+> **Three coupled deliverables:** (1) the Spec-04 MCP infrastructure **verified end-to-end** against a real Streamable-HTTP server (no wiring gap — Spec 15 §2.9 pattern checked); (2) **4 built-in MCP servers** (zero → four) shipped as thin FastMCP Streamable-HTTP subprocesses, **lazily spawned** and loopback-only; and (3) **persona-driven MCP selection** — the Spec-26 recommender generalised to rank built-in tools, skills, and MCP servers together, plus a runtime MCP-gap proactive-consent prompt. Purely additive to Spec 04 + Spec 26; existing personas are unaffected. **Zero new dependencies** (`mcp`/`tzdata`/`httpx` already present).
+
+#### Added (persona-core)
+- **Built-in MCP servers** (`persona/tools/mcp/builtin/`): `time` (delegates to the in-tree `datetime` tool), `calculator` (wraps the Spec-26 hardened AST evaluator), `filesystem` (sandboxed — delegates to `file_read`/`file_write` + their `resolve_sandbox_path` guard), and `weather` (open-meteo, no API key; opt-in). Each is a thin `FastMCP(transport="streamable-http")` app reusing already-tested logic. Launched via `python -m persona.tools.mcp.builtin <name>`.
+- **Declarative MCP catalog** (`persona/tools/mcp/catalog.toml` + `catalog.py`) — per-server metadata (kind/risk/default-enabled/required-env/keywords); the precursor to the deferred federated registry (100% local, zero-network, mirrors the Spec-24 skills catalog). `fetch`/`github` are catalogued as bring-your-own external servers (Persona ships no code for them).
+- **`PERSONA_MCP_BUILTIN_ENABLED`** + **`PERSONA_MCP_BUILTIN_UID`** config (`persona/config.py`). New domain exception `MCPBuiltinServerError`.
+
+#### Added (persona-runtime)
+- **`proactive_mcp_gap.py`** — `detect_mcp_gap` (post-generation; a capability-gap phrase + a catalog MCP-server keyword for a server the persona lacks) + `build_mcp_gap_question` (Spec-21 3+1 consent offer). Wired into `ConversationLoop.turn` as a post-generation hook, **mutually exclusive** with the Spec-26 tool-gap hook (one offer per turn).
+- **TurnLog MCP telemetry** — `mcp_invocations` + `mcp_unavailable_requested` (runtime-only JSONL; no migration, same discipline as the Spec-26 tool-gap fields).
+
+#### Added (persona-api)
+- **Lazy per-server MCP supervisor** (`persona_api/mcp/builtin_launcher.py`) — registers enabled built-ins at startup but spawns **nothing** until a persona resolves an `mcp:<server>:` tool; one-time process-wide cold spawn, re-spawn-on-resolution restart, loopback-only bind, optional privilege-drop, shutdown reaping (mirrors the Spec-12 sandbox subprocess lifecycle). Wired into `RuntimeFactory` (`build_default_toolbox` gains an additive `extra_mcp_servers` kwarg).
+- **Unified capability recommender** — `recommend_capabilities_for_persona` ranks built-in tools ∪ skills ∪ MCP servers in one mid-tier call, provider-tagged, capped at the **combined** ≤10 (D-27-13). New `POST /v1/personas/recommend-capabilities` route. `ToolRecommendation` gains a defaulted `provider` field (the D-26-10 unification; the Spec-26 shape stays a forward-compatible subset).
 ### Rich Tool Output Delivery — Backend Persister + Inline File Cards + Right-Panel Renderer (Spec 28; close-out 2026-06-15, pending sign-off)
 
 > **Three coupled deliverables:** (1) a hexagonal **`WorkspacePersister`** giving every byte-producing tool (`generate_image`, `file_write`, `code_execution` outputs, new `render_diagram`) a persisted `workspace_path` + `mime_type` + downloadable ref; (2) an inline **`FileCard`** (Anthropic-style) in chat; (3) a sliding **right-panel renderer** for 10 formats with a rendered↔raw toggle. Closes the Spec 25 §2.9 byte→UI delivery gap. **Additive only** — `persister=None` reproduces today's exact `ToolResult` (criterion #9). **Zero DB migrations** (telemetry → F5 sidecars), **zero new core/api Python deps** (diagrams render client-side). Operator pass **9/9 live, 0 FAIL** (backend pre-drive 4/4 + Playwright UI 5/5; [`operator_pass_2026_06_15.log`](docs/specs/phase2/spec_28/evidence/)). `mypy --strict` core + `mypy` api + `ruff` clean; web `tsc` + `biome` + `no-literals` + `vitest` clean.

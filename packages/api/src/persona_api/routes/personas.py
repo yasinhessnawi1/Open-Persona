@@ -229,6 +229,45 @@ async def recommend_tools(
 
 
 @router.post(
+    "/recommend-capabilities",
+    response_model=ToolRecommendationResponse,
+    dependencies=[Depends(rate_limit("author"))],
+)
+async def recommend_capabilities(
+    body: AuthorPersonaRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ToolRecommendationResponse:
+    """Recommend a unified, provider-tagged capability set (spec 27 T10).
+
+    The D-26-10 generalisation of ``/recommend-tools``: one mid-tier call ranks
+    built-in tools, skills, and MCP servers together (each tagged with its
+    provider), capped at the combined maximum (D-27-13). Deducts the same flat
+    authoring credit (a mid-tier LLM call).
+    """
+    from persona.skills.catalog import BUILTIN_CATALOG
+
+    credits_service.require_credits(rls_engine=request.app.state.rls_engine, user_id=user.id)
+    backend = request.app.state.tier_registry.get("mid")
+    recommendations = await authoring_service.recommend_capabilities_for_persona(
+        backend,
+        body.description,
+        available_skills=tuple(BUILTIN_CATALOG.skills),
+    )
+    _deduct_and_audit(
+        request,
+        user,
+        "persona.recommend_capabilities",
+        authoring_service.RECOMMENDER_PROMPT_VERSION,
+        reason="persona_capability_recommend",
+    )
+    return ToolRecommendationResponse(
+        recommendations=recommendations,
+        prompt_version=authoring_service.RECOMMENDER_PROMPT_VERSION,
+    )
+
+
+@router.post(
     "/{persona_id}/tools",
     response_model=PersonaDetail,
     dependencies=[Depends(rate_limit("default"))],

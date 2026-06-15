@@ -58,6 +58,7 @@ from persona_runtime.logging import (
     detect_tool_refusals,
     estimate_cost_cents,
 )
+from persona_runtime.proactive_mcp_gap import build_mcp_gap_question, detect_mcp_gap
 from persona_runtime.proactive_tool_gap import build_tool_gap_question, detect_tool_gap
 from persona_runtime.question_author import TemplateQuestionAuthor
 from persona_runtime.questions import QuestionRegistry
@@ -417,6 +418,8 @@ class ConversationLoop:
         # Spec 24 (D-24-10): full per-skill activation records for the TurnLog.
         skills_invoked: list[SkillInvocation] = []
         tool_call_count = 0
+        # Spec 27 T12: the mcp:<server>:<tool> names dispatched this turn.
+        mcp_invocations: list[str] = []
         # Spec 25 T22 (§2.4): ORed across the turn's tool dispatches from each
         # ToolResult.metadata["sandbox_session_recreated"] flag (set by the
         # sandbox tool wrapper's auto-recovery, T09).
@@ -480,6 +483,9 @@ class ConversationLoop:
                 for call in round_calls:
                     result = await self._dispatch(call)
                     tool_call_count += 1
+                    # Spec 27 T12: record MCP tool invocations for TurnLog telemetry.
+                    if call.name.startswith("mcp:"):
+                        mcp_invocations.append(call.name)
                     # Spec 25 T22 (§2.4): the sandbox wrapper flags an
                     # auto-recovered session in ToolResult.metadata (str
                     # "True"/"False" per the dict[str,str] convention).
@@ -617,6 +623,18 @@ class ConversationLoop:
         gap_signal = detect_tool_gap(assistant_text, self._toolbox.names())
         tool_gap_detected = [gap_signal.tool_name] if gap_signal is not None else []
 
+        # Spec 27 T11 (D-27-7): runtime MCP-gap detection — the MCP-layer mirror
+        # of the tool-gap hook above. Mutually exclusive with it (one offer per
+        # turn): only considered when no builtin-tool gap fired. If the model said
+        # it can't do something a catalog MCP server would enable AND the persona
+        # has no mcp:<server>: tool, we offer one-tap consent (emitted below).
+        mcp_gap_signal = (
+            detect_mcp_gap(assistant_text, self._toolbox.names()) if gap_signal is None else None
+        )
+        mcp_unavailable_requested = (
+            [mcp_gap_signal.server_name] if mcp_gap_signal is not None else []
+        )
+
         # 7. Post-generation write-back — the LAST step before the final chunk
         #    (D-05-12). An early consumer-exit mid-stream never reaches here
         #    because the generator stays suspended at an earlier yield.
@@ -641,6 +659,8 @@ class ConversationLoop:
             assistant_text=assistant_text,
             tool_gap_detected=tool_gap_detected,
             tool_consent_granted=consent_granted_tools or [],
+            mcp_invocations=mcp_invocations,
+            mcp_unavailable_requested=mcp_unavailable_requested,
         )
         now = datetime.now(UTC)
         conversation.messages.append(
@@ -671,6 +691,28 @@ class ConversationLoop:
                     content=gap_question.question,
                     created_at=datetime.now(UTC),
                     metadata={"tool_gap_offer": gap_signal.tool_name},
+                )
+            )
+        # Spec 27 T11: the MCP-gap offer (mutually exclusive with the tool-gap
+        # offer above — `mcp_gap_signal` is None whenever a tool gap fired).
+        elif mcp_gap_signal is not None:
+            mcp_question = build_mcp_gap_question(mcp_gap_signal)
+            if on_event is not None:
+                await on_event(
+                    RunEvent.asking_user(
+                        -1,
+                        mcp_question.question,
+                        options=mcp_question.options,
+                        allow_free_form=mcp_question.allow_free_form,
+                    )
+                )
+            yield _text_chunk("\n\n" + mcp_question.question)
+            conversation.messages.append(
+                ConversationMessage(
+                    role="assistant",
+                    content=mcp_question.question,
+                    created_at=datetime.now(UTC),
+                    metadata={"mcp_gap_offer": mcp_gap_signal.server_name},
                 )
             )
 
@@ -1118,6 +1160,8 @@ class ConversationLoop:
         session_recreated: bool = False,
         tool_gap_detected: list[str] | None = None,
         tool_consent_granted: list[str] | None = None,
+        mcp_invocations: list[str] | None = None,
+        mcp_unavailable_requested: list[str] | None = None,
     ) -> None:
         prompt_tokens = usage.prompt_tokens if usage is not None else 0
         completion_tokens = usage.completion_tokens if usage is not None else 0
@@ -1190,6 +1234,8 @@ class ConversationLoop:
                 sandbox_session_recreated=session_recreated,
                 tool_gap_detected=tool_gap_detected or [],
                 tool_consent_granted=tool_consent_granted or [],
+                mcp_invocations=mcp_invocations or [],
+                mcp_unavailable_requested=mcp_unavailable_requested or [],
                 **fallback_kwargs,
             )
         )

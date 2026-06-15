@@ -47,6 +47,7 @@ async def build_default_toolbox(
     tool_audit_logger: ToolAuditLogger | None = None,
     extra_tools: list[AsyncTool] | None = None,
     workspace_persister: WorkspacePersister | None = None,
+    extra_mcp_servers: dict[str, str] | None = None,
 ) -> tuple[Toolbox, list[MCPClient]]:
     """Compose a Toolbox for the given persona.
 
@@ -64,10 +65,15 @@ async def build_default_toolbox(
             `use_skill` tool (D-04-10: NOT auto-registered; the runtime/API
             composes it when the persona has skills). Folded into the Toolbox
             alongside the built-ins + MCP tools, subject to the same allow-list.
-        workspace_persister: Optional Spec 28 `WorkspacePersister` injected into
+        workspace_persister: Optional `WorkspacePersister` injected into
             `file_write` so written files are mirrored to the persona workspace
             and surfaced as `ToolResult.artifacts` (inline file cards). `None`
-            (CLI / tests) ⇒ `file_write` produces its pre-Spec-28 result shape.
+            (CLI / tests) ⇒ `file_write` produces its pre-persister result shape.
+        extra_mcp_servers: Additional ``{name: url}`` MCP servers to connect
+            beyond those in ``config.mcp_servers`` (Spec 27 D-27-3). The API
+            launcher passes the lazily-spawned built-in MCP server URLs here;
+            entries override same-named ``config.mcp_servers`` entries. ``None``
+            (CLI / test path) ⇒ only the env-configured servers are connected.
 
     Returns:
         A tuple ``(toolbox, mcp_clients)``. The caller is responsible for
@@ -113,10 +119,12 @@ async def build_default_toolbox(
         ),
     ]
 
-    # MCP-discovered tools. Graceful degradation per D-03-20.
+    # MCP-discovered tools. Graceful degradation per D-03-20. Built-in MCP
+    # servers (Spec 27) arrive via ``extra_mcp_servers`` and override same-named
+    # env-configured entries.
     mcp_clients: list[MCPClient] = []
     mcp_tools: list[AsyncTool] = []
-    parsed_servers = config.mcp_servers_parsed
+    parsed_servers = {**config.mcp_servers_parsed, **(extra_mcp_servers or {})}
     if parsed_servers:
         mcp_clients = await load_mcp_clients(
             parsed_servers,

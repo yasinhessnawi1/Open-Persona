@@ -23,6 +23,12 @@ import yaml
 from persona.schema.conversation import ConversationMessage
 from persona.schema.persona import Persona
 from persona.tools import TOOL_CATALOG, known_tool_names
+from persona.tools.mcp.catalog import (
+    BUILTIN_MCP_CATALOG,
+    known_mcp_server_names,
+    mcp_server_entry,
+    recommender_provider_tag,
+)
 from pydantic import ValidationError
 
 from persona_api.schemas.responses import AuthoringDraft, ToolRecommendation
@@ -35,14 +41,20 @@ from persona_api.services.authoring_prompt import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from persona.backends import ChatBackend
 
 __all__ = [
     "RECOMMENDER_PROMPT_VERSION",
     "generate_authoring_draft",
+    "recommend_capabilities_for_persona",
     "recommend_tools_for_persona",
     "refine_authoring_draft",
 ]
+
+#: MCP-reference prefix on a unified capability name (``mcp:<server>``).
+_MCP_PREFIX = "mcp:"
 
 #: Tool-recommender prompt version (spec 26 T09). Bump when the rubric changes.
 RECOMMENDER_PROMPT_VERSION = "v1"
@@ -297,3 +309,161 @@ async def recommend_tools_for_persona(
         if raw is None:
             return []
     return _parse_recommendations(raw)
+
+
+# -- unified capability recommender (spec 27 T10, D-26-10 / D-27-13) ---------
+
+
+def _unified_catalog_block(available_skills: Sequence[str]) -> str:
+    """Render the unified candidate list: built-in tools + skills + MCP servers.
+
+    Each candidate carries its provider so the model reasons across providers in
+    one ranked pass (D-27-13) rather than per category.
+    """
+    lines = ["Built-in tools:"]
+    lines += [f"- {e.name} [builtin]: {e.description}" for e in TOOL_CATALOG]
+    if available_skills:
+        lines.append("\nSkills:")
+        lines += [f"- {name} [skill]" for name in available_skills]
+    lines.append("\nMCP servers (reference as mcp:<name>):")
+    for name, entry in BUILTIN_MCP_CATALOG.servers.items():
+        lines.append(f"- mcp:{name} [{recommender_provider_tag(entry)}]: {entry.description}")
+    return "\n".join(lines)
+
+
+def _unified_recommender_messages(
+    description: str, available_skills: Sequence[str]
+) -> list[ConversationMessage]:
+    """Build the unified rubric prompt (same precision rubric as Spec 26)."""
+    now = datetime.now(UTC)
+    system = (
+        "You recommend a SMALL set of CAPABILITIES for an AI persona, given its "
+        "description. A capability is a built-in tool, a skill, or an MCP server. "
+        "Choose only from this catalog:\n\n"
+        f"{_unified_catalog_block(available_skills)}\n\n"
+        "Rules:\n"
+        "- Recommend a capability ONLY if the persona's identity, role, or tasks "
+        "imply a RECURRING need for it. Prefer precision over recall.\n"
+        "- Recommend AT MOST 10 capabilities TOTAL across all providers; a focused "
+        "persona needs 3-8. A smaller, well-matched set makes the persona MORE "
+        "accurate at picking the right capability at runtime.\n"
+        "- Use ONLY names from the catalog above (MCP servers as 'mcp:<name>'). Do "
+        "not invent names.\n\n"
+        'Output ONLY a JSON array of objects, each {"name": str, "rationale": str '
+        '(one line), "confidence": number 0-1}. No prose, no code fences. Example:\n'
+        '[{"name": "web_search", "rationale": "Looks up current case law.", '
+        '"confidence": 0.9}, {"name": "mcp:filesystem", "rationale": "Drafts '
+        'documents to disk.", "confidence": 0.7}]'
+    )
+    return [
+        ConversationMessage(role="system", content=system, created_at=now),
+        ConversationMessage(role="user", content=description, created_at=now),
+    ]
+
+
+def _resolve_capability(name: str, available_skills: frozenset[str]) -> tuple[str, str] | None:
+    """Map a model-supplied name to ``(canonical_name, provider)`` or ``None``.
+
+    The provider is DERIVED from the authoritative vocabularies (not trusted from
+    the model): built-in tool catalog, the persona's skills, or the MCP catalog.
+    An unrecognised name is a hallucination → dropped.
+    """
+    if name in known_tool_names():
+        return name, "builtin"
+    if name in available_skills:
+        return name, "skill"
+    # MCP servers — tolerate both 'mcp:<name>' and a bare '<name>'.
+    server = name[len(_MCP_PREFIX) :] if name.startswith(_MCP_PREFIX) else name
+    if server in known_mcp_server_names():
+        entry = mcp_server_entry(server)
+        if entry is not None:
+            return f"{_MCP_PREFIX}{server}", recommender_provider_tag(entry)
+    return None
+
+
+def _parse_capability_recommendations(
+    raw: list[object], available_skills: frozenset[str]
+) -> list[ToolRecommendation]:
+    """Validate raw items → provider-tagged ToolRecommendation (D-27-13).
+
+    Drops hallucinations (name not in any provider's vocabulary) + weak entries,
+    dedups by canonical name keeping the highest confidence, sorts descending,
+    and caps at the COMBINED maximum across all providers (not per category).
+    """
+    best: dict[str, ToolRecommendation] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        rationale = item.get("rationale")
+        confidence = item.get("confidence")
+        if not isinstance(name, str) or not isinstance(rationale, str):
+            continue
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            continue
+        if confidence < _CONFIDENCE_FLOOR:
+            continue
+        resolved = _resolve_capability(name, available_skills)
+        if resolved is None:
+            continue
+        canonical, provider = resolved
+        try:
+            rec = ToolRecommendation(
+                tool_name=canonical,
+                rationale=rationale,
+                confidence=float(confidence),
+                provider=provider,
+            )
+        except ValidationError:
+            continue
+        existing = best.get(canonical)
+        if existing is None or rec.confidence > existing.confidence:
+            best[canonical] = rec
+    ranked = sorted(best.values(), key=lambda r: r.confidence, reverse=True)
+    return ranked[:_MAX_RECOMMENDATIONS]
+
+
+async def recommend_capabilities_for_persona(
+    backend: ChatBackend,
+    description: str,
+    *,
+    available_skills: Sequence[str] = (),
+) -> list[ToolRecommendation]:
+    """Recommend a unified, provider-tagged capability set (spec 27 T10).
+
+    The D-26-10 generalisation of :func:`recommend_tools_for_persona`: one
+    mid-tier call ranks built-in tools, skills, and MCP servers TOGETHER against
+    the same precision rubric, validated + provider-resolved in code, capped at
+    the COMBINED maximum (D-27-13). Never raises — an unparseable second attempt
+    yields an empty list.
+
+    Args:
+        backend: The mid-tier chat backend (injected; D-26-2).
+        description: The user's natural-language persona description.
+        available_skills: Skill ids the platform offers (the recommender's skill
+            vocabulary). Empty ⇒ skills are simply not recommended.
+
+    Returns:
+        Up to 10 provider-tagged :class:`ToolRecommendation`s across all
+        providers, highest-confidence first.
+    """
+    skill_vocab = frozenset(available_skills)
+    messages = _unified_recommender_messages(description, available_skills)
+    response = await backend.chat(messages, temperature=0.0)
+    raw = _extract_json_array(response.content)
+    if raw is None:
+        now = datetime.now(UTC)
+        retry_messages = [
+            *messages,
+            ConversationMessage(role="assistant", content=response.content, created_at=now),
+            ConversationMessage(
+                role="user",
+                content="Return ONLY a JSON array as specified — no prose, no code fences.",
+                created_at=now,
+            ),
+        ]
+        retry = await backend.chat(retry_messages, temperature=0.0)
+        raw = _extract_json_array(retry.content)
+        if raw is None:
+            return []
+    return _parse_capability_recommendations(raw, skill_vocab)

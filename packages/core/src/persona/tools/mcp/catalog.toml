@@ -1,0 +1,87 @@
+# Open Persona — built-in MCP server catalog (Spec 27, D-27-1 / D-27-10).
+#
+# A lightweight, declarative registry of the MCP servers Persona knows about.
+# This is the PRECURSOR to the deferred federated MCP registry (architecture
+# §9.4), NOT the registry itself: resolution is 100% local and zero-network,
+# exactly like the Spec-24 skills catalog. The federation fields a future
+# registry would add are reserved but NOT implemented here:
+#
+#   # owner   = "local"      # becomes owner/name under federation
+#   # source  = "builtin"    # builtin | git | registry
+#   # version = "1.0"         # tag-over-hash semantics later
+#
+# A built-in server is the (owner=local, source=builtin) degenerate case.
+#
+# `kind`:
+#   "builtin"  — Persona AUTHORS this server (thin FastMCP streamable-http, D-27-2);
+#                the built-in launcher can spawn it. Wraps stdlib / in-tree logic.
+#   "external" — bring-your-own: the operator runs a third-party server and points
+#                PERSONA_MCP_SERVERS at it. Persona ships NO code for these; the
+#                row documents required env + the recommended endpoint.
+#
+# `default_enabled` only applies to `kind="builtin"`. With lazy spawning (D-27-3),
+# "enabled" means "registered + available," NOT "running" — nothing is spawned
+# until a persona actually resolves an `mcp:<server>:` tool.
+
+# -- default-enabled built-ins (low risk, high value) -----------------------
+
+[server.time]
+kind = "builtin"
+description = "Current time, timezone conversion, and date arithmetic over MCP."
+default_enabled = true
+risk = "low"
+required_env = []
+keywords = ["what time is it", "current time", "timezone", "convert the time", "what's the date"]
+capability = "work with the current time, time zones, and date arithmetic"
+
+[server.calculator]
+kind = "builtin"
+description = "Exact arithmetic and math-function evaluation over MCP (no code sandbox)."
+default_enabled = true
+risk = "low"
+required_env = []
+keywords = ["calculate", "do the math", "compute that", "work out the", "do arithmetic"]
+capability = "evaluate exact arithmetic and math expressions"
+
+[server.filesystem]
+kind = "builtin"
+description = "Read and write files within the persona's sandboxed workspace over MCP."
+default_enabled = true
+risk = "low"
+required_env = []
+keywords = ["read a file", "write a file", "save to a file", "list the files", "open the file"]
+capability = "read and write files in your sandboxed workspace"
+
+# -- opt-in built-ins (require operator action) -----------------------------
+
+[server.weather]
+kind = "builtin"
+description = "Current weather and forecast by location over MCP (open-meteo, no API key)."
+default_enabled = false
+risk = "low"
+required_env = []
+keywords = ["weather", "forecast", "temperature in", "how hot is it", "will it rain"]
+capability = "look up the current weather and forecast for a location"
+notes = "open-meteo free tier is non-commercial; commercial use needs a paid open-meteo key or met.no (D-27-6)."
+
+# -- bring-your-own external servers (Persona ships NO code) -----------------
+
+[server.fetch]
+kind = "external"
+description = "Fetch a URL over MCP. Bring-your-own: configure a hardened third-party server."
+default_enabled = false
+risk = "high"
+required_env = []
+keywords = ["fetch the url", "download the page", "retrieve the web page"]
+capability = "fetch the contents of a web URL"
+notes = "NOT authored — the official mcp-server-fetch has an unpatched SSRF (CVE-2025-65513). Use the in-tree web_fetch tool, or run a hardened server via PERSONA_MCP_SERVERS (D-27-11)."
+
+[server.github]
+kind = "external"
+description = "GitHub repository, issue, and PR operations over MCP. Bring-your-own."
+default_enabled = false
+risk = "medium"
+required_env = ["GITHUB_TOKEN"]
+keywords = ["github", "pull request", "open an issue", "the repository", "code review on github"]
+capability = "work with GitHub repositories, issues, and pull requests"
+notes = "NOT authored — point PERSONA_MCP_SERVERS at the official remote server https://api.githubcopilot.com/mcp/ (already streamable-http + OAuth) and provide GITHUB_TOKEN (D-27-5)."

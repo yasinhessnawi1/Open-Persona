@@ -237,6 +237,13 @@ class TurnLog(BaseModel):
     # need NO migration.
     tool_gap_detected: list[str] = Field(default_factory=list)
     tool_consent_granted: list[str] = Field(default_factory=list)
+    # Spec 27 T12 (D-27-X-no-migration) — MCP telemetry. ``mcp_invocations``: the
+    # ``mcp:<server>:<tool>`` names dispatched this turn. ``mcp_unavailable_requested``:
+    # catalog MCP server names the model signalled it lacked (runtime MCP-gap
+    # detector, T11). Runtime-only JSONL fields — same no-migration discipline as
+    # the Spec-26 tool-gap fields above (the columnar writer maps a fixed subset).
+    mcp_invocations: list[str] = Field(default_factory=list)
+    mcp_unavailable_requested: list[str] = Field(default_factory=list)
 
     @field_validator("timestamp", mode="after")
     @classmethod

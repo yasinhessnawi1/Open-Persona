@@ -51,6 +51,7 @@ from persona_runtime.routing import FirstTokenLatencyTracker, IntelligentRouter
 from sqlalchemy import select
 
 from persona_api.db.models import personas as personas_t
+from persona_api.mcp import BuiltinMCPSupervisor
 from persona_api.sandbox import make_pool_code_execution_tool
 from persona_api.services.workspace_persister import WorkspaceDirPersister
 
@@ -145,6 +146,13 @@ class RuntimeFactory:
         self._image_backend = image_backend
         # MCP clients accumulated across requests, closed on shutdown.
         self._mcp_clients: list[MCPClient] = []
+        # Spec 27 (D-27-3) — app-scoped lazy supervisor for built-in MCP servers.
+        # Construction spawns NOTHING; a server boots on first resolution of an
+        # ``mcp:<server>:`` tool in ``_build_toolbox`` and is reaped at shutdown.
+        self._builtin_mcp = BuiltinMCPSupervisor(
+            self._core_config.mcp_builtin_enabled_parsed,
+            child_uid=self._core_config.mcp_builtin_uid,
+        )
         # Spec 23 T13: app-scoped intelligent-routing collaborators, wired into
         # every per-request loop. Both are stateless w.r.t. persona; the
         # FirstTokenLatencyTracker is deliberately app-scoped so its per-model
@@ -352,11 +360,16 @@ class RuntimeFactory:
                 )
             else:
                 extra.append(make_text_summarize_tool(backend=small_backend))
+        # Spec 27 (D-27-3) — lazily spawn the built-in MCP servers THIS persona
+        # references (mcp:<server>:) and hand their loopback URLs to the factory.
+        # A persona that uses no built-in MCP spawns nothing.
+        builtin_mcp_servers = await self._builtin_mcp.resolve(list(persona.tools))
         toolbox, mcp_clients = await build_default_toolbox(
             self._core_config,
             persona,
             extra_tools=extra or None,  # type: ignore[arg-type]
             workspace_persister=workspace_persister,
+            extra_mcp_servers=builtin_mcp_servers or None,
         )
         self._mcp_clients.extend(mcp_clients)
         return toolbox
@@ -481,7 +494,9 @@ class RuntimeFactory:
     # -- lifecycle ----------------------------------------------------------
 
     async def aclose(self) -> None:
-        """Shutdown: close the tier registry + every MCP client (D-05-4)."""
+        """Shutdown: close the tier registry + every MCP client (D-05-4) + reap
+        the built-in MCP server subprocesses (Spec 27 D-27-3)."""
         await self._tier_registry.aclose()
         for client in self._mcp_clients:
             await client.disconnect()
+        await self._builtin_mcp.aclose()
