@@ -19,6 +19,7 @@ import { useTranslations } from "next-intl";
 import { useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { IdentityOrb } from "@/components/voice/identity-orb";
+import { usePersonaAvatarSrc } from "@/lib/voice/use-persona-avatar-src";
 import { useVoiceCall } from "@/lib/voice/use-voice-call";
 
 const TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE;
@@ -43,6 +44,10 @@ export function VoiceCallSurface({
     () => getToken(TEMPLATE ? { template: TEMPLATE } : undefined),
     [getToken],
   );
+
+  // Resolve the persona's avatar (a Spec-29 Bearer-auth workspace ref, or a
+  // direct URL) to a loadable src so it can be the orb's core (D-V6-3).
+  const avatarSrc = usePersonaAvatarSrc(persona.id, persona.avatarUrl);
 
   const call = useVoiceCall({
     personaId: persona.id,
@@ -103,7 +108,7 @@ export function VoiceCallSurface({
         bargeInSignal={state.bargeInSignal}
         getMicLevel={getMicLevel}
         getPersonaLevel={getPersonaLevel}
-        avatarUrl={persona.avatarUrl}
+        avatarUrl={avatarSrc}
         label={stateLabel}
       />
 

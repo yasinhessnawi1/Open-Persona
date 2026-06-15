@@ -17,11 +17,17 @@ import type { AgentVisualState } from "@/lib/voice/voice-events";
 
 const PERSONAS = REPRESENTATIVE_PERSONAS.slice(0, 3);
 const STATES: AgentVisualState[] = ["listening", "thinking", "speaking"];
+// A sample portrait (direct data-URL, so it renders without the auth path) to
+// demonstrate the avatar-as-orb-core treatment (D-V6-3).
+const SAMPLE_AVATAR = `data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><radialGradient id="g" cx="40%" cy="32%"><stop offset="0%" stop-color="#f3d9c0"/><stop offset="100%" stop-color="#b07a52"/></radialGradient></defs><rect width="100" height="100" fill="url(#g)"/><circle cx="50" cy="40" r="18" fill="#fff" opacity="0.92"/><path d="M22 92c0-18 12-28 28-28s28 10 28 28z" fill="#fff" opacity="0.92"/></svg>',
+)}`;
 
 export default function VoiceOrbReferencePage() {
   const [state, setState] = useState<AgentVisualState>("listening");
   const [bargeInSignal, setBargeInSignal] = useState(0);
   const [persona, setPersona] = useState(PERSONAS[0]);
+  const [withAvatar, setWithAvatar] = useState(false);
   // A synthetic "voice energy" 0..1: a slow envelope × speech-like flutter, so
   // listening/speaking visibly react and thinking visibly does NOT.
   const levelRef = useRef(0);
@@ -50,6 +56,7 @@ export default function VoiceOrbReferencePage() {
         bargeInSignal={bargeInSignal}
         getMicLevel={getLevel}
         getPersonaLevel={getLevel}
+        avatarUrl={withAvatar ? SAMPLE_AVATAR : undefined}
         label={state}
         size={260}
       />
@@ -91,6 +98,13 @@ export default function VoiceOrbReferencePage() {
             {p.name}
           </Button>
         ))}
+        <Button
+          variant={withAvatar ? "default" : "secondary"}
+          size="sm"
+          onClick={() => setWithAvatar((v) => !v)}
+        >
+          avatar
+        </Button>
       </div>
     </div>
   );

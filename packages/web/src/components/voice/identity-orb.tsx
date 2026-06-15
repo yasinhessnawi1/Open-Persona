@@ -177,7 +177,20 @@ export function IdentityOrb({
           boxShadow: `0 0 16px 2px color-mix(in oklch, ${IDENTITY_FILL} 35%, transparent)`,
         }}
       >
-        {/* The thinking orbit highlight — audio-decoupled, never a spinner. */}
+        {/* The identity core: the Spec-29 avatar fills the orb (D-V6-3), with the
+            identity-coloured glow rim + thinking sweep reacting around/over it. */}
+        {avatarUrl ? (
+          // biome-ignore lint/performance/noImgElement: a per-call avatar blob/URL, not a static asset
+          <img
+            src={avatarUrl}
+            alt=""
+            aria-hidden
+            className="absolute inset-0 size-full rounded-full object-cover"
+          />
+        ) : null}
+        {/* The thinking orbit highlight — audio-decoupled, never a spinner.
+            Layered ABOVE the avatar so the persona's face still pulses while
+            thinking. */}
         <div
           ref={sweepRef}
           aria-hidden
@@ -188,16 +201,8 @@ export function IdentityOrb({
             WebkitMask: "radial-gradient(circle, transparent 58%, black 60%)",
           }}
         />
-        {/* The identity core: the Spec-29 avatar when present, else initials. */}
-        {avatarUrl ? (
-          // biome-ignore lint/performance/noImgElement: a remote LiveKit-call avatar, not a static asset
-          <img
-            src={avatarUrl}
-            alt=""
-            aria-hidden
-            className="h-[58%] w-[58%] rounded-full object-cover"
-          />
-        ) : (
+        {/* Initials only when there is no avatar. */}
+        {avatarUrl ? null : (
           <span
             aria-hidden
             className="font-serif text-2xl font-medium"
