@@ -127,6 +127,14 @@ class RunEvent(BaseModel):
             pf = result.data.get("produced_files")
             if isinstance(pf, list) and pf:
                 data["produced_files"] = pf
+        # Spec 28 — forward ToolResult.artifacts onto the payload so the web
+        # renders an inline FileCard + right-panel renderer. Same single-site,
+        # additive, empty-omitted shape as produced_files above (covers both
+        # chat SSE bare-payload and RunEvent envelope transports). When present,
+        # artifacts are the preferred render path; the frontend normaliser
+        # falls back to produced_files only when artifacts is absent.
+        if result.artifacts:
+            data["artifacts"] = [a.model_dump() for a in result.artifacts]
         return cls(
             type="tool_result",
             step=step,

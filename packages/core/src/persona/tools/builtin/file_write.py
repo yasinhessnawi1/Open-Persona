@@ -24,13 +24,15 @@ from typing import TYPE_CHECKING
 
 from persona.errors import SandboxViolationError
 from persona.logging import get_logger
-from persona.schema.tools import ToolResult
+from persona.schema.tools import PersistedArtifact, ToolResult
 from persona.tools._sandbox import resolve_sandbox_path
 from persona.tools.audit import ToolAuditEvent, ToolAuditLogger
 from persona.tools.protocol import AsyncTool, tool
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from persona.tools.workspace_persister import WorkspacePersister
 
 __all__ = ["make_file_write_tool"]
 
@@ -42,6 +44,7 @@ def make_file_write_tool(
     sandbox_root: Path,
     audit_logger: ToolAuditLogger | None = None,
     persona_id: str | None = None,
+    persister: WorkspacePersister | None = None,
 ) -> AsyncTool:
     """Build the ``file_write`` :class:`AsyncTool`.
 
@@ -53,6 +56,14 @@ def make_file_write_tool(
             ``action="write"`` per D-03-21.
         persona_id: Persona identifier for audit records. ``None`` for CLI
             development; audit lines then route to ``_cli.tools.jsonl``.
+        persister: Optional :class:`WorkspacePersister` (Spec 28). When
+            provided, the written bytes are mirrored to the persona
+            workspace and the resolved :class:`PersistedArtifact` lands on
+            :attr:`ToolResult.artifacts` so the chat UI renders a file card.
+            When ``None`` the result is byte-identical to the pre-Spec-28
+            shape (empty ``artifacts``). A persist failure surfaces as a
+            structured ``ToolResult(is_error=True)`` (the file is already
+            written to the sandbox; only the workspace mirror failed).
 
     Returns:
         An :class:`AsyncTool` named ``file_write`` that creates/overwrites
@@ -172,6 +183,32 @@ def make_file_write_tool(
                 "media_type": media_type,
             }
         ]
+
+        # Spec 28 — mirror the written bytes into the persona workspace when a
+        # persister is injected, so the chat UI can render an inline file card.
+        # None ⇒ pre-Spec-28 shape (empty artifacts). The sandbox file is
+        # already written; a workspace-mirror failure surfaces structured.
+        artifacts: tuple[PersistedArtifact, ...] = ()
+        if persister is not None:
+            try:
+                artifact = await persister.persist(
+                    encoded,
+                    mime_type=media_type,
+                    suggested_filename=path.rsplit("/", 1)[-1],
+                )
+                # Images render inline above the card; other files = card only.
+                if media_type.startswith("image/"):
+                    artifact = artifact.model_copy(update={"rendered_inline": True})
+                artifacts = (artifact,)
+            except Exception as e:  # noqa: BLE001 — any persist failure → structured result
+                _logger.warning("file_write workspace mirror failed", path=path, reason=str(e))
+                return ToolResult(
+                    tool_name="file_write",
+                    content=f"persist_failed: wrote to sandbox but workspace mirror failed: {e}",
+                    is_error=True,
+                    data={"path": path, "bytes_written": str(len(encoded))},
+                )
+
         return ToolResult(
             tool_name="file_write",
             content=f"Wrote {len(encoded)} bytes to {path}",
@@ -180,6 +217,7 @@ def make_file_write_tool(
                 "bytes_written": str(len(encoded)),
                 "produced_files": produced_files,
             },
+            artifacts=artifacts,
         )
 
     return file_write

@@ -168,6 +168,20 @@ TOOL_CATALOG: tuple[ToolCatalogEntry, ...] = (
         runtime_wired=True,
         keywords=("generate an image", "create an image", "draw a", "make a picture"),
     ),
+    # -- media (spec 28) --
+    ToolCatalogEntry(
+        name="render_diagram",
+        description="Render a Mermaid or Graphviz DOT diagram to a scalable SVG.",
+        category="media",
+        runtime_wired=True,
+        keywords=(
+            "draw a diagram",
+            "render a diagram",
+            "make a flowchart",
+            "create a chart of",
+            "draw a graph",
+        ),
+    ),
 )
 
 _BY_NAME: dict[str, ToolCatalogEntry] = {entry.name: entry for entry in TOOL_CATALOG}

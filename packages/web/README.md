@@ -21,7 +21,10 @@ Pages:
 - **Personas**: list / detail; authoring flow (one-sentence brief →
   frontier draft → structured form ⇄ lazy Monaco YAML → save) + edit.
 - **Chat**: streaming SSE chat with visible identity header, collapsible
-  tool-call cards, per-turn tier badge, file + image attachments.
+  tool-call cards, per-turn tier badge, file + image attachments, and
+  inline **file cards** + a sliding **right-panel renderer** (10 formats:
+  markdown / code / PDF / image / CSV / JSON / HTML / Mermaid / Graphviz /
+  plaintext; rendered↔raw toggle) for tool-produced artifacts.
 - **Run viewer**: agentic-run timeline over SSE (catch-up + reconcile-on-
   drop), inline ask-user, Markdown final answer, cancel.
 - **Settings**: credit balance + per-turn usage; theme, tier-badge

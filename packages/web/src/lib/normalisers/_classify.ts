@@ -16,7 +16,11 @@
  */
 
 import type { OutputContent } from "@/lib/api/output-content";
-import type { ProducedFileRef, ToolResultData } from "@/lib/sse-types";
+import type {
+  ArtifactRef,
+  ProducedFileRef,
+  ToolResultData,
+} from "@/lib/sse-types";
 
 /**
  * Map a tool name to the F4 capability bucket. Returns `null` for tools
@@ -82,10 +86,35 @@ export function classifyProducedFile(pf: ProducedFileRef): OutputContent {
 }
 
 /**
+ * Spec 28 — map one persisted artifact onto a `file-card` OutputContent.
+ *
+ * The unified rich-output render path: every byte-producing tool's
+ * `ToolResult.artifacts` entry becomes a file card that renders an inline
+ * thumbnail/SVG (per `rendered_inline` + the renderer's size thresholds) and
+ * opens the right-panel renderer on click. `media_type` carries the renderer
+ * discriminator (incl. `text/vnd.mermaid` / `text/vnd.graphviz`).
+ */
+export function classifyArtifact(artifact: ArtifactRef): OutputContent {
+  const name =
+    artifact.workspace_path.split("/").pop() ?? artifact.workspace_path;
+  return {
+    kind: "file-card",
+    workspace_path: artifact.workspace_path,
+    media_type: artifact.mime_type,
+    name,
+    size_bytes: artifact.size_bytes,
+    rendered_inline: artifact.rendered_inline,
+  };
+}
+
+/**
  * Project a single `tool_result` payload onto zero-or-more OutputContent.
  *
  *   - `is_error=true` → `failure` with `operation = tool_name`.
- *   - `produced_files` present + non-empty → one OutputContent per file.
+ *   - `artifacts` present + non-empty → one `file-card` per artifact (Spec 28
+ *     unified path; preferred over `produced_files`).
+ *   - else `produced_files` present + non-empty → one OutputContent per file
+ *     (legacy F4 classification; pre-Spec-28 / persister-absent path).
  *   - otherwise → `result-block` carrying `content` as stdout (pre-T02b
  *     runtime safety net; renderer still shows the rendered file list
  *     embedded in content).
@@ -102,6 +131,10 @@ export function projectToolResult(data: ToolResultData): OutputContent[] {
         error_message: data.content,
       },
     ];
+  }
+  const artifacts = data.artifacts;
+  if (artifacts !== undefined && artifacts.length > 0) {
+    return artifacts.map(classifyArtifact);
   }
   const pf = data.produced_files;
   if (pf !== undefined && pf.length > 0) {

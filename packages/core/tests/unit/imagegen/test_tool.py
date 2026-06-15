@@ -37,7 +37,7 @@ from persona.imagegen import (
     ImageProviderError,
     make_generate_image_tool,
 )
-from persona.schema.tools import ToolCall
+from persona.schema.tools import PersistedArtifact, ToolCall
 from persona.tools import MemoryToolAuditLogger, Toolbox
 
 # ---------------------------------------------------------------------------
@@ -645,6 +645,83 @@ class TestAuditEmission:
         # the audit IS emitted. Both paths are correct; assert the
         # ToolResult is structured-error and the backend was not called.
         assert backend.generate_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Spec 28 — persister injection (chat-path persistence; closes §2.9)
+# ---------------------------------------------------------------------------
+
+
+class _FakePersister:
+    """Records persist calls; returns deterministic PersistedArtifacts."""
+
+    def __init__(self, *, side_effect: BaseException | None = None) -> None:
+        self._side_effect = side_effect
+        self.calls: list[dict[str, object]] = []
+
+    async def persist(
+        self, data: bytes, *, mime_type: str, suggested_filename: str
+    ) -> PersistedArtifact:
+        self.calls.append(
+            {"len": len(data), "mime_type": mime_type, "suggested_filename": suggested_filename}
+        )
+        if self._side_effect is not None:
+            raise self._side_effect
+        return PersistedArtifact(
+            workspace_path=f"uploads/{suggested_filename}",
+            mime_type=mime_type,
+            size_bytes=len(data),
+        )
+
+
+class TestPersisterInjection:
+    """Spec 28 — D-28-X-persisted-artifact-shape on the generate_image tool."""
+
+    @pytest.mark.asyncio
+    async def test_no_persister_leaves_artifacts_empty(self) -> None:
+        # Backward-compat (criterion #9): None persister → empty artifacts,
+        # workspace_path stays None (as the backend left it).
+        tool = make_generate_image_tool(backend=FakeImageBackend())
+        result = await tool.execute(prompt="a red bicycle")
+        assert result.is_error is False
+        assert result.artifacts == ()
+        assert result.data["images"][0]["workspace_path"] is None
+
+    @pytest.mark.asyncio
+    async def test_persister_populates_artifacts_and_reconciles_data(self) -> None:
+        persister = _FakePersister()
+        tool = make_generate_image_tool(backend=FakeImageBackend(), persister=persister)
+        result = await tool.execute(prompt="a red bicycle")
+        assert result.is_error is False
+        assert len(result.artifacts) == 1
+        art = result.artifacts[0]
+        assert art.workspace_path == "uploads/generated_image_0.png"
+        assert art.mime_type == "image/png"
+        assert art.rendered_inline is True  # images render inline above the card
+        # data["images"] workspace_path reconciled to the persisted ref.
+        assert result.data["images"][0]["workspace_path"] == "uploads/generated_image_0.png"
+        # persist called with the image bytes + media type.
+        assert persister.calls[0]["mime_type"] == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_persister_handles_multiple_images(self) -> None:
+        persister = _FakePersister()
+        tool = make_generate_image_tool(
+            backend=FakeImageBackend(image_count=2), persister=persister
+        )
+        result = await tool.execute(prompt="two bikes", count=2)
+        assert len(result.artifacts) == 2
+        assert result.artifacts[0].workspace_path == "uploads/generated_image_0.png"
+        assert result.artifacts[1].workspace_path == "uploads/generated_image_1.png"
+
+    @pytest.mark.asyncio
+    async def test_persist_failure_surfaces_structured_error(self) -> None:
+        persister = _FakePersister(side_effect=OSError("disk full"))
+        tool = make_generate_image_tool(backend=FakeImageBackend(), persister=persister)
+        result = await tool.execute(prompt="a red bicycle")
+        assert result.is_error is True
+        assert "persist_failed" in result.content
+        assert result.metadata["reason"] == "persist_failed"
 
 
 # ---------------------------------------------------------------------------

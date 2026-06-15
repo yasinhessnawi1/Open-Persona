@@ -158,7 +158,7 @@ async def list_artifacts(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     source: Literal["upload", "generated"] | None = Query(None),
-    type: Literal["image", "chart", "doc", "data"] | None = Query(None),  # noqa: A002
+    type: Literal["image", "chart", "doc", "data", "diagram"] | None = Query(None),  # noqa: A002
     conversation_id: str | None = Query(None, max_length=200),
     q: str | None = Query(None, max_length=200),
 ) -> ArtifactListResponse:

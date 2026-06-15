@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from persona.tools.audit import ToolAuditLogger
     from persona.tools.mcp.client import MCPClient
     from persona.tools.protocol import AsyncTool
+    from persona.tools.workspace_persister import WorkspacePersister
 
 __all__ = ["build_default_toolbox"]
 
@@ -45,6 +46,7 @@ async def build_default_toolbox(
     *,
     tool_audit_logger: ToolAuditLogger | None = None,
     extra_tools: list[AsyncTool] | None = None,
+    workspace_persister: WorkspacePersister | None = None,
 ) -> tuple[Toolbox, list[MCPClient]]:
     """Compose a Toolbox for the given persona.
 
@@ -62,6 +64,10 @@ async def build_default_toolbox(
             `use_skill` tool (D-04-10: NOT auto-registered; the runtime/API
             composes it when the persona has skills). Folded into the Toolbox
             alongside the built-ins + MCP tools, subject to the same allow-list.
+        workspace_persister: Optional Spec 28 `WorkspacePersister` injected into
+            `file_write` so written files are mirrored to the persona workspace
+            and surfaced as `ToolResult.artifacts` (inline file cards). `None`
+            (CLI / tests) ⇒ `file_write` produces its pre-Spec-28 result shape.
 
     Returns:
         A tuple ``(toolbox, mcp_clients)``. The caller is responsible for
@@ -88,6 +94,7 @@ async def build_default_toolbox(
             sandbox_root=config.tools_sandbox_root,
             audit_logger=tool_audit_logger,
             persona_id=persona.persona_id,
+            persister=workspace_persister,
         ),
         # Spec 26 — general-utility built-ins (deny-by-default; the persona's
         # allow-list still gates whether each is advertised).

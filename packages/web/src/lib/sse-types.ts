@@ -54,6 +54,20 @@ export interface ProducedFileRef {
   media_type?: string | null;
 }
 
+/**
+ * Spec 28 — a persisted tool artifact forwarded from `ToolResult.artifacts`
+ * (`PersistedArtifact.model_dump()`). When present, the F4 normaliser renders
+ * each as a `file-card` (inline thumbnail/SVG + right-panel renderer), in
+ * preference to the legacy `produced_files` path. Absent on pre-Spec-28 frames
+ * and on tools that persist nothing.
+ */
+export interface ArtifactRef {
+  workspace_path: string;
+  mime_type: string;
+  size_bytes: number;
+  rendered_inline: boolean;
+}
+
 export interface ToolResultData {
   tool_name: string;
   is_error: boolean;
@@ -66,6 +80,12 @@ export interface ToolResultData {
    * fall back to a result-block render when absent).
    */
   produced_files?: ProducedFileRef[];
+  /**
+   * Spec 28 — persisted byte-outputs (image / file / diagram). Preferred over
+   * `produced_files` when present (the unified FileCard render path). Omitted
+   * on pre-Spec-28 frames and tools that persist nothing.
+   */
+  artifacts?: ArtifactRef[];
 }
 
 // =================== CHAT stream (bare-payload frames) ===================

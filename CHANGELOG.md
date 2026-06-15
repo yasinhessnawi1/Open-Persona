@@ -11,6 +11,30 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Rich Tool Output Delivery — Backend Persister + Inline File Cards + Right-Panel Renderer (Spec 28; close-out 2026-06-15, pending sign-off)
+
+> **Three coupled deliverables:** (1) a hexagonal **`WorkspacePersister`** giving every byte-producing tool (`generate_image`, `file_write`, `code_execution` outputs, new `render_diagram`) a persisted `workspace_path` + `mime_type` + downloadable ref; (2) an inline **`FileCard`** (Anthropic-style) in chat; (3) a sliding **right-panel renderer** for 10 formats with a rendered↔raw toggle. Closes the Spec 25 §2.9 byte→UI delivery gap. **Additive only** — `persister=None` reproduces today's exact `ToolResult` (criterion #9). **Zero DB migrations** (telemetry → F5 sidecars), **zero new core/api Python deps** (diagrams render client-side). Operator pass **9/9 live, 0 FAIL** (backend pre-drive 4/4 + Playwright UI 5/5; [`operator_pass_2026_06_15.log`](docs/specs/phase2/spec_28/evidence/)). `mypy --strict` core + `mypy` api + `ruff` clean; web `tsc` + `biome` + `no-literals` + `vitest` clean.
+
+#### Added (persona-core)
+- **`WorkspacePersister` Protocol** (`persona/tools/workspace_persister.py`) + frozen **`PersistedArtifact`** (`persona/schema/tools.py`): `workspace_path` / `mime_type` / `size_bytes` / `rendered_inline`. Storage-agnostic port (S3 adapter is a v0.3 drop-in).
+- **`ToolResult.artifacts: tuple[PersistedArtifact, ...] = ()`** — one typed field; default-empty = wire-compatible with the pre-Spec-28 shape.
+- **`render_diagram` built-in tool** (`persona/tools/builtin/render_diagram.py`) — persists Mermaid / Graphviz DOT **source** (MIME `text/vnd.mermaid` / `text/vnd.graphviz`); lenient (no server-side parser); rendered client-side. Catalog entry added.
+- `generate_image` + `file_write` gain an optional `persister`; `code_execution` surfaces its remote produced-files into the same `artifacts` tuple (keeps the D-17-X file-copy callback).
+
+#### Added (persona-runtime)
+- `RunEvent.tool_result` forwards `artifacts` onto the SSE payload (single site; chat + run transports). No `loop.py` change beyond the existing constructor.
+
+#### Added (persona-api)
+- **`WorkspaceDirPersister`** (`services/workspace_persister.py`) — concrete adapter wrapping the `_persist_bytes` recipe (blake2b + `O_NOFOLLOW` + `.f5.json` sidecar), RLS-scoped to the persona owner; injected at `RuntimeFactory._build_toolbox`.
+- F5 sidecar literals widened (`type="diagram"`, `producing_spec="28"`); uploads serve route serves the rich-output extensions (D-28-10 reuse + `_RICH_OUTPUT_MEDIA_BY_EXT`).
+
+#### Added (persona-web)
+- Inline **`FileCard`** + sliding **`FileRendererPanel`** (conversation-scoped, eye/`<>` toggle, Copy/refresh/close, Esc + Cmd/Ctrl+/) + **10 format renderers** (markdown, code, plaintext, JSON, CSV, PDF, image, HTML, Mermaid, Graphviz). New `file-card` `OutputContent` variant + normaliser; FileCard wired into the F4 dispatcher.
+- **Security (D-28-X-svg-sanitization):** single `lib/sanitize.ts` (DOMPurify) sanitizes every SVG path (Mermaid + Graphviz); HTML = sandboxed iframe + DOMPurify; markdown = `rehype-sanitize`. Unit-tested (8 XSS vectors).
+- **Deps:** `react-markdown` + `remark-gfm` + `rehype-sanitize`, `react-pdf`, `papaparse`, `react-json-view-lite`, `dompurify`, `mermaid` (lazy), `@hpcc-js/wasm-graphviz` (lazy). CSV uses a plain table (PapaParse); `@tanstack/react-table` evaluated and dropped (minimal-deps).
+
+#### Notes
+- The operator pass caught 4 integration bugs the unit gates missed (PDF worker resolution under Turbopack; chat dropped `artifacts`; `projectToolEvents` early-return for `operationFor==null` tools; serve route 404'ing text/diagram types) — all fixed; `e2e/spec28-rich-output.spec.ts` ships as the regression vehicle. A persona-web CSP is recorded as an app-hardening fast-follow.
 ### Persona, Runtime & Memory Integration for Voice (Spec V5; close-out 2026-06-14, pending sign-off)
 
 > **The integration thread that makes the voice persona *the same persona*.** Fills V4's `ModelReplyProducer` seam with real persona-conditioned, tier-routed, streaming, cancellable generation, and writes voice turns to the **same** episodic store as text (unified memory). The binding constraint — *voice must never become a persona-bypass* — is enforced structurally: the voice turn composes the **shared** `PromptBuilder.build` + the **extracted** `retrieve_context` (never a thinner "voice prompt"). Operator pass **0 FAIL** across every V5 surface, live against real backends (S1 constraint refusal + S3/S9 real-memory recall) ([`operator_pass_2026_06_14.log`](docs/specs/phase2/spec_V5/evidence/operator_pass_2026_06_14.log)). `mypy --strict` voice (53) + runtime (35) + core (144) clean; `ruff` clean; 4378 unit + the V5 full-turn-cycle integration test pass. **Zero new external dependencies; one internal workspace edge (`persona-voice` → `persona-runtime`).**

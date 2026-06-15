@@ -7,6 +7,7 @@ import os
 from typing import TYPE_CHECKING
 
 import pytest
+from persona.schema.tools import PersistedArtifact
 from persona.tools.audit import MemoryToolAuditLogger, ToolAuditEvent
 from persona.tools.builtin.file_read import make_file_read_tool
 from persona.tools.builtin.file_write import make_file_write_tool
@@ -470,3 +471,69 @@ class TestAuditLockConcurrency:
         assert len(logger.events) == n_threads * n_writes_per_thread
         # Every event has a sensible shape.
         assert all(ev.tool_name == "file_write" for ev in logger.events)
+
+
+# Section: Spec 28 — persister injection (workspace mirror → ToolResult.artifacts)
+
+
+class _FakePersister:
+    """Records persist calls; returns deterministic PersistedArtifacts."""
+
+    def __init__(self, *, side_effect: BaseException | None = None) -> None:
+        self._side_effect = side_effect
+        self.calls: list[dict[str, object]] = []
+
+    async def persist(
+        self, data: bytes, *, mime_type: str, suggested_filename: str
+    ) -> PersistedArtifact:
+        self.calls.append(
+            {"len": len(data), "mime_type": mime_type, "suggested_filename": suggested_filename}
+        )
+        if self._side_effect is not None:
+            raise self._side_effect
+        return PersistedArtifact(
+            workspace_path=f"uploads/{suggested_filename}",
+            mime_type=mime_type,
+            size_bytes=len(data),
+        )
+
+
+class TestFileWritePersister:
+    @pytest.mark.asyncio
+    async def test_no_persister_leaves_artifacts_empty(self, tmp_path: Path) -> None:
+        # Backward-compat (criterion #9): None persister → empty artifacts.
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path)
+        result = await tool_inst.execute(path="out/report.md", content="hello")
+        assert result.is_error is False
+        assert result.artifacts == ()
+
+    @pytest.mark.asyncio
+    async def test_persister_populates_artifact(self, tmp_path: Path) -> None:
+        persister = _FakePersister()
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path, persister=persister)
+        result = await tool_inst.execute(path="out/report.md", content="hello world")
+        assert result.is_error is False
+        assert len(result.artifacts) == 1
+        art = result.artifacts[0]
+        assert art.workspace_path == "uploads/report.md"  # basename only
+        assert art.mime_type == "text/markdown"
+        assert art.size_bytes == len(b"hello world")
+        assert art.rendered_inline is False  # non-image = card only
+        assert persister.calls[0]["mime_type"] == "text/markdown"
+
+    @pytest.mark.asyncio
+    async def test_image_write_marks_rendered_inline(self, tmp_path: Path) -> None:
+        persister = _FakePersister()
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path, persister=persister)
+        result = await tool_inst.execute(path="out/diagram.png", content="\x89PNG")
+        assert result.artifacts[0].rendered_inline is True
+
+    @pytest.mark.asyncio
+    async def test_persist_failure_surfaces_structured_error(self, tmp_path: Path) -> None:
+        persister = _FakePersister(side_effect=OSError("disk full"))
+        tool_inst = make_file_write_tool(sandbox_root=tmp_path, persister=persister)
+        result = await tool_inst.execute(path="out/report.md", content="hello")
+        assert result.is_error is True
+        assert "persist_failed" in result.content
+        # the sandbox file IS written even though the mirror failed.
+        assert (tmp_path / "out" / "report.md").read_text() == "hello"

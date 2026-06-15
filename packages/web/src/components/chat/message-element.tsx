@@ -52,7 +52,7 @@ import {
   derivePersonaIdentityColor,
   personaIdentityStyle,
 } from "@/lib/persona-identity";
-import type { ProducedFileRef } from "@/lib/sse-types";
+import type { ArtifactRef, ProducedFileRef } from "@/lib/sse-types";
 import { cn } from "@/lib/utils";
 import { AuthedImage } from "./authed-image";
 import { OutputDispatcher } from "./output/dispatcher";
@@ -87,6 +87,11 @@ export type MessageEvent =
        * in InterleavedContent below.
        */
       producedFiles?: ProducedFileRef[];
+      /**
+       * Spec 28: persisted artifacts (image / file / diagram). Preferred over
+       * producedFiles by the OutputDispatcher (the unified FileCard path).
+       */
+      artifacts?: ArtifactRef[];
     };
 
 /**
@@ -549,15 +554,24 @@ function projectToolEvents(
   result: Extract<MessageEvent, { kind: "tool_result" }> | null,
 ): OutputContent[] {
   const op = operationFor(toolName);
-  if (op === null) return [];
   if (result === null) {
-    return [{ kind: "working", operation: op, label: toolName }];
+    // Pending: only recognized capability tools show a <WorkingState>.
+    return op === null
+      ? []
+      : [{ kind: "working", operation: op, label: toolName }];
   }
+  // Spec 28: ANY tool that persisted artifacts renders file-cards, even when it
+  // isn't a recognized F4 capability tool (file_write / render_diagram have no
+  // operationFor entry). Recognized tools without artifacts keep the F4 behavior
+  // (produced_files / result-block); unrecognized + no artifacts → [].
+  const hasArtifacts = (result.artifacts?.length ?? 0) > 0;
+  if (!hasArtifacts && op === null) return [];
   return projectToolResult({
     tool_name: toolName,
     is_error: result.isError,
     content: result.content,
     produced_files: result.producedFiles,
+    artifacts: result.artifacts,
   });
 }
 

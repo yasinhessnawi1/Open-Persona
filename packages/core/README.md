@@ -17,7 +17,9 @@ behind a `MemoryStore` protocol, the backend layer behind a `ChatBackend`
 protocol, a sandboxed tool layer (`Toolbox`, MCP client, a known-tool
 catalog, and built-in tools — `web_search` / `web_fetch` / `file_read` /
 `file_write` / `calculator` / `datetime` / `currency_convert` / `regex_match` /
-`json_query` / `text_diff` / `text_summarize`), a skills layer
+`json_query` / `text_diff` / `text_summarize` / `render_diagram`), a
+`WorkspacePersister` protocol that lets byte-producing tools surface persisted
+artifacts (`PersistedArtifact` on `ToolResult.artifacts`), a skills layer
 (`SkillScanner` + `SkillInjector` + skill composition + a `skills.toml`
 catalog + four built-in skill packs), a vision
 layer (`ImageContent` + `ImageBackend`), document ingestion + generation,

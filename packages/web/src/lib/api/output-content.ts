@@ -87,6 +87,30 @@ export interface ResultBlockOutput {
   language?: string;
 }
 
+/**
+ * Spec 28 — a persisted tool artifact rendered as an inline file card that
+ * opens the right-panel renderer (D-28-5/6). Image artifacts < threshold show
+ * a thumbnail above the card; diagram SVG < threshold renders inline. Fed by
+ * `ToolResult.artifacts` (the unified rich-output path), in preference to the
+ * legacy `produced_files` → inline-image/chart/download-doc classification.
+ */
+export interface FileCardOutput {
+  kind: "file-card";
+  /** Workspace-relative path; the GET `/uploads/{ref}` route serves the bytes
+   *  (download_url is derived from this — D-28-10, no new endpoint). */
+  workspace_path: string;
+  /** IANA media type — drives the renderer dispatch (incl. text/vnd.mermaid
+   *  and text/vnd.graphviz for render_diagram, D-28-X-render-diagram-mime). */
+  media_type: string;
+  /** Display name (basename of workspace_path). */
+  name: string;
+  /** Size of the persisted bytes. */
+  size_bytes: number;
+  /** Frontend hint: render inline (image thumbnail / inline SVG) above the
+   *  card vs. card-only. The renderer still applies the size thresholds. */
+  rendered_inline: boolean;
+}
+
 /** A slow operation is in flight (image gen / code exec / doc gen). */
 export interface WorkingOutput {
   kind: "working";
@@ -122,6 +146,7 @@ export type OutputContent =
   | InlineImageOutput
   | InlineChartOutput
   | DownloadDocOutput
+  | FileCardOutput
   | ResultBlockOutput
   | WorkingOutput
   | FailureOutput;
@@ -169,6 +194,17 @@ const resultBlockSchema = z
   })
   .strict();
 
+const fileCardSchema = z
+  .object({
+    kind: z.literal("file-card"),
+    workspace_path: z.string().min(1),
+    media_type: z.string().min(1),
+    name: z.string().min(1),
+    size_bytes: z.number().int().nonnegative(),
+    rendered_inline: z.boolean(),
+  })
+  .strict();
+
 const workingSchema = z
   .object({
     kind: z.literal("working"),
@@ -195,6 +231,7 @@ export const outputContentSchema = z.discriminatedUnion("kind", [
   inlineImageSchema,
   inlineChartSchema,
   downloadDocSchema,
+  fileCardSchema,
   resultBlockSchema,
   workingSchema,
   failureSchema,

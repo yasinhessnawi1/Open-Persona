@@ -1,4 +1,6 @@
 import ReactMarkdown, { type Components } from "react-markdown";
+import rehypeSanitize from "rehype-sanitize";
+import remarkGfm from "remark-gfm";
 
 // Editorial Markdown for the run viewer's final deliverable (acceptance #4).
 // Tailwind v4 ships no `prose` plugin here, so elements are mapped explicitly to
@@ -89,5 +91,17 @@ const COMPONENTS: Components = {
 };
 
 export function Markdown({ children }: { children: string }) {
-  return <ReactMarkdown components={COMPONENTS}>{children}</ReactMarkdown>;
+  // Spec 28 (D-28-X-svg-sanitization): react-markdown already escapes raw HTML
+  // (no rehype-raw), and `rehype-sanitize` is the explicit defense-in-depth for
+  // the rich-output renderer rendering untrusted persisted markdown files.
+  // `remark-gfm` adds tables / task-lists / strikethrough.
+  return (
+    <ReactMarkdown
+      components={COMPONENTS}
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeSanitize]}
+    >
+      {children}
+    </ReactMarkdown>
+  );
 }

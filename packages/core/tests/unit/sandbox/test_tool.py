@@ -563,3 +563,76 @@ class TestProducedFileDebugLogging:
         assert "out/report.pdf" in output
         assert "application/pdf" in output
         assert "code_execution produced files persisted" not in output
+
+
+class TestProducedFilesSurfaceAsArtifacts:
+    """Spec 28 — D-28-X-sandbox-consolidation-scope: produced files surface on
+    ToolResult.artifacts when the persister returns a workspace ref. The
+    file-copy persistence mechanism (D-17-X) is unchanged."""
+
+    @pytest.mark.asyncio
+    async def test_persisted_files_become_artifacts(self) -> None:
+        files = (
+            SandboxFile(path="out/chart.png", size_bytes=2048, media_type="image/png"),
+            SandboxFile(path="out/data.csv", size_bytes=42, media_type="text/csv"),
+        )
+        sandbox = FakeSandbox(
+            default_result=ExecutionResult(
+                stdout="done\n", stderr="", exit_status=0, outcome="ok", produced_files=files
+            )
+        )
+
+        async def _persister(session_id: str, ref: str) -> str:  # noqa: ARG001
+            return f"uploads/{ref.rsplit('/', 1)[-1]}"
+
+        tool = make_code_execution_tool(
+            sandbox,
+            session_id_provider=lambda: "user-1:conv-A",
+            produced_file_persister=_persister,
+            persona_id="astrid",
+        )
+        result = await tool.execute(code="...")
+        assert len(result.artifacts) == 2
+        png = result.artifacts[0]
+        assert png.workspace_path == "uploads/chart.png"
+        assert png.mime_type == "image/png"
+        assert png.size_bytes == 2048
+        assert png.rendered_inline is True  # image
+        csv = result.artifacts[1]
+        assert csv.workspace_path == "uploads/data.csv"
+        assert csv.rendered_inline is False  # non-image
+
+    @pytest.mark.asyncio
+    async def test_no_persister_leaves_artifacts_empty(self) -> None:
+        # Backward-compat: no persister wired → empty artifacts (CLI path).
+        files = (SandboxFile(path="out/report.pdf", size_bytes=8192, media_type="application/pdf"),)
+        sandbox = FakeSandbox(
+            default_result=ExecutionResult(
+                stdout="", stderr="", exit_status=0, outcome="ok", produced_files=files
+            )
+        )
+        tool = make_code_execution_tool(sandbox, persona_id="astrid")
+        result = await tool.execute(code="...")
+        assert result.artifacts == ()
+
+    @pytest.mark.asyncio
+    async def test_persister_returning_none_does_not_surface_artifact(self) -> None:
+        # A None return = persisted but not surfaced (existing callers unbroken).
+        files = (SandboxFile(path="out/x.png", size_bytes=1, media_type="image/png"),)
+        sandbox = FakeSandbox(
+            default_result=ExecutionResult(
+                stdout="", stderr="", exit_status=0, outcome="ok", produced_files=files
+            )
+        )
+
+        async def _persister(session_id: str, ref: str) -> None:  # noqa: ARG001
+            return None
+
+        tool = make_code_execution_tool(
+            sandbox,
+            session_id_provider=lambda: "user-1:conv-A",
+            produced_file_persister=_persister,
+            persona_id="astrid",
+        )
+        result = await tool.execute(code="...")
+        assert result.artifacts == ()

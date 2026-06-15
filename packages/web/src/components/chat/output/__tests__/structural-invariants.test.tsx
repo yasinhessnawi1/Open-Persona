@@ -83,6 +83,14 @@ const VARIANT_PROBES: Record<OutputContent["kind"], OutputContent> = {
     name: "report.pdf",
     size_bytes: 1024,
   },
+  "file-card": {
+    kind: "file-card",
+    workspace_path: "uploads/report.md",
+    media_type: "text/markdown",
+    name: "report.md",
+    size_bytes: 2048,
+    rendered_inline: false,
+  },
   "result-block": {
     kind: "result-block",
     stdout: "ok",
@@ -103,6 +111,7 @@ const EXPECTED_DATA_SLOT: Record<OutputContent["kind"], string> = {
   "inline-image": "inline-visual",
   "inline-chart": "inline-visual",
   "download-doc": "download-chip",
+  "file-card": "file-card",
   "result-block": "result-block",
   working: "working-state",
   failure: "output-failure",
@@ -124,13 +133,14 @@ describe("Spec F4 T14 — structural invariants", () => {
       },
     );
 
-    it("the OutputContent type has exactly six variants (drift sentinel)", () => {
+    it("the OutputContent type has exactly seven variants (drift sentinel)", () => {
       const kinds = Object.keys(VARIANT_PROBES) as ReadonlyArray<
         OutputContent["kind"]
       >;
       // If a future spec adds a variant, both this count AND the dispatcher
       // switch + EXPECTED_DATA_SLOT must update — this test catches the drift.
-      expect(kinds).toHaveLength(6);
+      // Spec 28 added `file-card` (6 → 7).
+      expect(kinds).toHaveLength(7);
     });
   });
 

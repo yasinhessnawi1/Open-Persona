@@ -3,6 +3,7 @@
 import type { OutputContent } from "@/lib/api/output-content";
 import { cn } from "@/lib/utils";
 
+import { FileCard } from "../file-card";
 import { DownloadChip } from "./download-chip";
 import { InlineVisual } from "./inline-visual";
 import { ResultBlock } from "./result-block";
@@ -134,6 +135,29 @@ export function OutputDispatcher({
           mediaType={output.media_type}
           name={output.name}
           sizeBytes={output.size_bytes}
+          className={className}
+        />
+      );
+    }
+
+    case "file-card": {
+      if (hasPathTraversal(output.workspace_path)) {
+        return (
+          <FailureCard
+            operation="render"
+            error_message="Invalid path"
+            className={className}
+          />
+        );
+      }
+      return (
+        <FileCard
+          personaId={personaId}
+          workspacePath={output.workspace_path}
+          mediaType={output.media_type}
+          name={output.name}
+          sizeBytes={output.size_bytes}
+          renderedInline={output.rendered_inline}
           className={className}
         />
       );

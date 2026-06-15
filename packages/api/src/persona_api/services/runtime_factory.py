@@ -38,7 +38,11 @@ from persona.stores import (
     WorldviewStore,
 )
 from persona.stores.postgres import PostgresBackend
-from persona.tools import build_default_toolbox, make_text_summarize_tool
+from persona.tools import (
+    build_default_toolbox,
+    make_render_diagram_tool,
+    make_text_summarize_tool,
+)
 from persona_runtime.agentic.loop import AgenticLoop
 from persona_runtime.loop import ConversationLoop
 from persona_runtime.prompt import PromptBuilder
@@ -48,6 +52,7 @@ from sqlalchemy import select
 
 from persona_api.db.models import personas as personas_t
 from persona_api.sandbox import make_pool_code_execution_tool
+from persona_api.services.workspace_persister import WorkspaceDirPersister
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -235,6 +240,18 @@ class RuntimeFactory:
         path) ⇒ no provider wired; staging is a no-op.
         """
         extra: list[object] = []
+        # Spec 28 — the workspace persister (hexagonal adapter). Built once per
+        # toolbox and injected into every byte-producing tool so chat-path
+        # outputs persist + surface as ToolResult.artifacts (closes Spec 25
+        # §2.9). None when no workspace_root is configured (CLI / test path) ⇒
+        # tools produce their pre-Spec-28 result shape (criterion #9).
+        workspace_persister = (
+            WorkspaceDirPersister(
+                workspace_root=self._workspace_root, persona_id=persona.persona_id
+            )
+            if self._workspace_root is not None and persona.persona_id is not None
+            else None
+        )
         if scanned_skills:
             extra.append(make_use_skill_tool(scanned_skills))  # type: ignore[arg-type]
         if self._sandbox_pool is not None:
@@ -291,6 +308,18 @@ class RuntimeFactory:
                     backend=self._image_backend,
                     persona_id=persona.persona_id,
                     persona_visual_style=persona.identity.visual_style,
+                    persister=workspace_persister,
+                )
+            )
+        # Spec 28 B3 — render_diagram is runtime-wired (needs the persister to
+        # store the diagram source for client-side SVG rendering). Composed here
+        # when a workspace persister is available; the persona allow-list still
+        # gates whether it is advertised (inside build_default_toolbox).
+        if workspace_persister is not None:
+            extra.append(
+                make_render_diagram_tool(
+                    persister=workspace_persister,
+                    persona_id=persona.persona_id,
                 )
             )
         # Spec 26 T07 — text_summarize is runtime-wired (D-26-7 / T1): it needs a
@@ -327,6 +356,7 @@ class RuntimeFactory:
             self._core_config,
             persona,
             extra_tools=extra or None,  # type: ignore[arg-type]
+            workspace_persister=workspace_persister,
         )
         self._mcp_clients.extend(mcp_clients)
         return toolbox

@@ -240,7 +240,7 @@ def make_pool_code_execution_tool(
             return ("data", "12")
         return ("doc", "12")
 
-    async def _persist_produced_file(session_id: str, ref: str) -> None:
+    async def _persist_produced_file(session_id: str, ref: str) -> str | None:
         """Copy a produced file from the sandbox session to the persona workspace.
 
         D-17-X-bytes-persistence call site. The inner
@@ -279,7 +279,7 @@ def make_pool_code_execution_tool(
         """
         persona_workspace = _resolve_persona_workspace()
         if persona_workspace is None:
-            return
+            return None
         if ref.startswith("charts/") or ref.startswith("intermediate/"):
             target = persona_workspace / ref
         else:
@@ -293,31 +293,39 @@ def make_pool_code_execution_tool(
         # user-facing and shouldn't surface in the artifact view).
         # Best-effort — failure logs but does not abort the persist.
         classification = _classify_for_sidecar(ref)
-        if classification is not None:
-            artifact_type, producing_spec = classification
-            try:
-                from persona_api.services.artifact_metadata import (  # noqa: PLC0415
-                    WorkspaceArtifactMetadata,
-                    utcnow,
-                    write_artifact_sidecar,
-                )
+        if classification is None:
+            # Intermediate cache file — persisted (for cross-turn staging) but
+            # NOT surfaced as a user-facing artifact (Spec 28: return None so the
+            # code_execution tool omits it from ToolResult.artifacts).
+            return None
+        artifact_type, producing_spec = classification
+        try:
+            from persona_api.services.artifact_metadata import (  # noqa: PLC0415
+                WorkspaceArtifactMetadata,
+                utcnow,
+                write_artifact_sidecar,
+            )
 
-                write_artifact_sidecar(
-                    target,
-                    WorkspaceArtifactMetadata(
-                        source="generated",
-                        type=artifact_type,  # type: ignore[arg-type]
-                        producing_spec=producing_spec,  # type: ignore[arg-type]
-                        conversation_id=None,
-                        created_at=utcnow(),
-                        original_name=None,
-                    ),
-                )
-            except Exception:  # noqa: BLE001 — sidecar failure non-fatal
-                # No logger wired here; the persist succeeded, the sidecar
-                # is enrichment. Future telemetry can surface failures via
-                # audit log if needed.
-                pass
+            write_artifact_sidecar(
+                target,
+                WorkspaceArtifactMetadata(
+                    source="generated",
+                    type=artifact_type,  # type: ignore[arg-type]
+                    producing_spec=producing_spec,  # type: ignore[arg-type]
+                    conversation_id=None,
+                    created_at=utcnow(),
+                    original_name=None,
+                ),
+            )
+        except Exception:  # noqa: BLE001 — sidecar failure non-fatal
+            # No logger wired here; the persist succeeded, the sidecar
+            # is enrichment. Future telemetry can surface failures via
+            # audit log if needed.
+            pass
+
+        # Spec 28 — surface the persisted file as a ToolResult.artifact. The ref
+        # is workspace-relative (the GET /uploads/{ref:path} route serves it).
+        return target.relative_to(persona_workspace).as_posix()
 
     return make_code_execution_tool(
         pool.sandbox,

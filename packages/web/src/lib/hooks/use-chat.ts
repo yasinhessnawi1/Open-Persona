@@ -184,6 +184,9 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
                     // OutputDispatcher in MessageElement (T10). Absent on
                     // pre-amendment frames + tools that don't produce files.
                     producedFiles: ev.data.produced_files,
+                    // Spec 28: forward persisted artifacts (the unified
+                    // FileCard path; preferred over produced_files downstream).
+                    artifacts: ev.data.artifacts,
                   } as const,
                 ],
               };

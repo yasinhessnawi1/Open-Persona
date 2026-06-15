@@ -24,6 +24,7 @@ from persona.tools.builtin.file_read import make_file_read_tool
 from persona.tools.builtin.file_write import make_file_write_tool
 from persona.tools.builtin.json_query import make_json_query_tool
 from persona.tools.builtin.regex_match import make_regex_match_tool
+from persona.tools.builtin.render_diagram import make_render_diagram_tool
 from persona.tools.builtin.text_diff import make_text_diff_tool
 from persona.tools.builtin.text_summarize import make_text_summarize_tool
 from persona.tools.builtin.web_fetch import make_web_fetch_tool
@@ -83,6 +84,7 @@ __all__ = [
     "make_file_write_tool",
     "make_json_query_tool",
     "make_regex_match_tool",
+    "make_render_diagram_tool",
     "make_text_diff_tool",
     "make_text_summarize_tool",
     "make_web_fetch_tool",

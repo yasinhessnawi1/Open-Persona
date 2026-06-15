@@ -298,3 +298,60 @@ class TestAskingUserOptionsForwarding:
         ev = RunEvent.asking_user(1, "Pick one", options=options)
         restored = RunEvent.model_validate_json(ev.model_dump_json())
         assert restored == ev
+
+
+class TestToolResultArtifactsForwarding:
+    """Spec 28 — additive ``artifacts`` forwarding on tool_result (preferred over
+    produced_files; covers both chat SSE + RunEvent transports via the single
+    RunEvent.tool_result constructor)."""
+
+    def test_artifacts_forwarded_when_present(self) -> None:
+        from persona.schema.tools import PersistedArtifact
+
+        result = ToolResult(
+            tool_name="generate_image",
+            content="made an image",
+            is_error=False,
+            artifacts=(
+                PersistedArtifact(
+                    workspace_path="uploads/abc.png",
+                    mime_type="image/png",
+                    size_bytes=2048,
+                    rendered_inline=True,
+                ),
+            ),
+        )
+        event = RunEvent.tool_result(step=1, tool_name="generate_image", result=result)
+        assert event.data["artifacts"] == [
+            {
+                "workspace_path": "uploads/abc.png",
+                "mime_type": "image/png",
+                "size_bytes": 2048,
+                "rendered_inline": True,
+            }
+        ]
+
+    def test_empty_artifacts_omitted(self) -> None:
+        result = ToolResult(tool_name="web_search", content="ok", is_error=False)
+        event = RunEvent.tool_result(step=0, tool_name="web_search", result=result)
+        assert "artifacts" not in event.data
+
+    def test_json_round_trip_preserves_artifacts(self) -> None:
+        from persona.schema.tools import PersistedArtifact
+
+        result = ToolResult(
+            tool_name="render_diagram",
+            content="rendered mermaid diagram",
+            is_error=False,
+            artifacts=(
+                PersistedArtifact(
+                    workspace_path="uploads/d.mmd",
+                    mime_type="text/vnd.mermaid",
+                    size_bytes=64,
+                    rendered_inline=True,
+                ),
+            ),
+        )
+        event = RunEvent.tool_result(step=2, tool_name="render_diagram", result=result)
+        restored = RunEvent.model_validate_json(event.model_dump_json())
+        assert restored.data["artifacts"][0]["mime_type"] == "text/vnd.mermaid"

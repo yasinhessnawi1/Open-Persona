@@ -76,13 +76,14 @@ from persona.imagegen.safety import (
     is_hard_line_violation,
 )
 from persona.logging import get_logger
-from persona.schema.tools import ToolResult
+from persona.schema.tools import PersistedArtifact, ToolResult
 from persona.tools.audit import ToolAuditEvent
 from persona.tools.protocol import AsyncTool, tool
 
 if TYPE_CHECKING:
     from persona.imagegen.protocol import ImageBackend
     from persona.tools.audit import ToolAuditLogger
+    from persona.tools.workspace_persister import WorkspacePersister
 
 __all__ = ["make_generate_image_tool"]
 
@@ -114,6 +115,7 @@ def make_generate_image_tool(
     audit_logger: ToolAuditLogger | None = None,
     persona_id: str | None = None,
     persona_visual_style: str | None = None,
+    persister: WorkspacePersister | None = None,
     description: str = _DEFAULT_DESCRIPTION,
 ) -> AsyncTool:
     """Build the ``generate_image`` :class:`AsyncTool`.
@@ -146,6 +148,16 @@ def make_generate_image_tool(
             (T10) which is merged into the prompt at dispatch time per
             D-15-4. ``None`` / empty / whitespace-only yields the
             identity branch in :func:`merge_visual_style` (no merge).
+        persister: Optional :class:`WorkspacePersister` (Spec 28). When
+            provided, generated image bytes are persisted to the persona
+            workspace and the resolved :class:`PersistedArtifact` entries
+            land on :attr:`ToolResult.artifacts` (chat-path persistence —
+            closes the Spec 25 §2.9 KNOWN-LIMITATION). When ``None`` the
+            result is byte-identical to the pre-Spec-28 shape (empty
+            ``artifacts``); the operator ``/v1/imagegen`` path is unaffected
+            (it persists via the service directly). A persist failure is
+            surfaced as a structured ``ToolResult(is_error=True)`` so the
+            model can recover.
         description: Tool description fed to the model. The default
             covers the spec §5 wording; override to surface persona-
             specific guidance.
@@ -345,6 +357,50 @@ def make_generate_image_tool(
             f"{'s' if image_count != 1 else ''} "
             f"({first.width}x{first.height}, {', '.join(media_types)})"
         )
+
+        # 6. Spec 28 — persist bytes to the workspace when a persister is
+        #    injected (chat-path persistence; closes Spec 25 §2.9). Each
+        #    persisted image yields a PersistedArtifact for the inline file
+        #    card; we also reconcile data["images"][].workspace_path so the
+        #    structured data carries the resolved reference. None ⇒ unchanged
+        #    pre-Spec-28 shape (empty artifacts, workspace_path stays as the
+        #    backend left it). A persist failure surfaces structured so the
+        #    model can recover (D-28-X-persisted-artifact-shape).
+        artifacts: tuple[PersistedArtifact, ...] = ()
+        resolved_paths: list[str | None] = [img.workspace_path for img in result.images]
+        if persister is not None:
+            try:
+                persisted: list[PersistedArtifact] = []
+                for idx, img in enumerate(result.images):
+                    ext = img.media_type.split("/")[-1]
+                    artifact = await persister.persist(
+                        img.image_bytes,
+                        mime_type=img.media_type,
+                        suggested_filename=f"generated_image_{idx}.{ext}",
+                    )
+                    # Images render inline as a thumbnail above the card (the
+                    # web layer applies the D-28-7 size threshold).
+                    persisted.append(artifact.model_copy(update={"rendered_inline": True}))
+                    resolved_paths[idx] = artifact.workspace_path
+                artifacts = tuple(persisted)
+            except Exception as exc:  # noqa: BLE001 — any persist failure → structured result
+                _LOG.warning(
+                    "generate_image persist failed",
+                    persona_id=persona_id or "<unknown>",
+                    error=str(exc),
+                )
+                return ToolResult(
+                    tool_name="generate_image",
+                    content=f"persist_failed: {exc}",
+                    is_error=True,
+                    metadata={
+                        "outcome": "error",
+                        "reason": "persist_failed",
+                        "provider": result.provider,
+                        "model": result.model,
+                    },
+                )
+
         return ToolResult(
             tool_name="generate_image",
             content=content_summary,
@@ -363,15 +419,16 @@ def make_generate_image_tool(
                 "latency_ms": result.latency_ms,
                 "images": [
                     {
-                        "workspace_path": img.workspace_path,
+                        "workspace_path": resolved_paths[idx],
                         "media_type": img.media_type,
                         "width": img.width,
                         "height": img.height,
                         "revised_prompt": img.revised_prompt,
                     }
-                    for img in result.images
+                    for idx, img in enumerate(result.images)
                 ],
             },
+            artifacts=artifacts,
         )
 
     return generate_image

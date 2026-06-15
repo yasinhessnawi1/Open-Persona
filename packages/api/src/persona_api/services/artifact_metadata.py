@@ -73,13 +73,16 @@ class WorkspaceArtifactMetadata(BaseModel):
     source: Literal["upload", "generated"]
     """Where the bytes came from."""
 
-    type: Literal["image", "chart", "doc", "data"]
-    """What the bytes represent at the F4 dispatcher layer."""
+    type: Literal["image", "chart", "doc", "data", "diagram"]
+    """What the bytes represent at the F4 dispatcher layer. ``"diagram"`` added
+    in Spec 28 for ``render_diagram`` Mermaid/Graphviz source artifacts
+    (D-28-X-f5-literal-extension)."""
 
-    producing_spec: Literal["12", "13", "14", "15", "16", "17"]
+    producing_spec: Literal["12", "13", "14", "15", "16", "17", "28"]
     """Spec that produced this artifact (Spec 12 sandbox general files /
     Spec 13 image upload / Spec 14 doc upload / Spec 15 imagegen / Spec 16
-    doc generation / Spec 17 charts + data analysis)."""
+    doc generation / Spec 17 charts + data analysis / Spec 28 rich-output
+    persister: chat-path image / file / diagram bytes)."""
 
     conversation_id: str | None
     """Conversation that produced this artifact (None for persona-scoped uploads

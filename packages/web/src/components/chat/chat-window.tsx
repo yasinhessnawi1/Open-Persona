@@ -25,6 +25,8 @@ import { NoVisionErrorBanner } from "./composer/no-vision-error-banner";
 import { useDragTarget, usePasteImage } from "./composer/use-attach-non-click";
 import { useComposerAttachments } from "./composer/use-composer-attachments";
 import { surfaceValidationFailure } from "./composer/validation-toast";
+import { FileRendererProvider } from "./file-renderer-context";
+import { FileRendererPanel } from "./file-renderer-panel";
 import { type ChatMessageView, MessageElement } from "./message-element";
 
 const TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE;
@@ -222,106 +224,110 @@ export function ChatWindow({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" ref={dropZoneRef}>
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 py-6">
-          {messages.length === 0 ? (
-            <p className="py-10 text-center text-sm text-muted-foreground">
-              {t("empty")}
-            </p>
-          ) : null}
-          {messages.map((m, i) => (
-            <MessageElement
-              key={m.id}
-              message={m}
-              persona={persona}
-              prevMessage={i > 0 ? messages[i - 1] : undefined}
-            />
-          ))}
-          {error ? (
-            <p className="text-sm text-destructive">{t("error")}</p>
-          ) : null}
-          <div ref={endRef} />
-        </div>
-      </div>
-
-      {/* F3: NoVision at-send safety banner (D-F3-X-no-vision-surface-shape (c)). */}
-      <NoVisionErrorBanner
-        error={sendError}
-        onDismiss={() => {
-          setSendError(null);
-          attach.clearImages();
-        }}
-      />
-
-      {/* F3: conversation-scoped document panel. */}
-      <ConversationDocumentList
-        documents={documents.documents}
-        onRemove={(docRef) => void onDocumentRemove(docRef)}
-        className="mx-auto w-full max-w-2xl px-4"
-      />
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit();
-        }}
-        className="border-t bg-background/80 backdrop-blur"
-      >
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 py-3">
-          {/* F3: composer image preview tray (T09). */}
-          {attach.attachedImages.length > 0 ? (
-            <div
-              className="flex flex-wrap gap-2"
-              data-slot="composer-image-tray"
-            >
-              {attach.attachedImages.map((a) => (
-                <ComposerImagePreview
-                  key={a.id}
-                  attachment={a}
-                  onRemove={attach.removeImage}
-                />
-              ))}
-            </div>
-          ) : null}
-
-          <div className="flex items-end gap-2">
-            {/* F3 T07 — attach control. documentsDisabled is always false
-                here (we're inside a conversation context per
-                D-F3-X-document-attach-conversation-binding). */}
-            <ComposerAttachControl
-              onImageFile={attach.attachImage}
-              onDocumentFile={(file) => void attach.uploadDocumentFile(file)}
-              onReject={handleReject}
-              currentImageCount={attach.attachedImages.length}
-              imageAttachDisabled={imageAttachDisabled}
-              documentsDisabled={false}
-            />
-            <Textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void submit();
-                }
-              }}
-              placeholder={t("placeholder", { name: persona.name })}
-              rows={1}
-              className="max-h-40 min-h-10 flex-1 resize-none field-sizing-content"
-            />
-            <button
-              type="submit"
-              disabled={sendBlocked}
-              aria-label={t("send")}
-              className={cn(buttonVariants({ size: "icon" }))}
-            >
-              <ArrowUp className="size-4" />
-            </button>
+    <FileRendererProvider>
+      <div className="flex min-h-0 flex-1 flex-col" ref={dropZoneRef}>
+        {/* Spec 28 — conversation-scoped right-panel renderer (D-28-6). */}
+        <FileRendererPanel personaId={persona.id} />
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 py-6">
+            {messages.length === 0 ? (
+              <p className="py-10 text-center text-sm text-muted-foreground">
+                {t("empty")}
+              </p>
+            ) : null}
+            {messages.map((m, i) => (
+              <MessageElement
+                key={m.id}
+                message={m}
+                persona={persona}
+                prevMessage={i > 0 ? messages[i - 1] : undefined}
+              />
+            ))}
+            {error ? (
+              <p className="text-sm text-destructive">{t("error")}</p>
+            ) : null}
+            <div ref={endRef} />
           </div>
         </div>
-      </form>
-    </div>
+
+        {/* F3: NoVision at-send safety banner (D-F3-X-no-vision-surface-shape (c)). */}
+        <NoVisionErrorBanner
+          error={sendError}
+          onDismiss={() => {
+            setSendError(null);
+            attach.clearImages();
+          }}
+        />
+
+        {/* F3: conversation-scoped document panel. */}
+        <ConversationDocumentList
+          documents={documents.documents}
+          onRemove={(docRef) => void onDocumentRemove(docRef)}
+          className="mx-auto w-full max-w-2xl px-4"
+        />
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+          className="border-t bg-background/80 backdrop-blur"
+        >
+          <div className="mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 py-3">
+            {/* F3: composer image preview tray (T09). */}
+            {attach.attachedImages.length > 0 ? (
+              <div
+                className="flex flex-wrap gap-2"
+                data-slot="composer-image-tray"
+              >
+                {attach.attachedImages.map((a) => (
+                  <ComposerImagePreview
+                    key={a.id}
+                    attachment={a}
+                    onRemove={attach.removeImage}
+                  />
+                ))}
+              </div>
+            ) : null}
+
+            <div className="flex items-end gap-2">
+              {/* F3 T07 — attach control. documentsDisabled is always false
+                here (we're inside a conversation context per
+                D-F3-X-document-attach-conversation-binding). */}
+              <ComposerAttachControl
+                onImageFile={attach.attachImage}
+                onDocumentFile={(file) => void attach.uploadDocumentFile(file)}
+                onReject={handleReject}
+                currentImageCount={attach.attachedImages.length}
+                imageAttachDisabled={imageAttachDisabled}
+                documentsDisabled={false}
+              />
+              <Textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void submit();
+                  }
+                }}
+                placeholder={t("placeholder", { name: persona.name })}
+                rows={1}
+                className="max-h-40 min-h-10 flex-1 resize-none field-sizing-content"
+              />
+              <button
+                type="submit"
+                disabled={sendBlocked}
+                aria-label={t("send")}
+                className={cn(buttonVariants({ size: "icon" }))}
+              >
+                <ArrowUp className="size-4" />
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </FileRendererProvider>
   );
 }

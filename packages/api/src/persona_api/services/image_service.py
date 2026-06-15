@@ -512,12 +512,55 @@ def _gif_dims(file_bytes: bytes) -> tuple[int, int]:
     return int(width), int(height)
 
 
+#: Spec 28 — rich-output render-set extensions served via this same route
+#: (D-28-10 reuses the uploads serve surface). The image map above stays
+#: image-only; the WorkspacePersister writes these text/diagram/doc types and
+#: the right-panel renderer fetches them by ref. The panel dispatches on the
+#: artifact's own ``mime_type`` (carried on the SSE artifact), so for code files
+#: a generic ``text/plain`` Content-Type is sufficient here.
+_RICH_OUTPUT_MEDIA_BY_EXT: dict[str, str] = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".txt": "text/plain",
+    ".log": "text/plain",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".mmd": "text/vnd.mermaid",
+    ".dot": "text/vnd.graphviz",
+    ".gv": "text/vnd.graphviz",
+    ".pdf": "application/pdf",
+    ".svg": "image/svg+xml",
+    ".py": "text/plain",
+    ".ts": "text/plain",
+    ".tsx": "text/plain",
+    ".js": "text/plain",
+    ".jsx": "text/plain",
+    ".go": "text/plain",
+    ".rs": "text/plain",
+    ".java": "text/plain",
+    ".c": "text/plain",
+    ".h": "text/plain",
+    ".cpp": "text/plain",
+    ".rb": "text/plain",
+    ".sh": "text/plain",
+    ".sql": "text/plain",
+    ".yaml": "text/plain",
+    ".yml": "text/plain",
+    ".toml": "text/plain",
+    ".css": "text/plain",
+}
+
+
 def _media_type_for_ext(ext: str) -> str | None:
     """Map a stored filename extension back to its IANA media type."""
     for media, candidate_ext in _EXT_BY_MEDIA_TYPE.items():
         if candidate_ext == ext:
             return media
-    return None
+    # Spec 28 rich-output types (markdown / code / csv / json / html / mermaid /
+    # graphviz / pdf / plaintext) served through the same route (D-28-10).
+    return _RICH_OUTPUT_MEDIA_BY_EXT.get(ext)
 
 
 # ---------------------------------------------------------------------------

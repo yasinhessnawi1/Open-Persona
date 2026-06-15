@@ -310,6 +310,29 @@
         "close": "Close lightbox",
         "download": "Download image",
         "title": "Image viewer"
+      },
+      "fileCard": {
+        "open": "Open {filename}",
+        "download": "Download {filename}",
+        "downloading": "Downloading {filename}…",
+        "failed": "Download failed: {reason}"
+      },
+      "renderer": {
+        "title": "File preview",
+        "rendered": "Rendered",
+        "raw": "Source",
+        "showRendered": "Show rendered view",
+        "showRaw": "Show source",
+        "copy": "Copy",
+        "copied": "Copied",
+        "refresh": "Refresh",
+        "close": "Close panel",
+        "loading": "Loading…",
+        "unavailable": "File unavailable",
+        "error": "Could not load file: {reason}",
+        "diagramError": "Could not render diagram",
+        "emptyTable": "No rows",
+        "menu": "More actions"
       }
     }
   }

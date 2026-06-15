@@ -53,7 +53,7 @@ from persona.sandbox.result import (
     ResourceLimits,
     SandboxFile,
 )
-from persona.schema.tools import ToolResult
+from persona.schema.tools import PersistedArtifact, ToolResult
 from persona.tools.audit import ToolAuditEvent
 from persona.tools.protocol import AsyncTool, tool
 
@@ -107,7 +107,7 @@ def make_code_execution_tool(
     pre_execute_hook: Callable[[], Awaitable[None]] | None = None,
     on_execute_success: Callable[[ExecutionResult], Awaitable[None]] | None = None,
     deferred_input_files_provider: Callable[[], list[SandboxFile]] | None = None,
-    produced_file_persister: Callable[[str, str], Awaitable[None]] | None = None,
+    produced_file_persister: Callable[[str, str], Awaitable[str | None]] | None = None,
     description: str = _DEFAULT_DESCRIPTION,
 ) -> AsyncTool:
     """Build the ``code_execution`` :class:`AsyncTool`.
@@ -147,18 +147,24 @@ def make_code_execution_tool(
             are billed; OOM/timeout/killed are not). Hook exceptions are caught
             and logged so a credits-write failure cannot break the tool's result.
             ``None`` ⇒ no hook (CLI path; tests that don't exercise billing).
-        produced_file_persister: Async callable ``(session_id, ref) -> None``
-            invoked AFTER execute for each entry in
+        produced_file_persister: Async callable ``(session_id, ref) ->
+            workspace_ref | None`` invoked AFTER execute for each entry in
             ``result.produced_files``. The api wires this to a closure that
             calls :meth:`CodeSandbox.copy_produced_file_to` with a destination
-            under the persona workspace
-            (``D-17-X-bytes-persistence``). Fires for every produced file
-            regardless of outcome (partial-success runs may still produce
-            charts before erroring). ``ProducedFileSizeError`` propagates and
-            is caught by the ``SandboxError`` catch-and-convert path above —
-            the model sees a structured error explaining the cap and can
-            produce a smaller file. ``None`` ⇒ no persistence (CLI / tests
-            that don't need the bytes outside the sandbox).
+            under the persona workspace (``D-17-X-bytes-persistence``) and
+            **returns the resulting workspace-relative ref** (Spec 28
+            D-28-X-sandbox-consolidation-scope) so the tool can surface each
+            persisted file as a :class:`PersistedArtifact` on
+            :attr:`ToolResult.artifacts` — the OUTPUT shape is unified with the
+            bytes-persister tools; the file-copy mechanism is unchanged. Fires
+            for every produced file regardless of outcome (partial-success runs
+            may still produce charts before erroring). ``ProducedFileSizeError``
+            propagates and is caught by the ``SandboxError`` catch-and-convert
+            path above — the model sees a structured error explaining the cap
+            and can produce a smaller file. A ``None`` return ⇒ that file was
+            not surfaced as an artifact (still persisted). ``None`` callback ⇒
+            no persistence (CLI / tests that don't need the bytes outside the
+            sandbox).
         description: Tool description fed to the model. The default covers
             the spec §6 wording; override to surface persona-specific guidance.
 
@@ -192,6 +198,9 @@ def make_code_execution_tool(
         # additive ``TurnLog.sandbox_session_recreated`` field (wired in
         # Cluster B/D — Spec 18 D-18-1 NOT reopened).
         session_recreated = False
+        # Spec 28 — collected on success below; declared here so the final
+        # ToolResult can reference it (the SandboxError path returns early).
+        produced_artifacts: list[PersistedArtifact] = []
         try:
             if pre_execute_hook is not None:
                 await pre_execute_hook()
@@ -242,7 +251,20 @@ def make_code_execution_tool(
             # gets its bytes persisted so the model can reference them.
             if produced_file_persister is not None and session_id is not None:
                 for sf in result.produced_files:
-                    await produced_file_persister(session_id, sf.path)
+                    workspace_ref = await produced_file_persister(session_id, sf.path)
+                    # Spec 28 — surface the persisted file as an artifact so the
+                    # chat UI renders a file card. None ⇒ persisted but not
+                    # surfaced (e.g. CLI / no workspace). The file-copy callback
+                    # is the persistence mechanism (D-17-X), unchanged.
+                    if workspace_ref is not None:
+                        produced_artifacts.append(
+                            PersistedArtifact(
+                                workspace_path=workspace_ref,
+                                mime_type=sf.media_type,
+                                size_bytes=sf.size_bytes,
+                                rendered_inline=sf.media_type.startswith("image/"),
+                            )
+                        )
                 # F4 operator-pass diagnostic: surface what was just persisted
                 # so a downstream "no chart in chat" investigation has the
                 # discovered-file inventory without needing extra tracing.
@@ -353,6 +375,9 @@ def make_code_execution_tool(
                 # vanished session and the retry succeeded.
                 "sandbox_session_recreated": str(session_recreated),
             },
+            # Spec 28 — produced files surfaced as artifacts (output-shape unify;
+            # persistence stays the D-17-X file-copy callback).
+            artifacts=tuple(produced_artifacts),
         )
 
     return code_execution

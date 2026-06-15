@@ -21,7 +21,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["Tool", "ToolCall", "ToolResult"]
+__all__ = ["PersistedArtifact", "Tool", "ToolCall", "ToolResult"]
 
 
 class ToolCall(BaseModel):
@@ -39,6 +39,40 @@ class ToolCall(BaseModel):
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
     call_id: str = ""
+
+
+class PersistedArtifact(BaseModel):
+    """A durable byte-output a tool persisted to the persona workspace (Spec 28).
+
+    Produced by a :class:`persona.tools.workspace_persister.WorkspacePersister`
+    when a byte-producing tool (``generate_image`` / ``file_write`` /
+    ``render_diagram``) or the code-execution sandbox surfaces a file. Carried
+    on :attr:`ToolResult.artifacts` so the web layer can render an inline file
+    card + the right-panel renderer (Spec 28 §2.2/§2.3).
+
+    The shape is storage-agnostic on purpose (D-28-X-persisted-artifact-shape):
+    ``workspace_path`` is the workspace-relative reference the existing
+    ``GET /v1/personas/{id}/uploads/{ref}`` route already serves, and the
+    download URL is *derived* from it at the API/web boundary (D-28-10) rather
+    than stored here — so a future S3 backend (v0.3) implements the same
+    Protocol without changing this model.
+
+    Attributes:
+        workspace_path: Workspace-relative path (e.g. ``"uploads/<hash>.png"``).
+        mime_type: IANA media type of the bytes (drives the renderer dispatch;
+            ``render_diagram`` uses ``text/vnd.mermaid`` / ``text/vnd.graphviz``
+            per D-28-X-render-diagram-mime).
+        size_bytes: Size of the persisted bytes.
+        rendered_inline: Frontend hint — render inline (image thumbnail / inline
+            SVG) above the file card vs. card-only. Defaults to ``False``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    workspace_path: str
+    mime_type: str
+    size_bytes: int = Field(ge=0)
+    rendered_inline: bool = False
 
 
 class ToolResult(BaseModel):
@@ -59,6 +93,11 @@ class ToolResult(BaseModel):
         truncated: True when the tool truncated its result to fit a budget
             (e.g., ``web_fetch`` past ``max_chars``, ``file_read`` past 1 MB).
             Added in spec 03 (D-03-3).
+        artifacts: Durable byte-outputs the tool persisted to the workspace
+            (Spec 28, D-28-X-persisted-artifact-shape). Default-empty tuple so
+            tools that produce no files serialise byte-identically to the
+            pre-Spec-28 shape (backward-compat / acceptance criterion #9). The
+            web layer renders each as an inline file card + right-panel content.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -72,6 +111,9 @@ class ToolResult(BaseModel):
     # is_error + content, not a separate error channel.
     data: dict[str, Any] | None = None
     truncated: bool = False
+    # Spec 28 — D-28-X-persisted-artifact-shape. One typed field grouping all
+    # persisted byte-outputs; default-empty preserves the old serialised shape.
+    artifacts: tuple[PersistedArtifact, ...] = ()
 
 
 @runtime_checkable

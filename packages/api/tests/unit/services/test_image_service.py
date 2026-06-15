@@ -594,3 +594,40 @@ class TestMalformedImage:
         with pytest.raises(PersonaError) as exc:
             _maybe_downscale(garbage, "image/png")
         assert exc.value.context["reason"] in {"malformed_image", "decode_failed"}
+
+
+class TestRichOutputServeExtensions:
+    """Spec 28 — the uploads serve route (reused per D-28-10) resolves the
+    rich-output render-set extensions, not just images. Regression for the
+    operator-pass bug F4: text/diagram artifacts 404'd because
+    _media_type_for_ext only knew image/office extensions."""
+
+    @pytest.mark.parametrize(
+        ("ext", "expected"),
+        [
+            (".md", "text/markdown"),
+            (".mmd", "text/vnd.mermaid"),
+            (".dot", "text/vnd.graphviz"),
+            (".csv", "text/csv"),
+            (".json", "application/json"),
+            (".html", "text/html"),
+            (".txt", "text/plain"),
+            (".py", "text/plain"),
+            (".pdf", "application/pdf"),
+            (".png", "image/png"),  # image map still works
+        ],
+    )
+    def test_media_type_resolved_for_rich_output_exts(self, ext: str, expected: str) -> None:
+        assert image_service._media_type_for_ext(ext) == expected
+
+    def test_fetch_serves_a_markdown_artifact(self, workspace: Path) -> None:
+        # Write a markdown artifact where the persister would, then fetch it.
+        owner, persona = "user_x", "persona_y"
+        uploads = workspace / owner / persona / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / "abc.md").write_text("# Hi\n")
+        body, media = image_service.fetch(
+            workspace_root=workspace, owner_id=owner, persona_id=persona, ref="uploads/abc.md"
+        )
+        assert body == b"# Hi\n"
+        assert media == "text/markdown"

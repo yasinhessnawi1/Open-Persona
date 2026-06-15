@@ -235,6 +235,63 @@ class TestToolResultExtension:
 
 
 # ---------------------------------------------------------------------------
+# Section: Spec 28 — ToolResult.artifacts (backward-compat / criterion #9)
+# ---------------------------------------------------------------------------
+
+
+class TestToolResultArtifacts:
+    """ToolResult gains `artifacts`; default-empty preserves old behavior."""
+
+    def test_defaults_to_empty_tuple(self) -> None:
+        r = ToolResult(tool_name="x", content="ok")
+        assert r.artifacts == ()
+
+    def test_old_json_without_artifacts_key_still_validates(self) -> None:
+        # Backward-compat: a ToolResult serialised before Spec 28 (no `artifacts`
+        # key) must still deserialise — `artifacts` defaults to ().
+        old_json = (
+            '{"tool_name":"x","content":"ok","call_id":"","is_error":false,'
+            '"metadata":{},"data":null,"truncated":false}'
+        )
+        restored = ToolResult.model_validate_json(old_json)
+        assert restored.artifacts == ()
+        assert restored.tool_name == "x"
+
+    def test_no_artifacts_round_trips_stable(self) -> None:
+        r = ToolResult(tool_name="x", content="ok")
+        restored = ToolResult.model_validate_json(r.model_dump_json())
+        assert restored == r
+        assert restored.artifacts == ()
+
+    def test_populated_artifacts_round_trip(self) -> None:
+        from persona.schema.tools import PersistedArtifact
+
+        art = PersistedArtifact(
+            workspace_path="uploads/a.png",
+            mime_type="image/png",
+            size_bytes=10,
+            rendered_inline=True,
+        )
+        r = ToolResult(tool_name="generate_image", content="made an image", artifacts=(art,))
+        restored = ToolResult.model_validate_json(r.model_dump_json())
+        assert len(restored.artifacts) == 1
+        assert restored.artifacts[0] == art
+
+    def test_artifacts_is_a_tuple_after_validation(self) -> None:
+        # frozen + tuple keeps the result hashable-shaped + immutable.
+        from persona.schema.tools import PersistedArtifact
+
+        art = PersistedArtifact(
+            workspace_path="uploads/a.txt", mime_type="text/plain", size_bytes=1
+        )
+        r = ToolResult.model_validate(
+            {"tool_name": "file_write", "content": "wrote", "artifacts": [art.model_dump()]}
+        )
+        assert isinstance(r.artifacts, tuple)
+        assert r.artifacts[0].workspace_path == "uploads/a.txt"
+
+
+# ---------------------------------------------------------------------------
 # Section: ToolCall re-exports + decorator stub
 # ---------------------------------------------------------------------------
 
