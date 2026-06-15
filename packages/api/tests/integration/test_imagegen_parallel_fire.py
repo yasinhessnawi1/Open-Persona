@@ -332,7 +332,14 @@ def test_parallel_fire_only_one_request_succeeds_and_deducts(
     (without both). The test holds the binary invariant tight.
     """
     c, uid_a, workspace_root, su, slow_backend = parallel_client
+    # Spec 29: persona-create auto-generates an avatar via the wired image
+    # backend — which would add an extra slow_backend call (inflating the
+    # cap-holder count) + an extra workspace file. Disable avatar-gen during
+    # create (fail-soft, no backend call, no bytes) so the assertions below
+    # measure ONLY the parallel imagegen fire.
+    c.app.state.image_backend = None  # type: ignore[attr-defined]
     pid = _create_persona(c, uid_a)
+    c.app.state.image_backend = slow_backend  # type: ignore[attr-defined]
 
     # Ensure the credits row exists at the default balance BEFORE the
     # parallel fire so the starting balance is deterministic. The

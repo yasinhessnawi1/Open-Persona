@@ -275,7 +275,8 @@ def test_patch_overrides_generated_avatar(
     detail = _create(c)
     pid = detail["id"]
     assert detail["avatar_url"] is not None
-    assert detail["avatar_url"].startswith("/v1/personas/")
+    # Generated avatars are stored as the bare workspace ref (uploads/<ref>.ext).
+    assert detail["avatar_url"].startswith("uploads/")
 
     c.patch(
         f"/v1/personas/{pid}",

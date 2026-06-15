@@ -350,8 +350,10 @@ async def build_agent_session(
     # The A1 data-channel broadcaster implements BOTH the V4 state-listener seam
     # (orb) AND the V6 caption-listener seam (captions) over one room+topic, so it
     # wires into both. Default-built over this call's room; injectable for tests.
-    broadcaster = broadcaster_factory(voice_room) if broadcaster_factory else (
-        DataChannelBroadcaster(voice_room)
+    broadcaster = (
+        broadcaster_factory(voice_room)
+        if broadcaster_factory
+        else (DataChannelBroadcaster(voice_room))
     )
     orchestrator = wire_orchestrated_loop(
         loop=loop,
