@@ -176,10 +176,12 @@ def test_hook_success_sets_served_avatar_url(
     _run(_request(tmp_path, backend=_HappyBackend()))
 
     ref = hashlib.blake2b(_TINY_PNG, digest_size=16).hexdigest()
+    # avatar_url is the BARE workspace ref (the web authed-image hook builds the
+    # served URL); NOT the full /v1/... route path a browser <img> can't auth.
     assert captured_set == [
         {
             "persona_id": _PERSONA,
-            "avatar_url": f"/v1/personas/{_PERSONA}/uploads/uploads/{ref}.png",
+            "avatar_url": f"uploads/{ref}.png",
         }
     ]
     assert _audit_outcomes(tmp_path) == ["ok"]

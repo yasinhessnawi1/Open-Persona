@@ -183,7 +183,10 @@ def test_create_auto_generates_avatar_and_sets_served_url(
     detail = _create(c)
     pid = detail["id"]
 
-    expected = f"/v1/personas/{pid}/uploads/uploads/{_PNG_REF}.png"
+    # avatar_url is the BARE workspace ref (the web authed-image hook builds the
+    # served URL with the Bearer token); a browser <img> can't auth the full
+    # /v1/... route, so storing the full path 404'd against the web origin.
+    expected = f"uploads/{_PNG_REF}.png"
     assert detail["avatar_url"] == expected
     # Persisted + visible via GET.
     assert c.get(f"/v1/personas/{pid}", headers=_auth(_USER)).json()["avatar_url"] == expected
@@ -200,7 +203,9 @@ def test_auto_generated_avatar_serves_through_uploads_route(
     detail = _create(c)
     avatar_url = detail["avatar_url"]
     assert avatar_url is not None
-    resp = c.get(avatar_url, headers=_auth(_USER))
+    # The web builds the served URL the same way: {API}/v1/personas/{id}/uploads/{ref}.
+    pid = detail["id"]
+    resp = c.get(f"/v1/personas/{pid}/uploads/{avatar_url}", headers=_auth(_USER))
     assert resp.status_code == 200
     assert resp.content == _TINY_PNG
 

@@ -207,8 +207,14 @@ async def _maybe_generate_avatar(
     workspace_path = result.images[0].workspace_path if result.images else None
     if not workspace_path:
         return  # defensive — nothing to point at
-    # The served path through the existing uploads GET route (provenance-blind).
-    avatar_url = f"/v1/personas/{persona_id}/uploads/{workspace_path}"
+    # Store the bare workspace ref (``uploads/<blake2b>.<ext>``), NOT the full
+    # route path. The uploads GET route requires Bearer auth + RLS, so the web
+    # renders it through the authed-image hook (useAuthedImageBlobUrl), which
+    # builds ``{API}/v1/personas/{id}/uploads/{workspace_path}`` itself. Storing
+    # the full ``/v1/...`` path made the browser <img> hit the web origin
+    # (relative) → 404, and it would 401 even at the API origin (no Bearer).
+    # The bare ref is exactly the ``workspacePath`` the authed hook expects.
+    avatar_url = workspace_path
     persona_service.set_avatar_url(
         rls_engine=state.rls_engine, persona_id=persona_id, avatar_url=avatar_url
     )

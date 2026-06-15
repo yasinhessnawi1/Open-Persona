@@ -7,7 +7,34 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { derivePersonaIdentityColor } from "@/lib/persona-identity";
-import { PersonaAvatar } from "./persona-avatar";
+import { internalWorkspacePath, PersonaAvatar } from "./persona-avatar";
+
+describe("internalWorkspacePath — render-routing for avatar_url", () => {
+  it("returns null for external http(s) / data / blob URLs (raw <img>)", () => {
+    expect(internalWorkspacePath("https://cdn.test/a.png")).toBeNull();
+    expect(internalWorkspacePath("http://x/a.png")).toBeNull();
+    expect(internalWorkspacePath("data:image/png;base64,AAA")).toBeNull();
+    expect(internalWorkspacePath("blob:http://x/abc")).toBeNull();
+  });
+
+  it("returns the bare ref unchanged (new spec-29 format)", () => {
+    expect(internalWorkspacePath("uploads/47e13b45.png")).toBe(
+      "uploads/47e13b45.png",
+    );
+  });
+
+  it("normalises the legacy full route path to the workspace ref", () => {
+    expect(
+      internalWorkspacePath(
+        "/v1/personas/persona_1ee3/uploads/uploads/47e13.png",
+      ),
+    ).toBe("uploads/47e13.png");
+  });
+
+  it("returns null for other relative static assets (raw <img>)", () => {
+    expect(internalWorkspacePath("/astrid.png")).toBeNull();
+  });
+});
 
 describe("PersonaAvatar — default treatment (D-F1-2)", () => {
   it("renders initials-mark when no avatar_url", () => {

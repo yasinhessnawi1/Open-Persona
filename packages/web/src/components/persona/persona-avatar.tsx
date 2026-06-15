@@ -22,6 +22,28 @@ import {
   personaIdentityStyle,
 } from "@/lib/persona-identity";
 import { cn } from "@/lib/utils";
+import { AuthedAvatarImage } from "./authed-avatar-image";
+
+/**
+ * Decide how to render an `avatar_url`:
+ *   - external / data / blob URL (directly loadable) → `null` (use raw `<img>`)
+ *   - an internal uploads ref behind the Bearer-authed serve route → returns
+ *     the workspace-relative path to fetch via `useAuthedImageBlobUrl`.
+ *
+ * Auto-generated avatars (spec 29) are persisted to the persona workspace and
+ * served by `GET /v1/personas/:id/uploads/:ref`, which a raw browser `<img>`
+ * cannot load (no Authorization header; relative path resolves against the web
+ * origin → 404). They're stored as the bare ref `uploads/<blake2b>.<ext>`; the
+ * legacy full-route form `/v1/personas/<id>/uploads/<ref>` is also normalised
+ * here so any avatar set before this fix still renders.
+ */
+export function internalWorkspacePath(avatarUrl: string): string | null {
+  if (/^(https?:|data:|blob:)/i.test(avatarUrl)) return null;
+  const legacy = avatarUrl.match(/^\/v1\/personas\/[^/]+\/uploads\/(.+)$/);
+  if (legacy) return legacy[1];
+  if (avatarUrl.startsWith("uploads/")) return avatarUrl;
+  return null;
+}
 
 /**
  * Minimum persona shape <PersonaAvatar> needs. Compatible with PersonaSummary
@@ -87,36 +109,12 @@ export function PersonaAvatar({
   const colour = derivePersonaIdentityColor(persona);
   const style = personaIdentityStyle(persona);
 
-  if (persona.avatar_url) {
-    // The override path — image takes the surface; identity colour stays
-    // available via the inline style for descendants to consume.
-    return (
-      <span
-        style={style}
-        className={cn(
-          "inline-block overflow-hidden rounded-full",
-          SIZE_CLASSES[size],
-          className,
-        )}
-      >
-        {/* biome-ignore lint/performance/noImgElement: reference compositions
-            use fixture data; no Next/Image optimisation pipeline needed. */}
-        <img
-          src={persona.avatar_url}
-          alt=""
-          className="size-full object-cover"
-        />
-      </span>
-    );
-  }
-
-  return (
+  // The default treatment (also the fallback while an authed avatar loads / on
+  // 404 / on error). The inline style sets background = the derived OKLCH
+  // colour AND exports --identity-* for descendants. White-text-on-coloured-
+  // fill because L=0.60 + C=0.13 gives ≥3:1 contrast against white (T14).
+  const initialsMark = (
     <span
-      // The inline style sets background = the derived OKLCH colour AND
-      // exports --identity-* for descendants. White-text-on-coloured-fill
-      // because L=0.60 + C=0.13 gives ≥3:1 contrast against white (verified
-      // in T14 contrast pass). The drop-shadow softens the contrast edge so
-      // letters don't read brittle at small sizes.
       style={{ ...style, background: colour.oklch }}
       className={cn(
         "inline-grid place-items-center rounded-full font-heading font-semibold text-white",
@@ -129,4 +127,42 @@ export function PersonaAvatar({
       {initials(persona.name)}
     </span>
   );
+
+  if (persona.avatar_url) {
+    const workspacePath = internalWorkspacePath(persona.avatar_url);
+    if (workspacePath) {
+      // Auto-generated / uploaded avatar behind the Bearer-authed serve route —
+      // fetch via the authed-image hook; fall back to initials until it loads.
+      return (
+        <AuthedAvatarImage
+          personaId={persona.id}
+          workspacePath={workspacePath}
+          style={style}
+          wrapperClassName={cn(SIZE_CLASSES[size], className)}
+          fallback={initialsMark}
+        />
+      );
+    }
+    // External / data URL — directly loadable; identity colour stays available
+    // via the inline style for descendants to consume.
+    return (
+      <span
+        style={style}
+        className={cn(
+          "inline-block overflow-hidden rounded-full",
+          SIZE_CLASSES[size],
+          className,
+        )}
+      >
+        {/* biome-ignore lint/performance/noImgElement: external/data URL; no Next/Image pipeline. */}
+        <img
+          src={persona.avatar_url}
+          alt=""
+          className="size-full object-cover"
+        />
+      </span>
+    );
+  }
+
+  return initialsMark;
 }
