@@ -68,6 +68,27 @@ const COMPONENTS: Components = {
     </blockquote>
   ),
   hr: () => <hr className="my-4 border-border" />,
+  img: ({ src, alt }) => {
+    // Spec 28 follow-up: a persona reply / markdown file may embed an image as
+    // `![alt](src)`. Workspace artifacts (e.g. `uploads/<hash>.png`, or the
+    // `/v1/personas/:id/uploads/...` route) require a Bearer-authed fetch and
+    // CANNOT load via a plain <img> — the browser sends no Authorization header
+    // — so such embeds always render as a broken-image icon. The artifact is
+    // already shown by the inline <FileCard> + right-panel renderer, so we
+    // SUPPRESS non-external image embeds entirely (no broken icon, no redundant
+    // duplicate). Genuine external images (https / data / blob) still render.
+    const s = typeof src === "string" ? src : "";
+    if (!/^(https?:|data:|blob:)/i.test(s)) return null;
+    return (
+      // biome-ignore lint/performance/noImgElement: model/markdown-provided external URLs can't go through next/image
+      <img
+        src={s}
+        alt={alt ?? ""}
+        className="my-2 max-w-full rounded-md"
+        loading="lazy"
+      />
+    );
+  },
   code: ({ className, children }) => {
     // react-markdown v10 dropped the `inline` prop: a fenced block has a
     // `language-*` class or multi-line content; everything else is inline.
