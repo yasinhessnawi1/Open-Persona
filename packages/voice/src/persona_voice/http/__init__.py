@@ -8,6 +8,6 @@ LiveKit Room participant, not an HTTP server.
 
 from __future__ import annotations
 
-from persona_voice.http.app import build_app, get_voice_config
+from persona_voice.http.app import build_app, create_app, get_voice_config
 
-__all__ = ["build_app", "get_voice_config"]
+__all__ = ["build_app", "create_app", "get_voice_config"]

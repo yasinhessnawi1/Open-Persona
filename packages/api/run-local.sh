@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Run the persona-api locally for spec-09 web development.
+# Run the persona-api (:8000) AND persona-voice (:8001) locally for web dev.
 #   - DB: the `persona-pg` Docker container on :5436 (superuser + persona_app RLS role)
 #   - Auth: Clerk RS256, verified against the dashboard PEM + the `persona-api` aud
 #   - Model: DeepSeek (cheap) for all tiers, key sourced from the repo-root .env
-# No secrets live in this file; the DeepSeek key comes from ../../.env (gitignored).
+#   - Voice (Spec V6): persona-voice on :8001 with the in-process agent worker;
+#     needs the LiveKit dev sidecar (`docker compose up -d livekit`) + STT/TTS
+#     keys (PERSONA_STT_API_KEY / PERSONA_TTS_API_KEY) in ../../.env.
+# No secrets live in this file; keys come from ../../.env (gitignored).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -32,4 +35,26 @@ export PERSONA_PROVIDER="deepseek"
 export PERSONA_MODEL="deepseek-chat"
 export PERSONA_API_KEY="${DEEPSEEK_KEY}"
 
-exec uv run uvicorn persona_api.app:create_app --factory --host 127.0.0.1 --port 8000
+# --- Spec V6: persona-voice service (:8001) ---------------------------------
+# The voice call path (POST /v1/voice/token + GET /v1/voices) and the in-process
+# agent worker. Reuses the same DB (persona_app RLS role), the same Clerk JWT
+# (the web sends one token to both services → same RS256 key + persona-api aud),
+# and the deepseek tiers + STT/TTS keys exported above. LiveKit dev creds match
+# the docker-compose sidecar (`LIVEKIT_KEYS: "devkey: secret"`).
+export PERSONA_VOICE_DATABASE_URL="${APP_DATABASE_URL}"
+export PERSONA_VOICE_JWT_ALGORITHMS="RS256"
+export PERSONA_VOICE_JWT_AUDIENCE="persona-api"
+export PERSONA_VOICE_JWT_PUBLIC_KEY="$(cat .secrets/clerk-jwt-public.pem)"
+export PERSONA_VOICE_LIVEKIT_URL="${PERSONA_VOICE_LIVEKIT_URL:-ws://localhost:7880}"
+export PERSONA_VOICE_LIVEKIT_API_KEY="${PERSONA_VOICE_LIVEKIT_API_KEY:-devkey}"
+export PERSONA_VOICE_LIVEKIT_API_SECRET="${PERSONA_VOICE_LIVEKIT_API_SECRET:-secret}"
+export PERSONA_VOICE_AGENT_INPROCESS="true"
+export PERSONA_VOICE_CORS_ORIGINS="${PERSONA_VOICE_CORS_ORIGINS:-http://localhost:3000}"
+
+# Start persona-voice in the background; run persona-api in the foreground.
+# The trap stops the voice service when the api exits (Ctrl-C).
+uv run uvicorn persona_voice.http.app:create_app --factory --host 127.0.0.1 --port 8001 &
+VOICE_PID=$!
+trap 'kill "${VOICE_PID}" 2>/dev/null || true' EXIT INT TERM
+
+uv run uvicorn persona_api.app:create_app --factory --host 127.0.0.1 --port 8000

@@ -59,6 +59,12 @@ class VoiceConfig(BaseSettings):
     # every connection via the request-scoped contextvar.
     database_url: str = Field(default="")
 
+    # --- CORS (browser → voice service is cross-origin, like persona-api) ---
+    # The web app (default :3000) calls POST /v1/voice/token + GET /v1/voices
+    # directly from the browser. Bearer auth (no cookies). Empty disables CORS.
+    # Read from PERSONA_VOICE_CORS_ORIGINS (comma-separated).
+    cors_origins: str = Field(default="http://localhost:3000")
+
     # --- Dev agent worker (spec V6 A0, D-V6-X-agent-worker) ---
     # When true, ``POST /v1/voice/token`` ALSO launches an in-process agent
     # session that joins the call's Room and becomes the persona on the call
@@ -80,3 +86,8 @@ class VoiceConfig(BaseSettings):
     def jwt_algorithms_list(self) -> list[str]:
         """Computed list form consumed by ``make_jwt_verifier``."""
         return [a.strip() for a in self.jwt_algorithms.split(",") if a.strip()]
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """The CORS-allowed origins as a list (empty disables CORS)."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

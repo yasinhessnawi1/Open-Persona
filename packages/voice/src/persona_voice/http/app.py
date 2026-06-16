@@ -36,6 +36,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from persona.auth.jwt_verifier import AuthenticatedUser, make_jwt_verifier
 from persona.credits import require_credits as _require_credits_core
 from persona.errors import AuthenticationError, CreditsExhaustedError
@@ -49,7 +50,7 @@ from persona_voice.tts.types import VoiceCatalogueEntry
 if TYPE_CHECKING:
     from persona_voice.tts.catalogue import VoiceCatalogue
 
-__all__ = ["build_app", "get_voice_config"]
+__all__ = ["build_app", "create_app", "get_voice_config"]
 
 # Sentinel distinguishing "catalogue not yet built" from "built, but None
 # (TTS unconfigured)" on app.state.
@@ -219,6 +220,17 @@ def build_app(config: VoiceConfig) -> FastAPI:
     if config.database_url:
         app.state.ownership_engine = create_engine(config.database_url, pool_size=1)
 
+    # CORS — the browser calls POST /v1/voice/token + GET /v1/voices cross-origin
+    # (mirrors persona-api). Bearer auth (no cookies) → allow_credentials=False.
+    if config.cors_origins_list:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.cors_origins_list,
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     # Spec V6 A0 (D-V6-X-agent-worker) — the dev/operator-pass-grade in-process
     # agent launcher. When enabled, the token endpoint spawns the agent that
     # joins the call's Room and becomes the persona. Default-off keeps the
@@ -318,3 +330,14 @@ def build_app(config: VoiceConfig) -> FastAPI:
         return VoiceListResponse(provider=catalogue.provider_name, voices=list(entries))
 
     return app
+
+
+def create_app(config: VoiceConfig | None = None) -> FastAPI:
+    """Zero-arg app factory for ``uvicorn --factory`` (reads VoiceConfig from env).
+
+    Mirrors ``persona_api.app.create_app``: build the env-driven config and wire
+    the app. The token-only deployment, the catalogue, and (when
+    ``PERSONA_VOICE_AGENT_INPROCESS=true``) the dev agent launcher are all set up
+    inside :func:`build_app`.
+    """
+    return build_app(config or VoiceConfig())
