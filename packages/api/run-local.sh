@@ -37,11 +37,18 @@ export PERSONA_API_KEY="${DEEPSEEK_KEY}"
 
 # --- Spec V6: persona-voice service (:8001) ---------------------------------
 # The voice call path (POST /v1/voice/token + GET /v1/voices) and the in-process
-# agent worker. Reuses the same DB (persona_app RLS role), the same Clerk JWT
-# (the web sends one token to both services → same RS256 key + persona-api aud),
-# and the deepseek tiers + STT/TTS keys exported above. LiveKit dev creds match
-# the docker-compose sidecar (`LIVEKIT_KEYS: "devkey: secret"`).
-export PERSONA_VOICE_DATABASE_URL="${APP_DATABASE_URL}"
+# agent worker. Same Clerk JWT as the API (the web sends one token to both →
+# same RS256 key + persona-api aud); deepseek tiers + STT/TTS keys from above;
+# LiveKit dev creds match the docker-compose sidecar (`LIVEKIT_KEYS: "devkey: secret"`).
+#
+# DB: the SUPERUSER role (not persona_app). The token endpoint's ownership +
+# credits checks query with explicit owner_id/user_id filters, but they do NOT
+# set the `app.current_user_id` GUC the persona_app RLS policies require — so
+# under persona_app every row is hidden ("persona not found"). The superuser
+# bypasses RLS; the explicit filters keep tenant isolation. The RLS-aware engine
+# (ContextVar + checkout listener, like persona-api D-08-1) is the proper fix for
+# the production voice deploy (a forward-item).
+export PERSONA_VOICE_DATABASE_URL="${DATABASE_URL}"
 export PERSONA_VOICE_JWT_ALGORITHMS="RS256"
 export PERSONA_VOICE_JWT_AUDIENCE="persona-api"
 export PERSONA_VOICE_JWT_PUBLIC_KEY="$(cat .secrets/clerk-jwt-public.pem)"
