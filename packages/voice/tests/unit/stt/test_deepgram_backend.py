@@ -397,6 +397,55 @@ async def test_close_before_open_terminates_iterators(
     assert events == []
 
 
+@pytest.mark.asyncio
+async def test_server_close_terminates_without_finish(
+    fake_connection: _FakeConnection,
+) -> None:
+    """A server-side ``Close`` (the 1011 idle-close) drains the iterators
+    WITHOUT calling ``finish()``.
+
+    Awaiting ``connection.finish()`` from inside the SDK's ``Close`` callback —
+    which runs on the SDK's own listening task — cancels that task from within
+    itself and recurses into ``RecursionError`` (the idle-close crash). The
+    server has already closed the socket, so the handler must only terminate the
+    iterators, never re-finish.
+    """
+    from deepgram import LiveTranscriptionEvents
+
+    config = StreamingSTTConfig(provider="deepgram", api_key="dg-secret")
+    backend = DeepgramStreamingSTT(config)
+    await backend.push_audio(b"\x00\x00" * 320, 16000)  # opens the connection
+    # The server closes the stream (idle 1011) → fire the wired Close handler.
+    await fake_connection.emit(LiveTranscriptionEvents.Close, None)
+    # finish() NOT called (no self-cancelling recursion); iterators terminate.
+    assert fake_connection.finish_calls == 0
+    collected = [t async for t in backend.transcripts()]
+    assert collected == []
+    # A subsequent caller close() is now a no-op (already closed by the server).
+    await backend.close()
+    assert fake_connection.finish_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_keepalive_task_started_on_open(
+    fake_connection: _FakeConnection,
+) -> None:
+    """Opening the stream starts a keepalive task (holds it open across turns);
+    close cancels it."""
+    import asyncio
+
+    config = StreamingSTTConfig(provider="deepgram", api_key="dg-secret")
+    backend = DeepgramStreamingSTT(config)
+    await backend.push_audio(b"\x00\x00" * 320, 16000)
+    task = backend._keepalive_task  # noqa: SLF001 — white-box lifecycle assertion
+    assert task is not None
+    assert not task.done()
+    await backend.close()
+    assert backend._keepalive_task is None  # noqa: SLF001
+    await asyncio.sleep(0)  # let the requested cancellation settle
+    assert task.cancelled()
+
+
 # ---------- error mapping ----------------------------------------------
 
 

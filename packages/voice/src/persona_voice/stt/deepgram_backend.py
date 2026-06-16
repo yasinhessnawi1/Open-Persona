@@ -96,6 +96,12 @@ _DEEPGRAM_INBOUND_SAMPLE_RATE_HZ: int = 16_000
 """Sample rate Deepgram Nova-3 accepts natively. Matches V1's D-V1-6
 ``AUDIO_INBOUND_SAMPLE_RATE`` — zero transcoding per R-V2-3."""
 
+_KEEPALIVE_INTERVAL_S: float = 5.0
+"""Deepgram closes an idle stream (1011) after ~10–12 s without audio — which
+happens during the persona's turn when the loop isn't pushing mic frames. A
+``KeepAlive`` every 5 s holds the SAME connection (and its iterators) open across
+turns, so a multi-turn call doesn't go one-way after the first persona reply."""
+
 
 class DeepgramStreamingSTT:
     """Deepgram Nova-3 streaming-STT backend implementing :class:`StreamingSTT`.
@@ -135,6 +141,7 @@ class DeepgramStreamingSTT:
         self._connection: Any | None = None
         self._connected: bool = False
         self._closed: bool = False
+        self._keepalive_task: asyncio.Task[None] | None = None
 
     @property
     def provider_name(self) -> str:
@@ -224,7 +231,7 @@ class DeepgramStreamingSTT:
             yield item
 
     async def close(self) -> None:
-        """Close the WebSocket gracefully. Idempotent.
+        """Close the WebSocket gracefully (caller-initiated). Idempotent.
 
         Sends sentinel ``None`` values into both output queues so the
         :meth:`transcripts` and :meth:`speech_activity_events` iterators
@@ -232,16 +239,54 @@ class DeepgramStreamingSTT:
         """
         if self._closed:
             return
-        self._closed = True
         connection = self._connection
+        self._terminate_iterators()
         if connection is not None:
             # Best-effort close per the Protocol docstring contract — provider
             # exceptions during close are swallowed (not re-raised); the
             # VoiceLog audit hop records success/failure for observability.
             with contextlib.suppress(Exception):
                 await connection.finish()
-        await self._transcript_queue.put(None)
-        await self._activity_queue.put(None)
+
+    def _terminate_iterators(self) -> None:
+        """Mark closed, stop the keepalive, and drain the output iterators.
+
+        Synchronous + ``finish()``-free so it is safe to call from inside the
+        SDK's own ``Close``/``Error`` callbacks: calling :meth:`close` (which
+        awaits ``connection.finish()``) from a callback running *inside* the
+        SDK's listening task cancels that task from within itself, recursing
+        into ``Task.cancel`` until ``RecursionError`` (the 1011 idle-close
+        crash). Server-side closes therefore terminate the iterators here and
+        never re-finish the already-closed connection.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._keepalive_task is not None:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
+        self._connection = None
+        self._transcript_queue.put_nowait(None)
+        self._activity_queue.put_nowait(None)
+
+    async def _keepalive_loop(self) -> None:
+        """Send a Deepgram ``KeepAlive`` every :data:`_KEEPALIVE_INTERVAL_S`.
+
+        Holds the stream open across the persona's turn (when no mic audio is
+        being pushed), so Deepgram does not 1011-idle-close it. Cancelled at
+        teardown; all send errors are swallowed (a failed keepalive is never
+        fatal — the next ``push_audio`` / close surfaces a real failure).
+        """
+        try:
+            while not self._closed:
+                await asyncio.sleep(_KEEPALIVE_INTERVAL_S)
+                connection = self._connection
+                if connection is None or self._closed:
+                    return
+                with contextlib.suppress(Exception):
+                    await connection.keep_alive()
+        except asyncio.CancelledError:
+            return
 
     # ------------------------------------------------------------------
     # private — connection lifecycle + event handlers
@@ -306,6 +351,8 @@ class DeepgramStreamingSTT:
             )
         self._connection = connection
         self._connected = True
+        # Hold the stream open across persona turns (no idle 1011 close).
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def _on_transcript(self, _client: Any, result: Any, **_kwargs: Any) -> None:
         """Convert a Deepgram ``Results`` message into a :class:`Transcript`."""
@@ -356,7 +403,10 @@ class DeepgramStreamingSTT:
         try:
             self._raise_mapped(error)
         except Exception:  # noqa: BLE001 — surface via close, not raise (callback context)
-            await self.close()
+            # Terminate the iterators WITHOUT finish() — we are inside the SDK's
+            # callback task; awaiting finish() here recurses (see
+            # _terminate_iterators). The mapped error is observable via the log.
+            self._terminate_iterators()
 
     async def _on_close(
         self, _client: Any = None, _close: Any = None, **_kwargs: Any
@@ -366,10 +416,15 @@ class DeepgramStreamingSTT:
         The SDK fires ``Close`` with a different arity than the data events
         (the close payload arrives as a keyword, or is omitted entirely), so
         both positional args carry defaults — otherwise a missing ``_close``
-        raises ``TypeError`` inside the callback and cascades into a task-tree
-        cancellation storm (``RecursionError``). We ignore the payload anyway.
+        raises ``TypeError`` inside the callback. We ignore the payload.
+
+        Terminate via :meth:`_terminate_iterators` (NOT :meth:`close`): the
+        server has already closed the socket, and awaiting ``connection.finish()``
+        from inside this callback — which runs on the SDK's own listening task —
+        cancels that task from within itself, recursing into ``Task.cancel``
+        until ``RecursionError`` (the 1011 idle-close crash).
         """
-        await self.close()
+        self._terminate_iterators()
 
     @staticmethod
     def _safe_timestamp(message: Any) -> float:
