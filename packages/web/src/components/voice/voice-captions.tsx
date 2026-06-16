@@ -21,6 +21,7 @@
  */
 
 import { useTranslations } from "next-intl";
+import { Markdown } from "@/components/ui/markdown";
 import {
   type CaptionSegment,
   captionTail,
@@ -50,17 +51,28 @@ export function VoiceCaptions({
       {/* Visual caption — intentionally NOT a live region (no aria-live). */}
       <div
         aria-hidden
-        className="space-y-0.5 rounded-lg bg-black/65 px-4 py-2 text-center text-sm text-white"
+        className="space-y-1 rounded-lg bg-black/65 px-4 py-2 text-left text-sm text-white"
       >
-        {tail.map((seg) => (
-          <p
-            key={seg.segmentId}
-            className={seg.isFinal ? undefined : "opacity-75"}
-          >
-            <span className="font-medium">{speakerLabel(seg.speaker)}:</span>{" "}
-            {seg.text}
-          </p>
-        ))}
+        {tail.map((seg) => {
+          // Render the persona's finalized text as Markdown — same renderer as
+          // the chat thread (the model emits **bold**/lists/emoji). Partials and
+          // the ASR user side stay plain text (avoid half-typed `**` flicker,
+          // mirroring the chat's stream-then-Markdown pattern).
+          const asMarkdown = seg.speaker === "persona" && seg.isFinal;
+          return (
+            <div
+              key={seg.segmentId}
+              className={seg.isFinal ? undefined : "opacity-75"}
+            >
+              <span className="font-medium">{speakerLabel(seg.speaker)}:</span>{" "}
+              {asMarkdown ? (
+                <Markdown>{seg.text}</Markdown>
+              ) : (
+                <span>{seg.text}</span>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Screen-reader region — finals only, polite, append-only. */}
