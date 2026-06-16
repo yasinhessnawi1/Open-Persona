@@ -55,12 +55,15 @@ import {
 } from "@/lib/persona-identity";
 import type {
   ArtifactRef,
+  BudgetSnapshot,
   ProactiveProposal,
   ProducedFileRef,
   QuestionOption,
+  RoutingSummary,
 } from "@/lib/sse-types";
 import { cn } from "@/lib/utils";
 import { AuthedImage } from "./authed-image";
+import { BudgetIndicator } from "./budget-indicator";
 import { OutputDispatcher } from "./output/dispatcher";
 import { ImageLightbox } from "./output/image-lightbox";
 import { StreamingTextRenderer } from "./streaming-text-renderer";
@@ -119,6 +122,9 @@ export interface MessageElementView {
   role: string;
   content: string;
   tier?: string;
+  /** Spec 31 (D-31-1/2): the model decision + budget for this turn, when intelligent routing ran. */
+  routing?: RoutingSummary;
+  budget?: BudgetSnapshot;
   tools?: ToolEntry[];
   /** D-F2-15: ordered event log. When present, MessageElement renders interleaved. */
   events?: MessageEvent[];
@@ -317,7 +323,10 @@ function PersonaMessage({
         )}
 
         {message.tier && !message.streaming ? (
-          <TierBadge tier={message.tier} />
+          <div className="flex flex-col gap-1" data-slot="turn-transparency">
+            <TierBadge tier={message.tier} routing={message.routing} />
+            <BudgetIndicator budget={message.budget} />
+          </div>
         ) : null}
 
         {/* Spec 30 (D-30-2): the in-chat proactive-question rail. Renders the

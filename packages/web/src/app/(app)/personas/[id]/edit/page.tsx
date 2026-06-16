@@ -8,7 +8,7 @@ import { type ToolSummary, unwrap } from "@/lib/api";
 import type { components } from "@/lib/api/schema";
 import { serverApi } from "@/lib/api/server";
 import { parsePersonaYaml } from "@/lib/persona";
-import { savePersona } from "@/lib/persona-actions";
+import { savePersona, setConsent } from "@/lib/persona-actions";
 import { yamlToDoc } from "@/lib/persona-draft";
 
 export default async function EditPersonaPage({
@@ -57,6 +57,8 @@ export default async function EditPersonaPage({
         personaId={id}
         onSave={savePersona.bind(null, id)}
         saveLabel={t("save")}
+        initialConsent={detail.consent_to_auto_dispatch ?? null}
+        onConsentChange={setConsent.bind(null, id)}
       />
     </div>
   );

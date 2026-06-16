@@ -240,6 +240,36 @@ class ToolResultEvent(_Output):
     kind: str | None = None
 
 
+class RoutingSummary(_Output):
+    """Spec 31 (D-31-1) — concise model-decision summary on the ``done`` event.
+
+    Additive; present only on intelligent-routing turns. The raw score vector is
+    NOT here — it stays on the JSONL TurnLog. The web templates the localized
+    "why" phrase from these structured/enum fields (``dominant_factor`` is the
+    single highest-weighted axis the chosen model won on).
+    """
+
+    chosen_model: str
+    dominant_factor: str | None = None
+    model_fallback_engaged: bool = False
+    model_fallback_reason: str | None = None
+
+
+class BudgetSnapshot(_Output):
+    """Spec 31 (D-31-2) — per-session budget snapshot for the budget indicator.
+
+    Additive; present only when intelligent routing is on and a cap is set.
+    ``session_spent_cents`` includes the just-completed turn (read post-turn).
+    Caps are omitted when unset; ``max_cents_per_day`` is surfaced when set so
+    the UI can show 23's configured-but-deferred fail-loud honestly.
+    """
+
+    session_spent_cents: float
+    max_cents_per_turn: float | None = None
+    max_cents_per_session: float | None = None
+    max_cents_per_day: float | None = None
+
+
 class DoneEvent(_Output):
     """``event: done`` — the terminal event.
 
@@ -250,6 +280,10 @@ class DoneEvent(_Output):
     usage: dict[str, int] = Field(default_factory=dict)
     tier: str
     format_hints: dict[str, str] = Field(default_factory=dict)
+    # Spec 31 — additive, SEPARATE routing (D-31-1) + budget (D-31-2) fields.
+    # Both omitted on rule-based turns / when no cap is set (back-compat).
+    routing: RoutingSummary | None = None
+    budget: BudgetSnapshot | None = None
 
 
 # -- runs (§5.3) ------------------------------------------------------------

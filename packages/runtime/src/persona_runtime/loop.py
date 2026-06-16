@@ -118,6 +118,29 @@ def _backend_max_tokens(backend: ChatBackend) -> int:
     return value if isinstance(value, int) and value > 0 else _DEFAULT_MAX_TOKENS
 
 
+_ROUTING_SUMMARY_AXES: tuple[str, ...] = ("cost", "quality", "latency")
+
+
+def _routing_event_summary(decision: RoutingDecision) -> dict[str, Any]:
+    """Concise model-decision summary for the wire (Spec 31, D-31-1).
+
+    Carries the chosen model, the single dominant scoring axis (argmax of the
+    weights actually used), and the model-fallback flag + reason. NEVER the raw
+    ``score_vector`` — that stays on the JSONL TurnLog. The frontend templates
+    the localised "why" phrase from these structured/enum fields.
+    """
+    weights = decision.weights_used
+    dominant: str | None = None
+    if weights:
+        dominant = max(_ROUTING_SUMMARY_AXES, key=lambda axis: weights.get(axis, 0.0))
+    return {
+        "chosen_model": decision.model,
+        "dominant_factor": dominant,
+        "model_fallback_engaged": decision.model_fallback_engaged,
+        "model_fallback_reason": decision.model_fallback_reason,
+    }
+
+
 def _text_chunk(text: str) -> StreamChunk:
     """A non-final content chunk."""
     from persona.backends import StreamChunk
@@ -395,7 +418,14 @@ class ConversationLoop:
         routing_latency_ms = (time.perf_counter() - routing_started) * 1000.0
         tier = decision.tier
         if on_event is not None:
-            await on_event(RunEvent.tier(tier))
+            # Spec 31 (D-31-1): carry a concise model-decision summary on the
+            # tier event when intelligent model-within-tier selection ran this
+            # turn. Absent for rule-based turns ⇒ the bare-tier payload
+            # (back-compat). The full score vector stays on the JSONL TurnLog.
+            routing_summary = (
+                _routing_event_summary(decision) if self._model_selection_active() else None
+            )
+            await on_event(RunEvent.tier(tier, routing_summary))
         backend = self._tiers.get(tier)
         # Spec 23 T11 seam (D-23-X-seam-shape): when intelligent routing chose a
         # model within this tier, re-wrap the tier backend so the chosen model is
@@ -999,6 +1029,43 @@ class ConversationLoop:
             conversation_phase="opening" if conversation.turn_count == 0 else "middle",
             profile="text_default",
         )
+
+    @property
+    def session_spent_cents(self) -> float:
+        """Total estimated cost (cents) accrued this session, incl. the last turn.
+
+        Read-only (CQS): the per-turn cost is folded into the running tally in
+        :meth:`_write_turn_log` (after generation), so by the time a caller has
+        finished draining :meth:`turn` this reflects the just-completed turn.
+        The API reads it at ``done``-build time for the Spec 31 budget indicator
+        (D-31-X-session-spend-property) so the meter includes the current turn.
+        """
+        return self._session_spent_cents
+
+    def budget_snapshot(self) -> dict[str, float] | None:
+        """Per-session budget snapshot for the Spec 31 budget indicator (D-31-2).
+
+        ``None`` when intelligent routing is off or no cap is configured (the UI
+        shows no indicator). Otherwise carries ``session_spent_cents`` (incl. the
+        last turn, read post-``turn``) plus whichever caps are set. ``per_day`` is
+        included when configured so the UI can surface 23's fail-loud honestly.
+        Read-only (CQS).
+        """
+        if not self._model_selection_active():
+            return None
+        budget = self._persona.routing.budget
+        caps: dict[str, float | None] = {
+            "max_cents_per_turn": budget.max_cents_per_turn,
+            "max_cents_per_session": budget.max_cents_per_session,
+            "max_cents_per_day": budget.max_cents_per_day,
+        }
+        if all(value is None for value in caps.values()):
+            return None
+        snapshot: dict[str, float] = {"session_spent_cents": self._session_spent_cents}
+        for key, value in caps.items():
+            if value is not None:
+                snapshot[key] = value
+        return snapshot
 
     def _model_selection_active(self) -> bool:
         """Whether Spec 23 model-within-tier selection should run this turn."""

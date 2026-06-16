@@ -261,16 +261,20 @@ async def stream_chat(
         # stream preserves the true interleaving. `tier` is captured for `done`.
         pending: list[RunEvent] = []
         tier = "frontier"  # fallback; replaced by the router's real choice via on_event
+        # Spec 31 (D-31-1): the concise model-decision summary rides the tier
+        # event; captured here and folded into `done` (None on rule-based turns).
+        routing_summary: dict[str, object] | None = None
 
         async def _on_event(event: RunEvent) -> None:
             pending.append(event)
 
         def _drain() -> list[bytes]:
-            nonlocal tier
+            nonlocal tier, routing_summary
             frames: list[bytes] = []
             for ev in pending:
                 if ev.type == "tier":
                     tier = str(ev.data.get("tier", tier))
+                    routing_summary = ev.data.get("routing")  # Spec 31; may be None
                     continue  # tier rides the `done` event, not its own SSE frame
                 frames.append(_sse(ev.type, ev.data))
             pending.clear()
@@ -323,6 +327,17 @@ async def stream_chat(
             "tier": tier,  # the router's real choice for this turn (D-08 gap fix)
             "format_hints": {},  # D-08-3: the API echoes empty; connectors populate (spec 12)
         }
+        # Spec 31 — SEPARATE, additive routing (D-31-1) + budget (D-31-2) fields.
+        # `routing` rode the tier event; `budget` is read post-turn so the
+        # session spend includes the turn just completed (D-31-X-session-spend).
+        if routing_summary is not None:
+            done["routing"] = routing_summary
+        # `loop` is duck-typed (scripted test loops implement only `turn`); guard
+        # the budget read so non-ConversationLoop builders stay back-compatible.
+        snapshot_fn = getattr(loop, "budget_snapshot", None)
+        budget = snapshot_fn() if callable(snapshot_fn) else None
+        if budget is not None:
+            done["budget"] = budget
         yield _sse("done", done)
     finally:
         reset_sandbox_request_context(_sandbox_ctx_token)

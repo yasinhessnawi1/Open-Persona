@@ -11,6 +11,21 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Persona Decision Controls & Transparency — Routing + Autonomy (Spec 31; close-out 2026-06-16, pending sign-off)
+
+> **The web counterpart to intelligent routing (Spec 23) + proactive autonomy (Spec 21):** makes *how a persona decides* controllable and transparent. Three surfaces — routing controls + routing transparency (the net-new core) and the wiring of the already-built autonomy controls — plus one additive, migration-free backend touch surfacing the routing decision on the chat `done` event. **Autonomy-prompts-in-chat consumes Spec 30's merged chat-proactive rail (no fork — the `proposal`-absent clarification path).** No new dependencies; no migration; backward-compatible (personas without `routing.intelligent` are byte-identical).
+
+#### Added (persona-web)
+- **Routing controls** (`components/personas/routing-section.tsx`, composed into `persona-form.tsx`): enable intelligent routing per persona + an **intent preset** (cost / balanced / quality / speed) that maps to the cost/quality/latency weights, with raw weights behind an Advanced disclosure (auto-opens on a "Custom" vector); budget-cap inputs (per-turn/session/day) where a blank input is *unset* (never 0) and a per-day cap carries the Spec-23 fail-loud warning. Binds `routing.intelligent`/`routing.budget` via the existing persona YAML PATCH (`persona-draft.ts` `readRouting`/`writeRouting` + the locked preset table).
+- **Routing transparency**: the tier badge (`tier-badge.tsx`) expands into a progressive-disclosure chip — *chose `<model>` — <reason>* (templated client-side from the structured decision; raw score vector never on the wire), with an honest "tier default — live model data unavailable" fallback; a new **budget indicator** (`budget-indicator.tsx`) shows session-spend-vs-cap with an "approaching" note at the real 0.8 soft-ramp knee and an honest per-day fail-loud note.
+- **Autonomy controls wiring**: the previously-unwired `autonomy-consent-section.tsx` is surfaced inside `PersonaEditor`, gated on `personaId` (edit context only); the consent tri-state (grant/decline/revoke) round-trips via a new typed `setConsent` server action over `PATCH /{id}/consent`. Autonomy clarifications now appear in chat via Spec 30's rail (the `proposal`-absent `asking_user` path), answered inline.
+
+#### Added (persona-api)
+- **Additive, SEPARATE `routing` (D-31-1) + `budget` (D-31-2) fields on the chat `done` event** (`DoneEvent` + `RoutingSummary` + `BudgetSnapshot` in `schemas/responses.py`): a concise `{chosen_model, dominant_factor, model_fallback_engaged, model_fallback_reason}` summary (captured from the tier event) + a per-session budget snapshot (read post-turn so it includes the current turn). Both omitted on rule-based turns (back-compat). No migration; SSE shapes hand-mirrored in `sse-types.ts`.
+
+#### Added (persona-runtime)
+- **`RunEvent.tier(tier, routing=…)`** carries an optional concise model-decision summary when intelligent model-within-tier selection ran (absent ⇒ bare-tier payload). New read-only **`ConversationLoop.session_spent_cents`** property + **`budget_snapshot()`** (per-session spend + configured caps; `None` when routing off / no cap). All additive; the raw score vector stays on the JSONL TurnLog.
+
 ### Frontend Capabilities — Tools · Skills · MCP + Bring-Your-Own MCP (Spec 30; close-out 2026-06-16, pending sign-off)
 
 > The web counterpart to the merged 26/27/28 backend: the unified tool + skill + MCP capability model is now reflected and controllable in the frontend, plus a net-new **bring-your-own MCP** slice with a security-load-bearing SSRF guard + credential encryption. Additive across all layers — existing personas, the tools/skills selection, and chat rendering are unaffected. One migration (`009`); one new direct API dep (`cryptography`, already locked).

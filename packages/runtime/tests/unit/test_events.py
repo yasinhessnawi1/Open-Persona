@@ -39,6 +39,25 @@ class TestStartedAndSimpleEvents:
         assert ev.type == "cancelled"
         assert ev.step == 5
 
+    def test_tier_bare_payload_is_back_compat(self) -> None:
+        # Spec 31: no routing arg ⇒ the pre-Spec-31 bare-tier payload.
+        ev = RunEvent.tier("frontier")
+        assert ev.type == "tier"
+        assert ev.step == -1
+        assert ev.data == {"tier": "frontier"}
+
+    def test_tier_carries_routing_summary_when_provided(self) -> None:
+        # Spec 31 (D-31-1): an optional concise model-decision summary.
+        summary = {
+            "chosen_model": "anthropic/good",
+            "dominant_factor": "quality",
+            "model_fallback_engaged": False,
+            "model_fallback_reason": None,
+        }
+        ev = RunEvent.tier("frontier", summary)
+        assert ev.data["tier"] == "frontier"
+        assert ev.data["routing"] == summary
+
 
 class TestToolEvents:
     def test_tool_calling_renders_calls_json_safe(self) -> None:

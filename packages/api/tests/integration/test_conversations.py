@@ -124,6 +124,50 @@ class _ToolUsingLoop:
         )
 
 
+class _RoutingLoop:
+    """A stand-in that emits a Spec 31 routing summary on the tier event and
+    exposes a budget snapshot — proves the additive, SEPARATE routing (D-31-1)
+    + budget (D-31-2) fields fold onto the chat `done` event."""
+
+    async def turn(
+        self,
+        conversation: Conversation,
+        user_message: str,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
+        *,
+        turn_has_image: bool = False,  # noqa: ARG002 — real-loop kwarg compat
+        document_context: DocumentContext | None = None,  # noqa: ARG002 — real-loop kwarg compat
+    ) -> AsyncIterator[StreamChunk]:
+        now = datetime.now(UTC)
+        assert on_event is not None
+        await on_event(
+            RunEvent.tier(
+                "frontier",
+                {
+                    "chosen_model": "anthropic/good",
+                    "dominant_factor": "quality",
+                    "model_fallback_engaged": False,
+                    "model_fallback_reason": None,
+                },
+            )
+        )
+        conversation.messages.append(
+            ConversationMessage(role="user", content=user_message, created_at=now)
+        )
+        conversation.messages.append(
+            ConversationMessage(role="assistant", content="Hi", created_at=now)
+        )
+        yield StreamChunk(delta="Hi", is_final=False)
+        yield StreamChunk(
+            delta="",
+            is_final=True,
+            usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        )
+
+    def budget_snapshot(self) -> dict[str, float]:
+        return {"session_spent_cents": 1.5, "max_cents_per_session": 50.0}
+
+
 @pytest.fixture
 def client(
     migrated_engine: Engine,  # noqa: ARG001 — schema + grants
@@ -418,6 +462,39 @@ def test_no_tool_turn_done_tier_reflects_router_choice(
     )
     done = next(json.loads(d) for e, d in _read_sse(resp.text) if e == "done")
     assert done["tier"] == "mid"  # _ScriptedLoop fires tier('mid'), not "frontier"
+    # Back-compat: a rule-based loop emits neither routing nor budget (D-31-1/2).
+    assert "routing" not in done
+    assert "budget" not in done
+
+
+def test_done_carries_routing_and_budget_when_intelligent(
+    client: tuple[TestClient, str, str],
+) -> None:
+    """Spec 31 (D-31-1/2): an intelligent-routing turn folds the concise model
+    decision + the per-session budget snapshot onto `done`, as SEPARATE fields;
+    the raw score vector never reaches the wire."""
+    import json
+
+    c, uid, persona_id = client
+
+    async def _build_routing_loop(_pid: str) -> _RoutingLoop:
+        return _RoutingLoop()
+
+    c.app.state.build_conversation_loop = _build_routing_loop  # type: ignore[attr-defined]
+    conv_id = _new_conversation(c, uid, persona_id)
+    resp = c.post(
+        f"/v1/conversations/{conv_id}/messages", json={"content": "hi"}, headers=_auth(uid)
+    )
+    done = next(json.loads(d) for e, d in _read_sse(resp.text) if e == "done")
+    # routing (D-31-1): structured fields, no score vector
+    assert done["routing"]["chosen_model"] == "anthropic/good"
+    assert done["routing"]["dominant_factor"] == "quality"
+    assert done["routing"]["model_fallback_engaged"] is False
+    assert "score_vector" not in done["routing"]
+    # budget (D-31-2): SEPARATE field; session spend incl. the current turn
+    assert done["budget"]["session_spent_cents"] == 1.5
+    assert done["budget"]["max_cents_per_session"] == 50.0
+    assert "max_cents_per_turn" not in done["budget"]
 
 
 # -- Spec 13 T20: image-bearing message persistence --------------------------

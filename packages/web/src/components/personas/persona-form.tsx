@@ -11,15 +11,18 @@ import {
   EPISTEMIC_OPTIONS,
   type PersonaDoc,
   readIdentity,
+  readRouting,
   readSelfFacts,
   readStringList,
   readWorldview,
   writeIdentityField,
+  writeRouting,
   writeSelfFacts,
   writeStringList,
   writeWorldview,
 } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
+import { RoutingSection } from "./routing-section";
 
 // Spec 30 T11 — a built-in MCP server in the capability-management catalog.
 // A persona enables a server by carrying `mcp:<name>` in its `tools` list.
@@ -322,6 +325,12 @@ export function PersonaForm({
           />
         </Subsection>
       </Section>
+
+      {/* Routing (Spec 31, regional — D-31-X-routing-section-regional) */}
+      <RoutingSection
+        value={readRouting(doc)}
+        onChange={(view) => onChange(writeRouting(doc, view))}
+      />
     </div>
   );
 }

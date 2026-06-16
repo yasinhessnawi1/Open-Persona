@@ -224,7 +224,14 @@ export function useChat(
               },
             }));
           } else if (ev.event === "done") {
-            patch((a) => ({ ...a, tier: ev.data.tier }));
+            // Spec 31 (D-31-1/2): carry the model decision + budget snapshot
+            // alongside the tier (both absent on rule-based turns ⇒ undefined).
+            patch((a) => ({
+              ...a,
+              tier: ev.data.tier,
+              routing: ev.data.routing,
+              budget: ev.data.budget,
+            }));
           }
         }
         patch((a) => ({ ...a, streaming: false }));

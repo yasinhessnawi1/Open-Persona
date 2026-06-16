@@ -72,6 +72,32 @@ def test_done_event_carries_format_hints_when_set() -> None:
     assert done.format_hints == {"parse_mode": "MarkdownV2"}
 
 
+def test_done_event_routing_and_budget_default_none_backcompat() -> None:
+    # Spec 31 (D-31-1/2): both additive fields default None ⇒ a rule-based turn
+    # omits them; a pre-Spec-31 `done` dict still validates.
+    done = DoneEvent(tier="frontier")
+    assert done.routing is None
+    assert done.budget is None
+
+
+def test_done_event_carries_separate_routing_and_budget() -> None:
+    from persona_api.schemas.responses import BudgetSnapshot, RoutingSummary
+
+    done = DoneEvent(
+        tier="frontier",
+        routing=RoutingSummary(chosen_model="anthropic/good", dominant_factor="quality"),
+        budget=BudgetSnapshot(session_spent_cents=1.5, max_cents_per_session=50.0),
+    )
+    assert done.routing is not None
+    assert done.routing.chosen_model == "anthropic/good"
+    assert done.routing.model_fallback_engaged is False  # defaulted
+    assert done.budget is not None
+    assert done.budget.session_spent_cents == 1.5
+    assert done.budget.max_cents_per_turn is None  # unset cap
+    # The raw score vector is not part of the wire summary.
+    assert "score_vector" not in RoutingSummary.model_fields
+
+
 def test_tool_result_event_uses_is_error_not_error_field() -> None:
     # D-03-3: ToolResult has is_error + content, no `error` field.
     ev = ToolResultEvent(tool="web_search", content="...results...", is_error=False)

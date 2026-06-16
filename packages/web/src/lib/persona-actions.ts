@@ -40,6 +40,30 @@ export async function savePersona(
 }
 
 /**
+ * Set a persona's auto-dispatch consent (Spec 21 T09 / Spec 31 T6). Tri-state:
+ * ``true`` = grant, ``false`` = decline, ``null`` = revoke back to "ask". An
+ * inline settings toggle (no redirect); returns a structured error on failure so
+ * the editor can revert its optimistic state.
+ */
+export async function setConsent(
+  personaId: string,
+  granted: boolean | null,
+): Promise<{ error: string } | undefined> {
+  const api = await serverApi();
+  const res = await api.PATCH("/v1/personas/{persona_id}/consent", {
+    params: { path: { persona_id: personaId } },
+    body: { granted },
+  });
+  if (res.error !== undefined) {
+    const body = res.error as { error?: string; detail?: unknown };
+    return {
+      error: formatDetail(body.detail, body.error ?? "consent_failed"),
+    };
+  }
+  return undefined;
+}
+
+/**
  * Create a persona from a reviewed authoring draft (spec 10, D-10-2). Authoring
  * now returns a draft (no row); the user saves the reviewed YAML here, which
  * creates the persona and redirects to its detail page. Validation errors are

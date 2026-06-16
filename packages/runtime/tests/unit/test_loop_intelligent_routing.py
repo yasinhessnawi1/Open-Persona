@@ -249,6 +249,134 @@ class TestPerDayBudgetFailLoud:
         _build_loop(persona=persona, registry=_multi_model_registry(), intelligent_router=None)
 
 
+class TestSpec31WireSummary:
+    """Spec 31 (D-31-1/2): the model-decision + budget reach the wire additively."""
+
+    @staticmethod
+    async def _capture(loop: ConversationLoop) -> list[object]:
+        events: list[object] = []
+
+        async def on_event(ev: object) -> None:
+            events.append(ev)
+
+        async for _ in loop.turn(_conversation(), "hello", on_event):  # type: ignore[arg-type]
+            pass
+        return events
+
+    @pytest.mark.asyncio
+    async def test_tier_event_carries_routing_summary_when_intelligent(self) -> None:
+        resolver = _MapResolver(
+            {"anthropic/good": _md(quality=0.95), "deepseek/cheap": _md(quality=0.50)}
+        )
+        registry = _multi_model_registry()
+        loop, _ = _build_loop(
+            persona=_persona(IntelligentRoutingConfig(enabled=True)),
+            registry=registry,
+            intelligent_router=IntelligentRouter(
+                tier_registry=registry, metadata_resolver=resolver
+            ),
+        )
+        events = await self._capture(loop)
+        tier_events = [e for e in events if e.type == "tier"]  # type: ignore[attr-defined]
+        assert len(tier_events) == 1
+        summary = tier_events[0].data.get("routing")  # type: ignore[attr-defined]
+        assert summary is not None
+        assert summary["chosen_model"] == "anthropic/good"
+        # Default weights are quality-led (0.50) → quality is the dominant axis.
+        assert summary["dominant_factor"] == "quality"
+        assert summary["model_fallback_engaged"] is False
+        assert summary["model_fallback_reason"] is None
+        # The raw score vector is NEVER on the wire (D-31-1).
+        assert "score_vector" not in summary
+
+    @pytest.mark.asyncio
+    async def test_tier_event_omits_routing_summary_when_rule_based(self) -> None:
+        loop, _ = _build_loop(
+            persona=_persona(), registry=_multi_model_registry(), intelligent_router=None
+        )
+        events = await self._capture(loop)
+        tier_events = [e for e in events if e.type == "tier"]  # type: ignore[attr-defined]
+        assert len(tier_events) == 1
+        # Back-compat: no routing key on a rule-based turn ⇒ bare-tier payload.
+        assert "routing" not in tier_events[0].data  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_fallback_summary_reports_metadata_miss_and_no_dominant(self) -> None:
+        registry = _multi_model_registry()
+        loop, _ = _build_loop(
+            persona=_persona(IntelligentRoutingConfig(enabled=True)),
+            registry=registry,
+            intelligent_router=IntelligentRouter(
+                tier_registry=registry, metadata_resolver=_MapResolver({})
+            ),
+        )
+        events = await self._capture(loop)
+        summary = [e for e in events if e.type == "tier"][0].data["routing"]  # type: ignore[attr-defined]
+        assert summary["model_fallback_engaged"] is True
+        assert summary["model_fallback_reason"] == "metadata_miss"
+        # No weights were used on the fallback ⇒ no dominant factor (honest).
+        assert summary["dominant_factor"] is None
+
+    @pytest.mark.asyncio
+    async def test_session_spend_and_budget_snapshot_include_current_turn(self) -> None:
+        from persona.schema.persona import RoutingBudgetConfig
+
+        resolver = _MapResolver(
+            {"anthropic/good": _md(quality=0.95), "deepseek/cheap": _md(quality=0.50)}
+        )
+        registry = _multi_model_registry()
+        persona = Persona(
+            persona_id="astrid",
+            identity=PersonaIdentity(
+                name="Astrid", role="assistant", background="bg", constraints=[]
+            ),
+            routing=RoutingConfig(
+                intelligent=IntelligentRoutingConfig(enabled=True),
+                budget=RoutingBudgetConfig(max_cents_per_session=50.0),
+            ),
+        )
+        loop, _ = _build_loop(
+            persona=persona,
+            registry=registry,
+            intelligent_router=IntelligentRouter(
+                tier_registry=registry, metadata_resolver=resolver
+            ),
+        )
+        assert loop.session_spent_cents == 0.0
+        async for _ in loop.turn(_conversation(), "hello"):
+            pass
+        snap = loop.budget_snapshot()
+        assert snap is not None
+        assert snap["max_cents_per_session"] == 50.0
+        assert "max_cents_per_turn" not in snap  # unset caps omitted
+        assert "max_cents_per_day" not in snap
+        # Spend reflects the just-completed turn (read post-turn).
+        assert snap["session_spent_cents"] == loop.session_spent_cents
+
+    def test_budget_snapshot_none_when_disabled_or_no_cap(self) -> None:
+        from persona.schema.persona import RoutingBudgetConfig
+
+        registry = _multi_model_registry()
+        # Enabled but no cap configured ⇒ no indicator.
+        loop_no_cap, _ = _build_loop(
+            persona=_persona(IntelligentRoutingConfig(enabled=True)),
+            registry=registry,
+            intelligent_router=IntelligentRouter(
+                tier_registry=registry, metadata_resolver=_MapResolver({})
+            ),
+        )
+        assert loop_no_cap.budget_snapshot() is None
+
+        # A cap set but intelligent routing OFF ⇒ inert ⇒ no indicator.
+        persona = Persona(
+            persona_id="a",
+            identity=PersonaIdentity(name="A", role="r", background="b", constraints=[]),
+            routing=RoutingConfig(budget=RoutingBudgetConfig(max_cents_per_turn=5.0)),
+        )
+        loop_off, _ = _build_loop(persona=persona, registry=registry, intelligent_router=None)
+        assert loop_off.budget_snapshot() is None
+
+
 class TestTurnLogJsonlCarriesModelSelection:
     """Criterion 10: the model-selection audit trail survives JSONL serialisation."""
 

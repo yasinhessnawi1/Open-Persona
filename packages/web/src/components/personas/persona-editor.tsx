@@ -4,7 +4,12 @@ import { Code2, Save, Sparkles } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import { useCallback, useState } from "react";
+import {
+  AutonomyConsentSection,
+  type AutonomyLevel,
+} from "@/components/persona/autonomy-consent-section";
 import { buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { ClarifyingQuestion } from "@/lib/api";
@@ -25,6 +30,21 @@ import {
   SuggestCapabilities,
   type ToolRecommendation,
 } from "./suggest-capabilities";
+
+const AUTONOMY_LEVELS: readonly AutonomyLevel[] = [
+  "cautious",
+  "balanced",
+  "decisive",
+];
+
+/** Read the doc's autonomy field, defaulting to the schema default "cautious". */
+function readAutonomy(doc: PersonaDoc): AutonomyLevel {
+  const value = doc.autonomy;
+  return typeof value === "string" &&
+    (AUTONOMY_LEVELS as readonly string[]).includes(value)
+    ? (value as AutonomyLevel)
+    : "cautious";
+}
 
 // Monaco is lazy + client-only so it never enters the chat-page bundle (D-09-8).
 const YAMLEditor = dynamic(() => import("./yaml-editor"), {
@@ -64,6 +84,8 @@ export function PersonaEditor({
   onSave,
   saveLabel,
   refinement,
+  initialConsent,
+  onConsentChange,
 }: {
   initialDoc: PersonaDoc;
   tools: string[];
@@ -71,11 +93,16 @@ export function PersonaEditor({
   // Spec 30 T11 — built-in MCP servers for the unified capability section.
   mcpServers?: McpCatalogEntry[];
   // Spec 30 T12 — the saved persona's id; enables the BYO-MCP manager (needs an
-  // id to assign servers to). Absent in the author/new flow (no id yet).
+  // id to assign servers to). Absent in the author/new flow (no id yet). Spec 31
+  // (D-31-X-autonomy-placement): also gates the autonomy + consent section —
+  // when set with `onConsentChange`, the selector + toggle are surfaced (a
+  // consent PATCH needs a persisted persona; the author/new flow omits them).
   personaId?: string;
   onSave: (yaml: string) => Promise<SaveResult>;
   saveLabel: string;
   refinement?: Refinement;
+  initialConsent?: boolean | null;
+  onConsentChange?: (granted: boolean | null) => Promise<SaveResult>;
 }) {
   const t = useTranslations("author");
   const [doc, setDoc] = useState<PersonaDoc>(initialDoc);
@@ -84,12 +111,42 @@ export function PersonaEditor({
   const [showYaml, setShowYaml] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Consent is a DB-backed tri-state persisted out-of-band from the YAML save
+  // (PATCH /consent); autonomy rides the doc → YAML save like any other field.
+  const [consent, setConsent] = useState<boolean | null>(
+    initialConsent ?? null,
+  );
+  const [consentPending, setConsentPending] = useState(false);
+  const [consentError, setConsentError] = useState<string | null>(null);
 
   const onFormChange = useCallback((next: PersonaDoc) => {
     setDoc(next);
     setYamlText(docToYaml(next));
     setYamlError(null);
   }, []);
+
+  const handleConsentChange = useCallback(
+    async (granted: boolean | null) => {
+      if (!onConsentChange) return;
+      const prev = consent;
+      setConsent(granted); // optimistic
+      setConsentPending(true);
+      setConsentError(null);
+      try {
+        const result = await onConsentChange(granted);
+        if (result?.error) {
+          setConsent(prev); // revert
+          setConsentError(result.error);
+        }
+      } catch {
+        setConsent(prev);
+        setConsentError(t("saveFailed"));
+      } finally {
+        setConsentPending(false);
+      }
+    },
+    [consent, onConsentChange, t],
+  );
 
   const onYamlChange = useCallback((text: string) => {
     setYamlText(text);
@@ -161,6 +218,25 @@ export function PersonaEditor({
 
       {/* Spec 30 T12 — BYO MCP servers (only for a saved persona). */}
       {personaId ? <ByoMcpManager personaId={personaId} /> : null}
+      {/* Autonomy + consent: existing-persona edit only (D-31-X-autonomy-placement). */}
+      {personaId && onConsentChange ? (
+        <Card className="p-5" data-slot="autonomy-card">
+          <AutonomyConsentSection
+            autonomy={readAutonomy(doc)}
+            onAutonomyChange={(level) =>
+              onFormChange({ ...doc, autonomy: level })
+            }
+            consent={consent}
+            onConsentChange={(granted) => void handleConsentChange(granted)}
+            pending={consentPending}
+          />
+          {consentError ? (
+            <p className="mt-2 text-sm text-destructive">
+              {t("saveError", { error: consentError })}
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
 
       <div className="flex flex-col gap-2">
         <button

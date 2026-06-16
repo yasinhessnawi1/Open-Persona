@@ -114,11 +114,41 @@ export interface ChatChunkData {
   is_final: boolean;
 }
 
+/**
+ * Spec 31 (D-31-1) — the concise model-decision summary on the `done` event.
+ * Mirrors the API `RoutingSummary` (responses.py). Structured/enum fields only:
+ * the web templates the localized "why" phrase from `dominant_factor` +
+ * `chosen_model`; the raw score vector stays in the audit JSONL, never here.
+ * Present only on intelligent-routing turns (absent ⇒ bare tier badge).
+ */
+export interface RoutingSummary {
+  chosen_model: string;
+  dominant_factor: "cost" | "quality" | "latency" | null;
+  model_fallback_engaged: boolean;
+  model_fallback_reason: string | null;
+}
+
+/**
+ * Spec 31 (D-31-2) — per-session budget snapshot on the `done` event. Mirrors
+ * the API `BudgetSnapshot`. `session_spent_cents` includes the just-completed
+ * turn; caps are omitted when unset. Present only when intelligent routing is
+ * on and a cap is configured.
+ */
+export interface BudgetSnapshot {
+  session_spent_cents: number;
+  max_cents_per_turn?: number;
+  max_cents_per_session?: number;
+  max_cents_per_day?: number;
+}
+
 export interface ChatDoneData {
   // {} when usage is unavailable; otherwise the token counts.
   usage: { prompt_tokens?: number; completion_tokens?: number };
   tier: string;
   format_hints: Record<string, string>;
+  /** Spec 31 — SEPARATE additive routing (D-31-1) + budget (D-31-2) fields. */
+  routing?: RoutingSummary;
+  budget?: BudgetSnapshot;
 }
 
 /** A parsed chat SSE event, discriminated by the `event:` name. */
