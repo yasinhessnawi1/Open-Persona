@@ -14,6 +14,15 @@ import messages from "@/i18n/messages/en.json";
 import type { PersonaDoc } from "@/lib/persona-draft";
 import { type McpCatalogEntry, PersonaForm } from "./persona-form";
 
+// PersonaForm now renders the V6 VoiceSelector (useAuth + /v1/voices). Mock both
+// so the MCP-focused tests render without a ClerkProvider or a network call.
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => ({ getToken: async () => null }),
+}));
+vi.mock("@/lib/voice/voices", () => ({
+  fetchVoices: async () => ({ provider: null, voices: [] }),
+}));
+
 const MCP: McpCatalogEntry[] = [
   {
     name: "time",
