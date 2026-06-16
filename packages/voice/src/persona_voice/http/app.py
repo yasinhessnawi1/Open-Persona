@@ -33,6 +33,7 @@ import uuid
 # ``request: Request`` as a query parameter). Same pattern as
 # persona-api ``auth/deps.py``.
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from persona.auth.jwt_verifier import AuthenticatedUser, make_jwt_verifier
@@ -43,8 +44,44 @@ from sqlalchemy import create_engine, text
 
 from persona_voice.config import VoiceConfig
 from persona_voice.tokens.issuer import RoomAccessToken, mint_room_access_token
+from persona_voice.tts.types import VoiceCatalogueEntry
+
+if TYPE_CHECKING:
+    from persona_voice.tts.catalogue import VoiceCatalogue
 
 __all__ = ["build_app", "get_voice_config"]
+
+# Sentinel distinguishing "catalogue not yet built" from "built, but None
+# (TTS unconfigured)" on app.state.
+_UNSET: object = object()
+
+
+def _get_voice_catalogue(request: Request) -> VoiceCatalogue | None:
+    """The app-scoped voice catalogue (Spec V6 C2, D-V6-E4), built lazily.
+
+    The Cartesia launch backend (``load_streaming_tts``) conforms to the
+    :class:`VoiceCatalogue` Protocol (D-V3-3). Built on first ``GET /v1/voices``
+    and cached on ``app.state`` so a token-only deployment boots without TTS
+    configured. Construction failure (no ``PERSONA_TTS_API_KEY``) caches + returns
+    ``None`` → the endpoint returns an empty list (the selector degrades to the
+    persona's existing / the global-default voice). Tests override by setting
+    ``app.state.voice_catalogue`` directly.
+    """
+    cached = getattr(request.app.state, "voice_catalogue", _UNSET)
+    if cached is not _UNSET:
+        return cast("VoiceCatalogue | None", cached)
+
+    catalogue: VoiceCatalogue | None
+    try:
+        from persona_voice.tts._factory import load_streaming_tts
+        from persona_voice.tts.config import StreamingTTSConfig
+
+        backend = load_streaming_tts(StreamingTTSConfig())
+        catalogue = cast("VoiceCatalogue", backend)
+    except Exception:  # noqa: BLE001 — unconfigured TTS must not break voice-list
+        catalogue = None
+    request.app.state.voice_catalogue = catalogue
+    return catalogue
 
 
 class TokenRequest(BaseModel):
@@ -64,6 +101,20 @@ class TokenResponse(BaseModel):
     token: str
     room_name: str
     livekit_url: str
+
+
+class VoiceListResponse(BaseModel):
+    """``GET /v1/voices`` result (Spec V6 C2).
+
+    Carries the catalogue ``provider`` so the voice-selector can set the
+    persona's full ``VoiceSpec`` (``{provider, voice_id}``); ``provider`` is
+    ``None`` (and ``voices`` empty) when TTS is unconfigured.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str | None
+    voices: list[VoiceCatalogueEntry]
 
 
 def get_voice_config(request: Request) -> VoiceConfig:
@@ -244,5 +295,26 @@ def build_app(config: VoiceConfig) -> FastAPI:
             room_name=token.room_name,
             livekit_url=token.livekit_url,
         )
+
+    @app.get("/v1/voices", response_model=VoiceListResponse)
+    async def list_voices(
+        request: Request,
+        _user: AuthenticatedUser = Depends(get_current_user),
+    ) -> VoiceListResponse:
+        """List the provider voice catalogue for the voice-selector (Spec V6 C2).
+
+        Auth'd (any signed-in user) — voices are non-sensitive, not user-scoped
+        (D-V6-E4). Returns an empty list when TTS is unconfigured or the provider
+        fetch fails, so the selector degrades gracefully to the persona's
+        existing / the global-default voice rather than erroring.
+        """
+        catalogue = _get_voice_catalogue(request)
+        if catalogue is None:
+            return VoiceListResponse(provider=None, voices=[])
+        try:
+            entries = await catalogue.list_voices(limit=200)
+        except Exception:  # noqa: BLE001 — a provider/network error → empty list
+            return VoiceListResponse(provider=catalogue.provider_name, voices=[])
+        return VoiceListResponse(provider=catalogue.provider_name, voices=list(entries))
 
     return app

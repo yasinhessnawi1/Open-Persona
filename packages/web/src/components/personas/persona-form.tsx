@@ -5,6 +5,8 @@ import { useTranslations } from "next-intl";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+// Spec V6 C2 — the voice-selector contribution (F5/Spec 10 own the screen).
+import { VoiceSelector } from "@/components/voice/voice-selector";
 import {
   EPISTEMIC_OPTIONS,
   type PersonaDoc,
@@ -53,6 +55,16 @@ export function PersonaForm({
 }) {
   const t = useTranslations("author");
   const identity = readIdentity(doc);
+  // The persona's current voice id (identity.voice.voice_id), if set — V6 C2.
+  const identityRecord = doc.identity as Record<string, unknown> | undefined;
+  const voiceRecord = identityRecord?.voice as
+    | { voice_id?: unknown }
+    | null
+    | undefined;
+  const currentVoiceId =
+    voiceRecord && typeof voiceRecord.voice_id === "string"
+      ? voiceRecord.voice_id
+      : null;
   const selfFacts = readSelfFacts(doc);
   const worldview = readWorldview(doc);
   const declaredTools = readStringList(doc, "tools");
@@ -107,6 +119,20 @@ export function PersonaForm({
             addLabel={t("addConstraint")}
             onChange={(list) =>
               onChange(writeIdentityField(doc, "constraints", list))
+            }
+          />
+        </Field>
+        <Field label={t("voice")}>
+          <VoiceSelector
+            value={currentVoiceId}
+            onChange={(voice) =>
+              onChange({
+                ...doc,
+                identity: {
+                  ...((doc.identity ?? {}) as Record<string, unknown>),
+                  voice,
+                },
+              })
             }
           />
         </Field>
