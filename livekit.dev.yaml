@@ -1,0 +1,25 @@
+# LiveKit dev config for local browser voice calls (Spec V6).
+#
+# Why this exists: the default LiveKit ICE setup uses a UDP port RANGE
+# (50000-60000) and advertises the container's bridge IP, neither of which the
+# host browser can reach through Docker on macOS. The signaling websocket
+# connected fine, but the WebRTC MEDIA path never established -> the browser
+# dropped with "NegotiationError: negotiation timed out" right after joining
+# (the agent, a host-side process, stayed up on signaling, so only the user
+# fell out). Forcing single-port UDP (7882, the one port the compose maps) plus
+# a loopback node IP makes the media path reachable from the browser.
+#
+# Dev-only. Production uses a real LiveKit deploy with a routable IP + a UDP
+# range (a separate forward-item).
+port: 7880
+bind_addresses:
+  - "0.0.0.0"
+rtc:
+  tcp_port: 7881
+  udp_port: 7882 # single-port UDP mux -> matches the mapped 7882/udp
+  use_external_ip: false # don't STUN for a public IP in dev
+  node_ip: 127.0.0.1 # advertise loopback so the host browser can reach media
+keys:
+  devkey: secret # matches PERSONA_VOICE_LIVEKIT_API_KEY / _API_SECRET
+logging:
+  level: info

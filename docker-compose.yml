@@ -27,13 +27,17 @@ services:
     # Exact pin: livekit-client@2.19 uses the `/rtc/v1/` signaling path, which
     # only newer servers serve (v1.8 returned "v1 RTC path not found").
     image: livekit/livekit-server:v1.13.1
-    command: ["--dev", "--bind", "0.0.0.0"]
-    environment:
-      LIVEKIT_KEYS: "devkey: secret"
+    # Single-port UDP + loopback node IP via livekit.dev.yaml so the browser's
+    # WebRTC media path is reachable through the docker port map on macOS
+    # (default ICE range 50000-60000 isn't published -> media negotiation timed
+    # out and the user dropped right after signaling connected).
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    volumes:
+      - ./livekit.dev.yaml:/etc/livekit/livekit.yaml:ro
     ports:
       - "7880:7880" # WebSocket signaling (the client connects here)
       - "7881:7881" # TCP ICE/TURN fallback
-      - "7882:7882/udp" # UDP ICE
+      - "7882:7882/udp" # UDP ICE (single-port mux; must match rtc.udp_port)
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:7880 >/dev/null 2>&1 || exit 1"]
       interval: 5s
