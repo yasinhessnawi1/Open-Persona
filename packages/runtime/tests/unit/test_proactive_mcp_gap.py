@@ -77,3 +77,21 @@ def test_required_env_is_surfaced_in_enable_option() -> None:
     )
     q = build_mcp_gap_question(signal)
     assert "GITHUB_TOKEN" in q.options[0].description
+
+
+def test_mcp_gap_question_carries_grant_proposal_with_mcp_name() -> None:
+    # Spec 30 (D-30-2 / D-30-X-mcp-gap-accept-target): the accept target is the
+    # `mcp:<server>` allow-list entry, granted via the consent path; the provider
+    # tag rides for badge display.
+    signal = MCPGapSignal(
+        server_name="weather",
+        provider="mcp:optional",
+        capability="look up the current weather and forecast for a location",
+        matched_keyword="weather",
+    )
+    proposal = build_mcp_gap_question(signal).proposal
+    assert proposal is not None
+    assert proposal.kind == "mcp"
+    assert proposal.name == "mcp:weather"
+    assert proposal.action == "grant_tool"
+    assert proposal.provider == "mcp:optional"

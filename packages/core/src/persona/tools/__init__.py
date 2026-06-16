@@ -44,6 +44,7 @@ from persona.tools.errors import (
     ToolNotAllowedError,
 )
 from persona.tools.formatting import format_tool_result
+from persona.tools.kind import ToolKind, resolve_tool_kind
 from persona.tools.mcp.adapter import MCPToolAdapter
 from persona.tools.mcp.client import MCPClient, load_mcp_clients
 from persona.tools.protocol import AsyncTool, ToolDescriptor, tool
@@ -68,6 +69,7 @@ __all__ = [
     "ToolCatalogEntry",
     "ToolDescriptor",
     "ToolExecutionError",
+    "ToolKind",
     "ToolNotAllowedError",
     # Registry
     "Toolbox",
@@ -77,6 +79,7 @@ __all__ = [
     "format_tool_result",
     "known_tool_names",
     "load_mcp_clients",
+    "resolve_tool_kind",
     "make_calculator_tool",
     "make_currency_convert_tool",
     "make_datetime_tool",

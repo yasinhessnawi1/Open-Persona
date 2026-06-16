@@ -11,6 +11,29 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Frontend Capabilities — Tools · Skills · MCP + Bring-Your-Own MCP (Spec 30; close-out 2026-06-16, pending sign-off)
+
+> The web counterpart to the merged 26/27/28 backend: the unified tool + skill + MCP capability model is now reflected and controllable in the frontend, plus a net-new **bring-your-own MCP** slice with a security-load-bearing SSRF guard + credential encryption. Additive across all layers — existing personas, the tools/skills selection, and chat rendering are unaffected. One migration (`009`); one new direct API dep (`cryptography`, already locked).
+
+#### Added (persona-core)
+- **Capability-kind resolver** (`persona/tools/kind.py`, `Toolbox.kind_for`) — maps a dispatched tool name to its source (`builtin` / `skill` / `mcp:builtin` / `mcp:optional`); unknown → `builtin` (total, never raises). One authoritative home for the taxonomy.
+- **SSRF guard for bring-your-own MCP** (`persona/tools/mcp/ssrf.py`) — `assert_url_allowed` (eager) + a **resolve-then-pin** httpx transport (`pinned_httpx_client_factory`) that re-resolves + re-validates on **every request** (defeats DNS rebinding *and* redirect-to-internal), connecting to the validated IP while preserving Host + TLS SNI. https-only; blocks loopback / RFC1918 / link-local (incl. `169.254.169.254`) / ULA / CGNAT / reserved / multicast, with IPv4-mapped + NAT64 unwrapping. Stdlib only (no SSRF dependency). New domain exception `MCPUrlNotAllowedError`.
+- **`MCPClient`** gains `enforce_ssrf` (opt-in; off for trusted loopback built-ins) + `headers` (bearer auth for BYO servers). `build_default_toolbox` gains `extra_mcp_clients` — pre-built BYO clients whose tools are auto-allowed (the persona↔server assignment is the authorization).
+
+#### Added (persona-api)
+- **Bring-your-own MCP**: `user_mcp_servers` + `persona_mcp_assignments` tables (migration `009`, RLS-forced + policied), `persona_api/mcp/crypto.py` (Fernet/MultiFernet credential encryption at rest — `MCP_CREDENTIAL_KEY`), `persona_api/mcp/store.py` (CRUD + test-connection/discovery + assignment, SSRF-validated, credentials never returned/logged), and the `/v1/mcp-servers` + `/v1/personas/{id}/mcp-servers/{server_id}` routes. `RuntimeFactory` resolves a persona's assigned BYO servers and connects them SSRF-pinned on the live runtime path.
+- **`kind` on tool events** — `RunEvent.tool_calling`/`tool_result` (and `responses.py` `ToolCallEvent`/`ToolResultEvent`) carry an additive `kind` (one change badges both the chat and run SSE streams).
+- **General chat-proactive-question rail** — `ProactiveQuestion` gains a source-agnostic `proposal {kind, name, provider?, action}`; the chat SSE carries `asking_user` (tool-gap / MCP-gap consent offers) so the web can wire accept → grant/assign → retry. Spec 31 consumes the rail. The tool-consent path now admits catalog-valid `mcp:<server>` grants.
+- **`GET /v1/mcp-catalog`** — the built-in MCP servers for the capability-management UI. New direct dependency `cryptography>=43,<49` (already in `uv.lock` via `python-jose`).
+
+#### Added (persona-web)
+- **Unified capability management** in the persona editor — built-in tools + skills + **MCP servers** selectable as one set, the combined-capability count (~10 soft cap) communicated, and the recommender's provider-tagged picks surfaced as suggested-and-explained (user-triggered, cost-aware).
+- **Badged in-chat rendering** — `tool-call-card` badges each call by source and names the MCP server.
+- **In-chat consent rail** — the runtime gap prompt renders inline (reusing `ask-user-prompt`), accept grants the capability and re-sends the message (surface-and-retry).
+- **Bring-your-own MCP manager** — add (URL + optional bearer token) / test-connection / assign-to-persona / delete; credentials entered but never displayed back.
+
+#### Security
+- BYO-MCP credentials are encrypted at rest (Fernet/MultiFernet), never returned over the API (only `has_credential`), decrypted transiently for the connect only, and never logged (asserted). The SSRF guard rides the **live** runtime connect path (per-request resolve-then-pin), not just test-connection — closing the validate-at-test / rebind-at-use TOCTOU and redirect-based bypasses. RLS isolates BYO servers per owner (verified through the non-superuser `persona_app` role).
 ### Persona Avatar Auto-Generation (close-out pending; operator pass pending sign-off)
 
 > When a persona is created from the builder's details and no avatar is supplied, the system **auto-generates a role-appropriate, demographic-safe avatar** through the existing image-generation pipeline, persists it, and sets `avatar_url`. The user can still replace it by upload (existing path — a user-supplied avatar always wins). Generation is **fail-soft**: if image generation is unavailable, content-rejected, errors, or times out, the persona is still created with `avatar_url=null` and the build succeeds (the initials/identicon default renders). Purely additive — no schema field, no migration, existing create/PATCH/upload behavior unchanged. **Zero new dependencies.**

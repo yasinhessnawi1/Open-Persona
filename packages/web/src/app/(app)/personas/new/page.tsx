@@ -1,6 +1,8 @@
 import { PageBody } from "@/components/layout";
 import { AuthorWizard } from "@/components/personas/author-wizard";
+import { mapMcpCatalog } from "@/components/personas/mcp-catalog";
 import { type ToolSummary, unwrap } from "@/lib/api";
+import type { components } from "@/lib/api/schema";
 import { serverApi } from "@/lib/api/server";
 
 /**
@@ -16,9 +18,11 @@ import { serverApi } from "@/lib/api/server";
  */
 export default async function NewPersonaPage() {
   const api = await serverApi();
-  const [tools, skills] = await Promise.all([
+  const [tools, skills, mcpCatalog] = await Promise.all([
     unwrap(await api.GET("/v1/tools")),
     unwrap(await api.GET("/v1/skills")),
+    // Spec 30 T11 — built-in MCP servers for the unified capability section.
+    unwrap(await api.GET("/v1/mcp-catalog")),
   ]);
 
   return (
@@ -26,6 +30,9 @@ export default async function NewPersonaPage() {
       <AuthorWizard
         tools={(tools as ToolSummary[]).map((x) => x.name)}
         skills={(skills as ToolSummary[]).map((x) => x.name)}
+        mcpServers={mapMcpCatalog(
+          mcpCatalog as components["schemas"]["MCPCatalogServer"][],
+        )}
       />
     </PageBody>
   );

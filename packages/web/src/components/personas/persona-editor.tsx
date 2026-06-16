@@ -8,9 +8,23 @@ import { buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { ClarifyingQuestion } from "@/lib/api";
-import { docToYaml, type PersonaDoc, yamlToDoc } from "@/lib/persona-draft";
+import {
+  docToYaml,
+  type PersonaDoc,
+  readIdentity,
+  readStringList,
+  writeStringList,
+  yamlToDoc,
+} from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
-import { PersonaForm } from "./persona-form";
+import { ByoMcpManager } from "./byo-mcp-manager";
+import { type McpCatalogEntry, PersonaForm } from "./persona-form";
+import {
+  applyRecommendation,
+  recommendationApplied,
+  SuggestCapabilities,
+  type ToolRecommendation,
+} from "./suggest-capabilities";
 
 // Monaco is lazy + client-only so it never enters the chat-page bundle (D-09-8).
 const YAMLEditor = dynamic(() => import("./yaml-editor"), {
@@ -45,6 +59,8 @@ export function PersonaEditor({
   initialDoc,
   tools,
   skills,
+  mcpServers = [],
+  personaId,
   onSave,
   saveLabel,
   refinement,
@@ -52,6 +68,11 @@ export function PersonaEditor({
   initialDoc: PersonaDoc;
   tools: string[];
   skills: string[];
+  // Spec 30 T11 — built-in MCP servers for the unified capability section.
+  mcpServers?: McpCatalogEntry[];
+  // Spec 30 T12 — the saved persona's id; enables the BYO-MCP manager (needs an
+  // id to assign servers to). Absent in the author/new flow (no id yet).
+  personaId?: string;
   onSave: (yaml: string) => Promise<SaveResult>;
   saveLabel: string;
   refinement?: Refinement;
@@ -80,6 +101,34 @@ export function PersonaEditor({
     }
   }, []);
 
+  // Spec 30 T11 — apply a recommender pick to the persona (skill → skills list;
+  // MCP → mcp:<name> in tools; else tools), keeping the YAML buffer in sync.
+  const currentCapabilities = useCallback(
+    () => ({
+      tools: readStringList(doc, "tools"),
+      skills: readStringList(doc, "skills"),
+    }),
+    [doc],
+  );
+  const applyRec = useCallback(
+    (rec: ToolRecommendation) => {
+      const next = applyRecommendation(rec, currentCapabilities());
+      onFormChange(
+        writeStringList(
+          writeStringList(doc, "tools", next.tools),
+          "skills",
+          next.skills,
+        ),
+      );
+    },
+    [doc, currentCapabilities, onFormChange],
+  );
+  const identity = readIdentity(doc);
+  const suggestDescription = [identity.role, identity.background]
+    .filter(Boolean)
+    .join(". ")
+    .trim();
+
   async function save() {
     if (saving || yamlError) return;
     setSaving(true);
@@ -101,7 +150,17 @@ export function PersonaEditor({
         onChange={onFormChange}
         tools={tools}
         skills={skills}
+        mcpServers={mcpServers}
       />
+
+      <SuggestCapabilities
+        description={suggestDescription}
+        onApply={applyRec}
+        isApplied={(rec) => recommendationApplied(rec, currentCapabilities())}
+      />
+
+      {/* Spec 30 T12 — BYO MCP servers (only for a saved persona). */}
+      {personaId ? <ByoMcpManager personaId={personaId} /> : null}
 
       <div className="flex flex-col gap-2">
         <button

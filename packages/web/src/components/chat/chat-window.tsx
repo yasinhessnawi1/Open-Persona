@@ -76,9 +76,10 @@ export function ChatWindow({
   const t = useTranslations("chat");
   const toast = useToast();
   const { getToken } = useAuth();
-  const { messages, streaming, error, send } = useChat(
+  const { messages, streaming, error, send, respondToProactive } = useChat(
     conversationId,
     initialMessages,
+    persona.id,
   );
   const [input, setInput] = useState("");
   const [sendError, setSendError] = useState<ApiError | null>(null);
@@ -241,6 +242,7 @@ export function ChatWindow({
                 message={m}
                 persona={persona}
                 prevMessage={i > 0 ? messages[i - 1] : undefined}
+                onRespondToProactive={respondToProactive}
               />
             ))}
             {error ? (

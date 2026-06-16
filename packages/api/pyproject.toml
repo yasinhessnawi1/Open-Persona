@@ -25,6 +25,11 @@ dependencies = [
     # Still lazy-imported at the use-site, so dev/no-key environments boot
     # cleanly with the tool simply absent (D-12-5 no degraded fallback).
     "e2b-code-interpreter>=1.0,<2",
+    # Spec 30 T07 (D-30-4) — Fernet/MultiFernet for bring-your-own MCP
+    # credential encryption-at-rest. Promoted from a transitive of
+    # python-jose[cryptography] to a DIRECT dep (we use it directly now);
+    # already resolved in uv.lock, so this pulls nothing new.
+    "cryptography>=43,<49",
 ]
 
 [build-system]

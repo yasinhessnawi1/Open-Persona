@@ -224,6 +224,10 @@ class ToolCallEvent(_Output):
 
     tool: str
     args: dict[str, object] = Field(default_factory=dict)
+    # Spec 30 T01 (D-30-1): the call's source badge — ``builtin`` / ``skill`` /
+    # ``mcp:builtin`` / ``mcp:optional``. Optional for OpenAPI/back-compat parity
+    # with the additive wire field; absent on pre-spec-30 frames.
+    kind: str | None = None
 
 
 class ToolResultEvent(_Output):
@@ -232,6 +236,8 @@ class ToolResultEvent(_Output):
     tool: str
     content: str
     is_error: bool = False
+    # Spec 30 T01 (D-30-1): the call's source badge (see ToolCallEvent.kind).
+    kind: str | None = None
 
 
 class DoneEvent(_Output):
@@ -344,3 +350,49 @@ class ArtifactListResponse(_Output):
     limit: int
     offset: int
     items: list[ArtifactItem]
+
+
+class MCPServerDetail(_Output):
+    """A bring-your-own MCP server as returned to its owner (spec 30, D-30-3).
+
+    The credential is NEVER included — only ``has_credential`` (whether one is
+    stored). ``discovered_tools`` is the cached eager-discovery result (D-30-5),
+    ``None`` until a successful test-connection.
+    """
+
+    id: str
+    name: str
+    url: str
+    auth_method: str
+    enabled: bool
+    has_credential: bool
+    discovered_tools: list[str] | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MCPServerTestResult(_Output):
+    """Outcome of a BYO-MCP test-connection (spec 30, D-30-5).
+
+    ``ok`` true → ``tools`` lists the discovered tool names (cached on the row).
+    ``ok`` false → ``error`` is a short, non-sensitive reason category.
+    """
+
+    ok: bool
+    tools: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class MCPCatalogServer(_Output):
+    """A built-in MCP server in the management catalog (spec 30 T11).
+
+    A persona enables a server by adding ``mcp:<name>`` to its ``tools``
+    allow-list. ``provider`` is the recommender tag (``mcp:builtin`` /
+    ``mcp:optional``); ``required_env`` lists env vars an operator must set.
+    """
+
+    name: str
+    description: str
+    provider: str
+    default_enabled: bool
+    required_env: list[str] = Field(default_factory=list)

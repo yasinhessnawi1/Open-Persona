@@ -18,8 +18,9 @@ from __future__ import annotations
 
 from persona.skills import BUILTIN_ROOT, SkillScanner
 from persona.tools import TOOL_CATALOG
+from persona.tools.mcp.catalog import BUILTIN_MCP_CATALOG, recommender_provider_tag
 
-__all__ = ["list_skills", "list_tools"]
+__all__ = ["list_mcp_servers", "list_skills", "list_tools"]
 
 # Every bundled skill folder under persona/skills/builtin (architecture §9.3,
 # spec 13). The scanner emits one entry per declared skill that exists on disk.
@@ -48,3 +49,20 @@ def list_skills() -> list[tuple[str, str]]:
     scanner = SkillScanner(skill_paths=[BUILTIN_ROOT])
     scanned = scanner.scan(declared_skills=_BUILTIN_SKILLS)
     return [(s.name, s.description) for s in scanned]
+
+
+def list_mcp_servers() -> list[tuple[str, str, str, bool, list[str]]]:
+    """The built-in MCP servers as ``(name, description, provider, default, required_env)``.
+
+    Spec 30 T11 — the management UI surfaces these alongside built-in tools +
+    skills as one capability set. A persona enables a server by adding
+    ``mcp:<name>`` to its ``tools`` allow-list. ``provider`` is the recommender
+    tag (``mcp:builtin`` for default-enabled authored servers, else
+    ``mcp:optional``). Sourced from the persona-core MCP catalog (the single
+    source of truth, mirroring ``list_tools``); bring-your-own servers are NOT
+    here (they live per-user, surfaced via ``GET /v1/mcp-servers``).
+    """
+    return [
+        (name, e.description, recommender_provider_tag(e), e.default_enabled, list(e.required_env))
+        for name, e in BUILTIN_MCP_CATALOG.servers.items()
+    ]

@@ -42,6 +42,9 @@ __all__ = [
     "ConcurrencyCappedError",
     "ConversationNotFoundError",
     "CreditsExhaustedError",
+    "MCPCredentialError",
+    "MCPServerNotFoundError",
+    "MCPServerValidationError",
     "RateLimitExceededError",
     "RefinementLimitError",
     "RunNotFoundError",
@@ -97,6 +100,29 @@ class ConcurrencyCappedError(PersonaError):
     the bound holds across multiple API workers (D-15-X-concurrency-cap;
     async-semaphore rejected). ``context`` always carries ``user_id`` and
     may carry ``retry_after_s`` to feed the HTTP ``Retry-After`` header.
+    """
+
+
+class MCPServerNotFoundError(PersonaError):
+    """Raised when a BYO MCP server is not visible to the current user (→ 404; spec 30)."""
+
+
+class MCPServerValidationError(PersonaError):
+    """Raised when a user-supplied MCP server URL is rejected (→ 422; spec 30, D-30-4).
+
+    Covers the SSRF guard (private/loopback/link-local/metadata target, non-https
+    scheme, unresolvable host) and basic field validation. ``context`` carries a
+    redacted ``reason`` — never the resolved internal IP in a way that aids
+    reconnaissance beyond the category.
+    """
+
+
+class MCPCredentialError(PersonaError):
+    """Raised when BYO-MCP credential encryption is unavailable/misconfigured (→ 503; D-30-4).
+
+    The operator did not configure ``MCP_CREDENTIAL_KEY`` but a server carrying
+    credentials was submitted. Fail loud (never store a secret in plaintext);
+    the message never leaks the key or the credential.
     """
 
 
@@ -156,6 +182,35 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content=_body("run_not_found", exc.message or "run not found", exc.context),
+        )
+
+    @app.exception_handler(MCPServerNotFoundError)
+    async def _mcp_server_404(_: Request, exc: MCPServerNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=_body(
+                "mcp_server_not_found", exc.message or "mcp server not found", exc.context
+            ),
+        )
+
+    @app.exception_handler(MCPServerValidationError)
+    async def _mcp_server_422(_: Request, exc: MCPServerValidationError) -> JSONResponse:
+        # SSRF / URL-policy rejection (spec 30, D-30-4). The detail names the
+        # category only (e.g. "private/loopback target"), never the resolved IP.
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=_body("mcp_server_invalid", exc.message or "mcp server rejected", exc.context),
+        )
+
+    @app.exception_handler(MCPCredentialError)
+    async def _mcp_credential_503(_: Request, exc: MCPCredentialError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_body(
+                "mcp_credential_unavailable",
+                exc.message or "credential encryption is not configured",
+                exc.context,
+            ),
         )
 
     @app.exception_handler(RateLimitExceededError)

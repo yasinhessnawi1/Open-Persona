@@ -56,6 +56,9 @@ def test_migration_upgrade_creates_everything(database_url: str) -> None:
         "credits",
         "credit_transactions",
         "audit_log",
+        # Spec 30 (migration 009): bring-your-own MCP.
+        "user_mcp_servers",
+        "persona_mcp_assignments",
         "alembic_version",
     }.issubset(tables)
 
@@ -87,6 +90,9 @@ def test_migration_upgrade_creates_everything(database_url: str) -> None:
         "memory_chunks",
         "credits",
         "credit_transactions",
+        # Spec 30 (migration 009): both BYO-MCP tables are RLS-forced + policied.
+        "user_mcp_servers",
+        "persona_mcp_assignments",
     }
     assert expected.issubset(forced)
     assert expected.issubset(policied)

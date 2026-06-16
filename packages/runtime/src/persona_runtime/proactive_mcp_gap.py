@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from persona.tools.mcp.catalog import BUILTIN_MCP_CATALOG, recommender_provider_tag
 from pydantic import BaseModel, ConfigDict
 
-from persona_runtime.questions import ProactiveQuestion, QuestionOption
+from persona_runtime.questions import ProactiveProposal, ProactiveQuestion, QuestionOption
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -163,4 +163,15 @@ def build_mcp_gap_question(signal: MCPGapSignal) -> ProactiveQuestion:
             ),
         ),
         allow_free_form=True,
+        # Spec 30 (D-30-2 / D-30-X-mcp-gap-accept-target): the rail's accept
+        # target — grant the built-in MCP server as the `mcp:<server>` allow-list
+        # entry via POST /personas/{id}/tools (the consent path, extended to
+        # admit catalog-valid mcp:<server> names). `provider` carries the
+        # mcp:builtin / mcp:optional badge for display.
+        proposal=ProactiveProposal(
+            kind="mcp",
+            name=f"mcp:{signal.server_name}",
+            action="grant_tool",
+            provider=signal.provider,
+        ),
     )

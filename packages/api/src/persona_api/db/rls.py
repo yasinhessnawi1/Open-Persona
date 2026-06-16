@@ -44,6 +44,15 @@ _POLICIES: dict[str, str] = {
     "credit_transactions": f"user_id = {_CUR}",
 }
 
+# Spec 30 (D-30-3/6): the bring-your-own MCP tables' RLS lives ENTIRELY in
+# migration 009 (it creates the tables AND their policies, and its downgrade
+# removes both together). They are deliberately NOT in ``_POLICIES`` above —
+# putting them there would make ``001_initial``'s downgrade ``ALTER`` a table
+# that ``009``'s downgrade already dropped (the tables are created later than
+# 001). 009 owns their full lifecycle; the predicates there mirror these:
+#   user_mcp_servers          → owner_id = current_user
+#   persona_mcp_assignments   → persona_id IN (personas WHERE owner_id = current_user)
+
 # Spec 14 + F3 follow-up — auxiliary RLS policies for the DocumentStore path.
 # CSA-1 calling-convention discipline: DocumentStore calls
 # ``MemoryStore.write(persona_id=<conversation_id>, ...)`` which fails the

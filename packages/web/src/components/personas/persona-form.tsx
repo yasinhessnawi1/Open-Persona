@@ -19,6 +19,21 @@ import {
 } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
 
+// Spec 30 T11 — a built-in MCP server in the capability-management catalog.
+// A persona enables a server by carrying `mcp:<name>` in its `tools` list.
+export interface McpCatalogEntry {
+  name: string;
+  description: string;
+  provider: string;
+  defaultEnabled: boolean;
+  requiredEnv: string[];
+}
+
+const MCP_PREFIX = "mcp:";
+// Spec 30 — the accuracy-preserving combined cap across tools + skills + MCP
+// (the tool-count-cliff, Spec 26 D-26): communicated, not hard-enforced.
+const CAPABILITY_SOFT_CAP = 10;
+
 // The structured persona editor (T08). Controlled: it renders from `doc` and
 // emits a new `doc` on every edit. The parent keeps the YAML buffer in sync.
 export function PersonaForm({
@@ -26,11 +41,15 @@ export function PersonaForm({
   onChange,
   tools,
   skills,
+  mcpServers = [],
 }: {
   doc: PersonaDoc;
   onChange: (doc: PersonaDoc) => void;
   tools: string[];
   skills: string[];
+  // Spec 30 T11 — built-in MCP servers (from GET /v1/mcp-catalog). Optional so
+  // existing callers/tests that don't pass it render tools+skills unchanged.
+  mcpServers?: McpCatalogEntry[];
 }) {
   const t = useTranslations("author");
   const identity = readIdentity(doc);
@@ -38,6 +57,8 @@ export function PersonaForm({
   const worldview = readWorldview(doc);
   const declaredTools = readStringList(doc, "tools");
   const declaredSkills = readStringList(doc, "skills");
+  // The combined capability count (tools — incl. mcp: entries — plus skills).
+  const capabilityCount = declaredTools.length + declaredSkills.length;
 
   return (
     <div className="flex flex-col gap-5">
@@ -230,25 +251,133 @@ export function PersonaForm({
         />
       </Section>
 
-      {/* Tools + skills */}
-      <div className="grid gap-5 sm:grid-cols-2">
-        <Section title={t("toolsTitle")}>
-          <ChipToggle
-            available={tools}
-            selected={declaredTools}
-            empty={t("noTools")}
+      {/* Capabilities: tools + skills + MCP as one set (spec 30 T11) */}
+      <Section title={t("capabilitiesTitle")}>
+        <p
+          className={cn(
+            "text-xs",
+            capabilityCount > CAPABILITY_SOFT_CAP
+              ? "text-destructive"
+              : "text-muted-foreground",
+          )}
+          data-slot="capability-count"
+        >
+          {t("capabilityCount", { count: capabilityCount })} ·{" "}
+          {t("capabilityCapHint")}
+        </p>
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Subsection title={t("toolsTitle")}>
+            <ChipToggle
+              available={tools}
+              selected={declaredTools}
+              empty={t("noTools")}
+              onChange={(list) => onChange(writeStringList(doc, "tools", list))}
+            />
+          </Subsection>
+          <Subsection title={t("skillsTitle")}>
+            <ChipToggle
+              available={skills}
+              selected={declaredSkills}
+              empty={t("noSkills")}
+              onChange={(list) =>
+                onChange(writeStringList(doc, "skills", list))
+              }
+            />
+          </Subsection>
+        </div>
+        <Subsection title={t("mcpTitle")}>
+          <McpToggle
+            servers={mcpServers}
+            declaredTools={declaredTools}
+            empty={t("noMcp")}
+            defaultLabel={t("mcpDefaultBadge")}
+            requiresLabel={(env) => t("mcpRequiresEnv", { env })}
             onChange={(list) => onChange(writeStringList(doc, "tools", list))}
           />
-        </Section>
-        <Section title={t("skillsTitle")}>
-          <ChipToggle
-            available={skills}
-            selected={declaredSkills}
-            empty={t("noSkills")}
-            onChange={(list) => onChange(writeStringList(doc, "skills", list))}
-          />
-        </Section>
-      </div>
+        </Subsection>
+      </Section>
+    </div>
+  );
+}
+
+function Subsection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+// Spec 30 T11 — toggle built-in MCP servers on/off as `mcp:<name>` entries in
+// the persona's `tools` list, composing with the tools ChipToggle (each writes
+// the full tools list, flipping only its own kind of entry). Each chip shows the
+// provider tag, a `default` badge, and any required env.
+function McpToggle({
+  servers,
+  declaredTools,
+  empty,
+  defaultLabel,
+  requiresLabel,
+  onChange,
+}: {
+  servers: McpCatalogEntry[];
+  declaredTools: string[];
+  empty: string;
+  defaultLabel: string;
+  requiresLabel: (env: string) => string;
+  onChange: (tools: string[]) => void;
+}) {
+  if (servers.length === 0) {
+    return <p className="text-sm text-muted-foreground">{empty}</p>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {servers.map((s) => {
+        const entry = `${MCP_PREFIX}${s.name}`;
+        const on = declaredTools.includes(entry);
+        return (
+          <button
+            key={s.name}
+            type="button"
+            title={s.description}
+            aria-pressed={on}
+            onClick={() =>
+              onChange(
+                on
+                  ? declaredTools.filter((x) => x !== entry)
+                  : [...declaredTools, entry],
+              )
+            }
+            className={cn(
+              "flex items-center gap-1.5 rounded border px-2 py-1 font-mono text-xs transition-colors",
+              on
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:border-primary/30",
+            )}
+            data-slot="mcp-chip"
+            data-on={on}
+          >
+            <span>{s.name}</span>
+            {s.defaultEnabled ? (
+              <span className="rounded-sm bg-muted px-1 text-[0.625rem] tracking-wide uppercase">
+                {defaultLabel}
+              </span>
+            ) : null}
+            {s.requiredEnv.length > 0 ? (
+              <span className="text-[0.625rem] text-muted-foreground">
+                {requiresLabel(s.requiredEnv.join(", "))}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
     </div>
   );
 }

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from persona.backends.types import ToolSpec, tool_spec_from_tool
 from persona.errors import ToolExecutionError, ToolNotAllowedError
 from persona.logging import get_logger
+from persona.tools.kind import ToolKind, resolve_tool_kind
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -100,6 +101,18 @@ class Toolbox:
     def get_specs(self) -> list[ToolSpec]:
         """Return a :class:`ToolSpec` for every allowed + registered tool."""
         return [tool_spec_from_tool(self._tools[name]) for name in self.names()]
+
+    @staticmethod
+    def kind_for(tool_name: str) -> ToolKind:
+        """Resolve a dispatched tool name to its capability kind (spec 30 T01, D-30-1).
+
+        Built-in / skill / ``mcp:builtin`` / ``mcp:optional`` — the source badge
+        the frontend renders on each in-chat call. Pure + total (unknown name →
+        ``"builtin"``); the resolution lives in :func:`persona.tools.kind.resolve_tool_kind`
+        so the taxonomy has one authoritative home (DRY). Static because the kind
+        derives from the name + the MCP catalog, not from this Toolbox's registry.
+        """
+        return resolve_tool_kind(tool_name)
 
     # Section: dispatch path
 

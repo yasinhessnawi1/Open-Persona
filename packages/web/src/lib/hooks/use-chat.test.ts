@@ -76,7 +76,7 @@ describe("useChat.send — F3 T06 request body shape", () => {
     restore = r;
     capturedRef.current = captured;
 
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send("hello world");
     await waitFor(() => expect(captured.length).toBeGreaterThan(0));
 
@@ -95,7 +95,7 @@ describe("useChat.send — F3 T06 request body shape", () => {
       workspace_path: "uploads/abc.png",
       media_type: "image/png",
     };
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send("describe this", [ref]);
     await waitFor(() => expect(captured.length).toBeGreaterThan(0));
 
@@ -114,7 +114,7 @@ describe("useChat.send — F3 T06 request body shape", () => {
       { workspace_path: "uploads/c.webp", media_type: "image/webp" },
       { workspace_path: "uploads/d.gif", media_type: "image/gif" },
     ];
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send("compare", refs);
     await waitFor(() => expect(captured.length).toBeGreaterThan(0));
 
@@ -137,7 +137,7 @@ describe("useChat.send — F3 T06 request body shape", () => {
       workspace_path: "uploads/large-1mb-image-9f8e7d6c5b4a3210.png",
       media_type: "image/png",
     };
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send(
       "what's in this image?",
       [ref, ref, ref, ref], // 4 refs, the max
@@ -157,7 +157,7 @@ describe("useChat.send — F3 T06 request body shape", () => {
       workspace_path: "uploads/x.png",
       media_type: "image/png",
     };
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send("look", [ref]);
 
     // setMessages is React-scheduled; waitFor flushes the re-render.
@@ -175,7 +175,7 @@ describe("useChat.send — F3 T06 request body shape", () => {
     const { captured, restore: r } = installFetchCapture();
     restore = r;
 
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send("ping");
     await waitFor(() => expect(captured.length).toBeGreaterThan(0));
 

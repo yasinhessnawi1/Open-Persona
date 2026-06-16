@@ -27,6 +27,10 @@ export function chatSseToOutputContent(event: ChatEvent): OutputContent[] {
   switch (event.event) {
     case "chunk":
     case "done":
+    // Spec 30 (D-30-2): the proactive-question rail is an interactive prompt,
+    // not assistant output content — it renders via AskUserPrompt in the
+    // message element, not through the output dispatcher.
+    case "asking_user":
       return [];
     case "tool_calling":
       return projectToolCalling(event.data.tool_calls);

@@ -464,7 +464,10 @@ class ConversationLoop:
                 # Surface the round's tool calls (the chat/run-viewer SSE
                 # `tool_calling` event) before dispatching them.
                 if on_event is not None:
-                    await on_event(RunEvent.tool_calling(-1, round_calls))
+                    # Spec 30 T01 (D-30-1): badge each call by source.
+                    await on_event(
+                        RunEvent.tool_calling(-1, round_calls, kind_of=self._toolbox.kind_for)
+                    )
                 # Native tool-calling providers (OpenAI/DeepSeek/Anthropic) require
                 # the assistant message that issued the tool_calls to precede the
                 # matching tool results in the re-prompt — otherwise the provider
@@ -492,7 +495,11 @@ class ConversationLoop:
                     if result.metadata.get("sandbox_session_recreated") == "True":
                         session_recreated = True
                     if on_event is not None:
-                        await on_event(RunEvent.tool_result(-1, call.name, result))
+                        await on_event(
+                            RunEvent.tool_result(
+                                -1, call.name, result, kind=self._toolbox.kind_for(call.name)
+                            )
+                        )
                     tool_messages.append(
                         format_tool_result(call, result, provider_name=backend.provider_name)
                     )
@@ -682,6 +689,12 @@ class ConversationLoop:
                         gap_question.question,
                         options=gap_question.options,
                         allow_free_form=gap_question.allow_free_form,
+                        # Spec 30 (D-30-2): the rail's accept→grant→retry descriptor.
+                        proposal=(
+                            gap_question.proposal.payload()
+                            if gap_question.proposal is not None
+                            else None
+                        ),
                     )
                 )
             yield _text_chunk("\n\n" + gap_question.question)
@@ -704,6 +717,12 @@ class ConversationLoop:
                         mcp_question.question,
                         options=mcp_question.options,
                         allow_free_form=mcp_question.allow_free_form,
+                        # Spec 30 (D-30-2): the MCP-gap accept→grant→retry descriptor.
+                        proposal=(
+                            mcp_question.proposal.payload()
+                            if mcp_question.proposal is not None
+                            else None
+                        ),
                     )
                 )
             yield _text_chunk("\n\n" + mcp_question.question)

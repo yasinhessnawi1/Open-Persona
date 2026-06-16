@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from persona.tools import TOOL_CATALOG
 from pydantic import BaseModel, ConfigDict
 
-from persona_runtime.questions import ProactiveQuestion, QuestionOption
+from persona_runtime.questions import ProactiveProposal, ProactiveQuestion, QuestionOption
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -131,4 +131,12 @@ def build_tool_gap_question(signal: ToolGapSignal) -> ProactiveQuestion:
             ),
         ),
         allow_free_form=True,
+        # Spec 30 (D-30-2): the rail's accept target — grant the built-in tool
+        # via POST /personas/{id}/tools (the existing consent path).
+        proposal=ProactiveProposal(
+            kind="tool",
+            name=signal.tool_name,
+            action="grant_tool",
+            provider="builtin",
+        ),
     )

@@ -15,14 +15,20 @@ __all__ = [
     "AuthorPersonaRequest",
     "ChannelContext",
     "CreateConversationRequest",
+    "CreateMCPServerRequest",
     "CreatePersonaRequest",
     "ImageRef",
     "PostMessageRequest",
     "RefinePersonaRequest",
     "RespondToRunRequest",
     "StartRunRequest",
+    "UpdateMCPServerRequest",
     "UpdatePersonaRequest",
 ]
+
+#: BYO-MCP auth methods (spec 30, D-30-3). v1 supports no-auth and bearer-token;
+#: ``header`` is reserved in the DB column for a later increment.
+MCPAuthMethod = Literal["none", "bearer"]
 
 
 class _Input(BaseModel):
@@ -175,3 +181,33 @@ class RespondToRunRequest(_Input):
     """Answer an ask-user question raised by a running agentic loop (§5.3)."""
 
     answer: str
+
+
+class CreateMCPServerRequest(_Input):
+    """Add a bring-your-own MCP server (spec 30, D-30-3/4).
+
+    ``url`` is SSRF-validated (https-only, public target) at the route AND on
+    every live connect. ``credential`` (a bearer token for ``auth_method =
+    "bearer"``) is encrypted at rest (T07) and NEVER returned or logged; it is
+    required when ``auth_method`` is not ``"none"``.
+    """
+
+    name: str = Field(min_length=1, max_length=128)
+    url: str = Field(min_length=1, max_length=2048)
+    auth_method: MCPAuthMethod = "none"
+    credential: str | None = Field(default=None, max_length=4096, repr=False)
+
+
+class UpdateMCPServerRequest(_Input):
+    """Patch a BYO MCP server (spec 30). All fields optional; omitted = unchanged.
+
+    Setting ``credential`` replaces the stored secret (re-encrypted); to clear a
+    credential, set ``auth_method = "none"``. ``enabled`` toggles the server
+    without deleting it.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    url: str | None = Field(default=None, min_length=1, max_length=2048)
+    auth_method: MCPAuthMethod | None = None
+    credential: str | None = Field(default=None, max_length=4096, repr=False)
+    enabled: bool | None = None

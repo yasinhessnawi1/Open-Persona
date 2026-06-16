@@ -45,6 +45,7 @@ import { type ReactNode, useMemo, useState } from "react";
 
 import type { AvatarPersona } from "@/components/persona/persona-avatar";
 import { PersonaAvatar } from "@/components/persona/persona-avatar";
+import { AskUserPrompt } from "@/components/runs/ask-user-prompt";
 import { Markdown } from "@/components/ui/markdown";
 import type { OutputContent } from "@/lib/api/output-content";
 import { operationFor, projectToolResult } from "@/lib/normalisers/_classify";
@@ -52,7 +53,12 @@ import {
   derivePersonaIdentityColor,
   personaIdentityStyle,
 } from "@/lib/persona-identity";
-import type { ArtifactRef, ProducedFileRef } from "@/lib/sse-types";
+import type {
+  ArtifactRef,
+  ProactiveProposal,
+  ProducedFileRef,
+  QuestionOption,
+} from "@/lib/sse-types";
 import { cn } from "@/lib/utils";
 import { AuthedImage } from "./authed-image";
 import { OutputDispatcher } from "./output/dispatcher";
@@ -73,12 +79,16 @@ export type MessageEvent =
       callId: string;
       toolName: string;
       args?: Record<string, unknown>;
+      /** Spec 30 T01 (D-30-1): source badge — builtin/skill/mcp:builtin/mcp:optional. */
+      toolKind?: string;
     }
   | {
       kind: "tool_result";
       toolName: string;
       content: string;
       isError: boolean;
+      /** Spec 30 T01 (D-30-1): source badge (mirrors the tool_call arm). */
+      toolKind?: string;
       /**
        * F4 T02b + T10 (D-F4-X-event-kind-for-produced-files): structured
        * produced_files surfaced from the runtime via use-chat. Optional —
@@ -115,6 +125,18 @@ export interface MessageElementView {
   streaming?: boolean;
   /** F3 (T06): workspace references to attached images on this message. */
   images?: { workspace_path: string; media_type: string }[];
+  /**
+   * Spec 30 (D-30-2): an in-chat proactive question (the chat rail). Present on
+   * an assistant turn that ended with a tool-gap / MCP-gap consent offer (or a
+   * Spec-21 clarifying ask). Rendered inline via the shared 3+1 prompt; the
+   * `proposal` (when present) drives accept → grant → retry.
+   */
+  proactive?: {
+    question: string;
+    options?: QuestionOption[];
+    allowFreeForm?: boolean;
+    proposal?: ProactiveProposal;
+  };
 }
 
 /**
@@ -137,6 +159,16 @@ interface MessageElementProps {
    */
   prevMessage?: MessageElementView;
   className?: string;
+  /**
+   * Spec 30 (D-30-2): answer an in-chat proactive question. `isAccept` is true
+   * when the user picked the enable option of a capability-gap offer; the
+   * `proposal` (when present) drives accept → grant → retry in useChat.
+   */
+  onRespondToProactive?: (
+    messageId: string,
+    answer: string,
+    opts: { isAccept: boolean; proposal?: ProactiveProposal },
+  ) => Promise<void>;
 }
 
 export function MessageElement({
@@ -144,6 +176,7 @@ export function MessageElement({
   persona,
   prevMessage,
   className,
+  onRespondToProactive,
 }: MessageElementProps) {
   if (message.role === "user") {
     return (
@@ -156,6 +189,7 @@ export function MessageElement({
       persona={persona}
       prevMessage={prevMessage}
       className={className}
+      onRespondToProactive={onRespondToProactive}
     />
   );
 }
@@ -211,11 +245,17 @@ function PersonaMessage({
   persona,
   prevMessage,
   className,
+  onRespondToProactive,
 }: {
   message: MessageElementView;
   persona: AvatarPersona;
   prevMessage?: MessageElementView;
   className?: string;
+  onRespondToProactive?: (
+    messageId: string,
+    answer: string,
+    opts: { isAccept: boolean; proposal?: ProactiveProposal },
+  ) => Promise<void>;
 }) {
   // D-F2-7 once-per-turn rule: render the avatar UNLESS the previous message
   // was also a persona message (then this is a continuation of the same
@@ -278,6 +318,30 @@ function PersonaMessage({
 
         {message.tier && !message.streaming ? (
           <TierBadge tier={message.tier} />
+        ) : null}
+
+        {/* Spec 30 (D-30-2): the in-chat proactive-question rail. Renders the
+            shared 3+1 prompt (reused from the run viewer — no second renderer)
+            for a tool-gap / MCP-gap consent offer once the turn settles. The
+            enable option grants + retries; other answers continue the chat. */}
+        {message.proactive && !message.streaming && onRespondToProactive ? (
+          <AskUserPrompt
+            question={message.proactive.question}
+            options={message.proactive.options}
+            allowFreeForm={message.proactive.allowFreeForm}
+            onAnswer={(answer) => {
+              const proactive = message.proactive;
+              const enableLabel = proactive?.options?.[0]?.label;
+              const isAccept =
+                !!proactive?.proposal &&
+                !!enableLabel &&
+                answer === enableLabel;
+              return onRespondToProactive(message.id, answer, {
+                isAccept,
+                proposal: proactive?.proposal,
+              });
+            }}
+          />
         ) : null}
       </div>
 
@@ -461,6 +525,9 @@ function InterleavedContent({
           result: result?.content,
           isError: result?.isError,
           pending: !result,
+          // Spec 30 T01 (D-30-1): prefer the call's kind; fall back to the
+          // matched result's (both carry it when the runtime resolved it).
+          kind: ev.toolKind ?? result?.toolKind,
         };
         out.push(<ToolCallCard key={`tool-${ev.callId || i}`} entry={entry} />);
         // F4 T10: project the tool_call+tool_result pair onto OutputContent[]

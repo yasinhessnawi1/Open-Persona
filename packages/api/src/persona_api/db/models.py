@@ -55,10 +55,12 @@ __all__ = [
     "memory_chunks",
     "messages",
     "metadata",
+    "persona_mcp_assignments",
     "personas",
     "rate_limit_buckets",
     "runs",
     "turn_logs",
+    "user_mcp_servers",
     "users",
 ]
 
@@ -325,4 +327,48 @@ audit_log = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Index("idx_audit_user", "user_id"),
     Index("idx_audit_created", "created_at"),
+)
+
+# Spec 30 (D-30-3) — bring-your-own MCP servers. User-scoped (reusable across the
+# user's personas), RLS-keyed to owner_id. The user supplies an outbound URL the
+# runtime connects to → SSRF-sensitive (validated at the route + at connect, T08).
+# Credentials are encrypted at rest (Fernet, T07) in ``credentials_encrypted`` —
+# NEVER stored or logged in plaintext; ``auth_method`` ∈ {none, bearer, header}.
+# ``discovered_tools`` caches the eager-on-add discovery (D-30-5) for the UI.
+user_mcp_servers = Table(
+    "user_mcp_servers",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("name", Text, nullable=False),
+    Column("url", Text, nullable=False),
+    Column("auth_method", Text, nullable=False, server_default=text("'none'")),
+    # Fernet token (T07). NULL when auth_method = 'none'. Never plaintext, never logged.
+    Column("credentials_encrypted", Text),
+    Column("enabled", Boolean, nullable=False, server_default=text("true")),
+    # Cached tool list from eager discovery on add/test (D-30-5); refreshed lazily.
+    Column("discovered_tools", JSONB),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # No duplicate server names per user (the name keys the mcp:<name>: prefix).
+    UniqueConstraint("owner_id", "name", name="uq_user_mcp_servers_owner_name"),
+    Index("idx_user_mcp_servers_owner", "owner_id"),
+)
+
+# Spec 30 (D-30-6) — persona ↔ BYO-server assignment. Many-personas-to-one-server
+# so the YAML stays credential-free (no raw URLs in the versioned persona). The
+# toolbox resolves a persona's assignments to ``mcp:<server>:<tool>`` at load (T10).
+persona_mcp_assignments = Table(
+    "persona_mcp_assignments",
+    metadata,
+    Column("persona_id", Text, ForeignKey("personas.id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "server_id",
+        Text,
+        ForeignKey("user_mcp_servers.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("persona_id", "server_id", name="pk_persona_mcp_assignments"),
+    Index("idx_persona_mcp_assignments_server", "server_id"),
 )

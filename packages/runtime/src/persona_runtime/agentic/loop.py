@@ -326,7 +326,12 @@ class AgenticLoop:
         (D-03-3) the model recovers from; the same bad name twice in a row adds a
         stronger instruction (§5.2).
         """
-        await self._emit(on_event, RunEvent.tool_calling(step_num, list(response.tool_calls)))
+        await self._emit(
+            on_event,
+            RunEvent.tool_calling(
+                step_num, list(response.tool_calls), kind_of=self._toolbox.kind_for
+            ),
+        )
         new_context = list(context)
         if backend.supports_native_tools:
             # Native providers require the assistant's tool_calls to precede the
@@ -347,7 +352,12 @@ class AgenticLoop:
             new_context.append(
                 format_tool_result(call, result, provider_name=backend.provider_name)
             )
-            await self._emit(on_event, RunEvent.tool_result(step_num, call.name, result))
+            await self._emit(
+                on_event,
+                RunEvent.tool_result(
+                    step_num, call.name, result, kind=self._toolbox.kind_for(call.name)
+                ),
+            )
 
         # Inject any activated skills AFTER all tool results, so the tool-result
         # messages stay contiguous (backends expect them grouped) rather than a

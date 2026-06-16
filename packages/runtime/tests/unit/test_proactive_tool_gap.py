@@ -69,3 +69,24 @@ class TestBuildToolGapQuestion:
         assert question.allow_free_form is True
         assert "calculator" in question.question
         assert question.options[0].label == "Enable it and retry"
+
+    def test_carries_grant_tool_proposal(self) -> None:
+        # Spec 30 (D-30-2): the rail's accept→grant→retry descriptor.
+        signal = ToolGapSignal(
+            tool_name="calculator",
+            description="Evaluate exact arithmetic.",
+            matched_keyword="calculate",
+        )
+        proposal = build_tool_gap_question(signal).proposal
+        assert proposal is not None
+        assert proposal.kind == "tool"
+        assert proposal.name == "calculator"
+        assert proposal.action == "grant_tool"
+        assert proposal.provider == "builtin"
+        # provider present → included in the payload.
+        assert proposal.payload() == {
+            "kind": "tool",
+            "name": "calculator",
+            "action": "grant_tool",
+            "provider": "builtin",
+        }

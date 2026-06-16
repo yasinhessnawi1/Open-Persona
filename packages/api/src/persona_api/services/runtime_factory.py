@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from persona_runtime.tier import TierRegistry
     from sqlalchemy import Engine
 
+    from persona_api.config import APIConfig
     from persona_api.sandbox.pool import SandboxPool
 
 __all__ = ["RuntimeFactory"]
@@ -95,6 +96,7 @@ class RuntimeFactory:
         sandbox_pool: SandboxPool | None = None,
         workspace_root: Path | None = None,
         image_backend: ImageBackend | None = None,
+        api_config: APIConfig | None = None,
     ) -> None:
         """Composition root for per-request loops.
 
@@ -144,6 +146,12 @@ class RuntimeFactory:
         # Spec 25 §2.9 where ``make_generate_image_tool`` existed in core
         # but was never called from the API composition root.
         self._image_backend = image_backend
+        # Spec 30 (D-30-4/6) — APIConfig for the bring-your-own MCP credential
+        # cipher. ``None`` (CLI / tests) ⇒ BYO servers are not wired (no key to
+        # decrypt their credentials). The runtime resolves a persona's ASSIGNED
+        # BYO servers (D-30-6), connects them SSRF-pinned (enforce_ssrf=True),
+        # and merges their tools into the toolbox.
+        self._api_config = api_config
         # MCP clients accumulated across requests, closed on shutdown.
         self._mcp_clients: list[MCPClient] = []
         # Spec 27 (D-27-3) — app-scoped lazy supervisor for built-in MCP servers.
@@ -364,15 +372,62 @@ class RuntimeFactory:
         # references (mcp:<server>:) and hand their loopback URLs to the factory.
         # A persona that uses no built-in MCP spawns nothing.
         builtin_mcp_servers = await self._builtin_mcp.resolve(list(persona.tools))
+        # Spec 30 (D-30-4/6) — the persona's ASSIGNED bring-your-own MCP servers,
+        # built as SSRF-pinned clients (the LIVE connect path: resolve-then-pin
+        # + auth header from the decrypted credential). Empty when no servers are
+        # assigned or no credential key is configured.
+        byo_clients = self._build_byo_mcp_clients(persona)
         toolbox, mcp_clients = await build_default_toolbox(
             self._core_config,
             persona,
             extra_tools=extra or None,  # type: ignore[arg-type]
             workspace_persister=workspace_persister,
             extra_mcp_servers=builtin_mcp_servers or None,
+            extra_mcp_clients=byo_clients or None,
         )
         self._mcp_clients.extend(mcp_clients)
         return toolbox
+
+    def _build_byo_mcp_clients(self, persona: Persona) -> list[MCPClient]:
+        """Build SSRF-pinned MCP clients for the persona's assigned BYO servers (D-30-4/6).
+
+        Resolves the assignment (the authorization), decrypts each credential
+        transiently to form the auth header, and constructs an ``MCPClient`` with
+        ``enforce_ssrf=True`` so the user-supplied URL is resolve-then-pinned +
+        re-validated on EVERY request — the live runtime path, not just
+        test-connection. Returns ``[]`` when no APIConfig (no key) or no
+        persona_id; the clients are connected (gracefully) inside the toolbox build.
+        """
+        if self._api_config is None or persona.persona_id is None:
+            return []
+        # Local import: keeps the persona-core CLI/test import path free of the
+        # api-only BYO-MCP store + avoids any import cycle at module load.
+        from persona.tools.mcp.client import MCPClient
+
+        from persona_api.mcp import store as mcp_store
+
+        servers = mcp_store.decrypted_servers_for_persona(
+            rls_engine=self._engine,
+            config=self._api_config,
+            persona_id=persona.persona_id,
+        )
+        clients: list[MCPClient] = []
+        for s in servers:
+            headers = (
+                {"Authorization": f"Bearer {s['credential']}"}
+                if s["auth_method"] == "bearer" and s["credential"]
+                else None
+            )
+            clients.append(
+                MCPClient(
+                    server_name=str(s["name"]),
+                    server_url=str(s["url"]),
+                    persona_id=persona.persona_id,
+                    enforce_ssrf=True,  # LIVE pinned path (resolve-then-pin per request)
+                    headers=headers,
+                )
+            )
+        return clients
 
     def _scan_skills(self, persona: Persona) -> tuple[SkillScanner, list[object]]:
         # ``BUILTIN_ROOT`` (re-exported from persona-core ``persona.skills``)

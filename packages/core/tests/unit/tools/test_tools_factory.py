@@ -246,6 +246,40 @@ class TestBuildDefaultToolboxWithMCP:
         connect_events = [e for e in audit.events if e.action == "connect"]
         assert len(connect_events) == 1
 
+    @pytest.mark.asyncio
+    async def test_extra_mcp_clients_tools_are_auto_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Spec 30 (D-30-4/6): a bring-your-own client's tools are added AND
+        # auto-allowed even though the persona's YAML tools never name them
+        # (the assignment is the authorization). Fakes accept **kwargs so the
+        # SSRF-pinned factory / headers args are tolerated.
+        import mcp
+        import mcp.client.streamable_http as shttp
+        from persona.tools.mcp.client import MCPClient
+
+        @asynccontextmanager
+        async def _fake_transport_kw(_url: str, **_kw: Any) -> Any:  # noqa: ANN401
+            yield (MagicMock(), MagicMock(), MagicMock())
+
+        monkeypatch.setattr(shttp, "streamablehttp_client", _fake_transport_kw)
+        monkeypatch.setattr(mcp, "ClientSession", _fake_session)
+
+        config = PersonaCoreConfig(tools_sandbox_root=tmp_path)
+        # The persona declares only file_read — NOT the BYO server's tools.
+        persona = _persona(tools=["file_read"])
+        byo = MCPClient(server_name="byo", server_url="https://byo.example/mcp")
+
+        toolbox, clients = await build_default_toolbox(
+            config, persona, extra_mcp_clients=[byo]
+        )
+
+        names = toolbox.names()
+        assert "file_read" in names
+        # The BYO tool is allowed despite not being in persona.tools.
+        assert "mcp:byo:search" in names
+        assert byo in clients
+
         for c in clients:
             await c.disconnect()
 

@@ -50,6 +50,7 @@ from persona_api.routes import (
     documents,
     health,
     imagegen,
+    mcp_servers,
     me,
     personas,
     runs,
@@ -291,6 +292,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # toolbox never did). ``None`` ⇒ tool absent (same graceful
                 # shape as sandbox_pool).
                 image_backend=app.state.image_backend,
+                # Spec 30 (D-30-4/6): the credential cipher key for bring-your-own
+                # MCP — the factory resolves a persona's assigned BYO servers and
+                # connects them SSRF-pinned with the decrypted auth header.
+                api_config=config,
             )
             app.state.tier_registry = tier_registry
             app.state.authoring_tier = config.authoring_tier
@@ -388,3 +393,4 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(uploads.router)
     app.include_router(imagegen.router)
     app.include_router(artifacts.router)
+    app.include_router(mcp_servers.router)  # spec 30: bring-your-own MCP

@@ -48,6 +48,7 @@ async def build_default_toolbox(
     extra_tools: list[AsyncTool] | None = None,
     workspace_persister: WorkspacePersister | None = None,
     extra_mcp_servers: dict[str, str] | None = None,
+    extra_mcp_clients: list[MCPClient] | None = None,
 ) -> tuple[Toolbox, list[MCPClient]]:
     """Compose a Toolbox for the given persona.
 
@@ -74,6 +75,13 @@ async def build_default_toolbox(
             launcher passes the lazily-spawned built-in MCP server URLs here;
             entries override same-named ``config.mcp_servers`` entries. ``None``
             (CLI / test path) ⇒ only the env-configured servers are connected.
+        extra_mcp_clients: Spec 30 (D-30-4/6) — pre-built bring-your-own MCP
+            clients (constructed with ``enforce_ssrf=True`` + any auth headers by
+            the API factory, which holds the decryption key). They are connected
+            here (``strict=False``, graceful) and their tools are added to the
+            toolbox AND auto-allowed: the persona↔server *assignment* is the
+            authorization (D-30-6), so BYO tool names are admitted regardless of
+            the YAML ``tools`` allow-list (which never names them).
 
     Returns:
         A tuple ``(toolbox, mcp_clients)``. The caller is responsible for
@@ -135,16 +143,34 @@ async def build_default_toolbox(
         for c in mcp_clients:
             mcp_tools.extend(c.get_tools())
 
-    all_tools: list[AsyncTool] = [*builtins, *mcp_tools, *(extra_tools or [])]
+    # Spec 30 (D-30-4/6) — bring-your-own MCP clients (SSRF-pinned, pre-built by
+    # the API factory). Connect gracefully; their tool names are auto-allowed
+    # because the assignment is the authorization (the YAML allow-list never
+    # names them). A server that fails to connect simply contributes no tools.
+    byo_tools: list[AsyncTool] = []
+    byo_allow: list[str] = []
+    for c in extra_mcp_clients or []:
+        await c.connect(strict=False)
+        client_tools = c.get_tools()
+        byo_tools.extend(client_tools)
+        byo_allow.extend(t.name for t in client_tools)
+        mcp_clients.append(c)
+
+    all_tools: list[AsyncTool] = [*builtins, *mcp_tools, *byo_tools, *(extra_tools or [])]
 
     _logger.info(
         "build_default_toolbox composed",
         persona_id=persona.persona_id or "<unknown>",
         builtin_count=len(builtins),
         mcp_tool_count=len(mcp_tools),
+        byo_mcp_tool_count=len(byo_tools),
         extra_tool_count=len(extra_tools or []),
         allow_list_size=len(persona.tools),
     )
 
-    toolbox = Toolbox(all_tools, allow_list=list(persona.tools) if persona.tools else None)
+    # The allow-list: the persona's declared tools PLUS the assigned BYO tool
+    # names. When the persona declares nothing (dev-permissive None path) BYO
+    # tools are allowed anyway (all-allowed), preserving prior behaviour exactly.
+    allow_list = [*persona.tools, *byo_allow] if persona.tools else None
+    toolbox = Toolbox(all_tools, allow_list=allow_list)
     return toolbox, mcp_clients

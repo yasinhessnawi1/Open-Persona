@@ -32,6 +32,7 @@ from persona_runtime.errors import InvalidQuestionAnswerError
 
 __all__ = [
     "PROACTIVE_QUESTION_OPTION_COUNT",
+    "ProactiveProposal",
     "ProactiveQuestion",
     "QuestionOption",
     "QuestionRegistry",
@@ -81,6 +82,39 @@ class QuestionOption(BaseModel):
     description: str = ""
 
 
+class ProactiveProposal(BaseModel):
+    """A general, source-agnostic action a proactive question proposes (spec 30, D-30-2).
+
+    The shared chat-proactive-question rail (spec 30) carries this so the web can
+    wire *accept → endpoint → retry* without parsing prose. The envelope is the
+    LOCKED ``{kind, name, provider?, action}`` shape Spec 31 builds against —
+    keep it general (it carries tool-gap + MCP-gap consent now, and Spec 31's
+    autonomy clarifications / auto-dispatch consent later).
+
+    Attributes:
+        kind: The proposal category — ``"tool"`` / ``"mcp"`` for capability gaps
+            (spec 30); future sources set their own (e.g. ``"autonomy"``).
+        name: The identifier the ``action`` consumes — a tool name, an
+            ``mcp:<server>`` allow-list entry, etc. (the grant/assign target).
+        action: What the web does on accept — ``"grant_tool"`` (reuse
+            ``POST /personas/{id}/tools``) / ``"assign_mcp"`` (BYO assignment) /
+            future actions. The web maps ``action`` → endpoint.
+        provider: Optional provider tag for display badging — ``"builtin"`` /
+            ``"mcp:builtin"`` / ``"mcp:optional"``. Omitted on the wire when unset.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    provider: str | None = None
+
+    def payload(self) -> dict[str, str]:
+        """JSON-safe payload for the SSE event; ``provider`` omitted when unset."""
+        return self.model_dump(exclude_none=True)
+
+
 class ProactiveQuestion(BaseModel):
     """A clarifying question in the 3+1 format (D-21-9).
 
@@ -93,6 +127,10 @@ class ProactiveQuestion(BaseModel):
         options: Exactly :data:`PROACTIVE_QUESTION_OPTION_COUNT` predefined
             options; a recommended option is conventionally listed first.
         allow_free_form: Whether a free-form answer is accepted (default true).
+        proposal: Optional source-agnostic action the question proposes (spec 30
+            rail, D-30-2). ``None`` for a plain clarifying ask (the Spec-21
+            ambiguity path); set by the capability-gap builders so the web can
+            wire accept → grant/assign → retry.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -100,6 +138,7 @@ class ProactiveQuestion(BaseModel):
     question: str = Field(min_length=1)
     options: tuple[QuestionOption, ...]
     allow_free_form: bool = True
+    proposal: ProactiveProposal | None = None
 
     @field_validator("options", mode="after")
     @classmethod

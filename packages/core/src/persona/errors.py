@@ -195,6 +195,21 @@ class MCPBuiltinServerError(PersonaError):
     """
 
 
+class MCPUrlNotAllowedError(PersonaError):
+    """Raised when a user-supplied MCP server URL fails the SSRF guard (Spec 30, D-30-4).
+
+    The bring-your-own MCP surface lets a user supply an outbound URL the runtime
+    connects to — a server-side request forgery surface (the live MCP-SSRF CVE
+    class). The guard (:mod:`persona.tools.mcp.ssrf`) rejects a non-``https``
+    scheme, a missing/unresolvable host, or a host resolving to a
+    private/loopback/link-local/cloud-metadata/CGNAT/reserved address (incl.
+    IPv4-mapped + NAT64-embedded forms). ``context["reason"]`` carries the
+    *category* only — never the resolved internal IP (no reconnaissance aid).
+    Enforced at add/test time AND on every live connect (resolve-then-pin) so a
+    rebind between check and use cannot slip through.
+    """
+
+
 class AuthenticationError(PersonaError):
     """Raised when a request has no valid bearer token (→ 401 at the API edge).
 

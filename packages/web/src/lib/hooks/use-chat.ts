@@ -1,11 +1,12 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { ChatMessageView } from "@/components/chat/message-element";
 import { ApiError, createApiClient, unwrap } from "@/lib/api/client";
 import type { components } from "@/lib/api/schema";
 import { consumeSSE } from "@/lib/sse";
+import type { ProactiveProposal } from "@/lib/sse-types";
 import { parseChatEvent } from "@/lib/sse-types";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -27,11 +28,18 @@ export type ImageRef = components["schemas"]["ImageRef"];
  * history — never resume the raw SSE. (A clean ApiError like 429 keeps the
  * optimistic turn so the user can retry.)
  */
-export function useChat(conversationId: string, initial: ChatMessageView[]) {
+export function useChat(
+  conversationId: string,
+  initial: ChatMessageView[],
+  personaId: string,
+) {
   const { getToken } = useAuth();
   const [messages, setMessages] = useState<ChatMessageView[]>(initial);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState(false);
+  // Spec 30 (D-30-2): the last user message, so an in-chat consent accept can
+  // re-send it (surface-and-retry) once the capability is granted.
+  const lastUserMessage = useRef<string>("");
 
   const token = useCallback(
     () => getToken(TEMPLATE ? { template: TEMPLATE } : undefined),
@@ -59,6 +67,7 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
     async (content: string, attachedImages: ImageRef[] = []) => {
       if (!content.trim() || streaming) return;
       setError(false);
+      lastUserMessage.current = content;
       const userId = crypto.randomUUID();
       const asstId = crypto.randomUUID();
       setMessages((m) => [
@@ -137,6 +146,8 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
                   toolName: c.name,
                   args: c.args,
                   pending: true,
+                  // Spec 30 T01 (D-30-1): the source badge the card renders.
+                  kind: c.kind,
                 })),
               ],
               events: [
@@ -148,6 +159,7 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
                       callId: c.call_id,
                       toolName: c.name,
                       args: c.args,
+                      toolKind: c.kind,
                     }) as const,
                 ),
               ],
@@ -165,6 +177,8 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
                     result: ev.data.content,
                     isError: ev.data.is_error,
                     pending: false,
+                    // Prefer the result frame's kind; keep the call's if absent.
+                    kind: ev.data.kind ?? tools[i].kind,
                   };
                   break;
                 }
@@ -179,6 +193,7 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
                     toolName: ev.data.tool_name,
                     content: ev.data.content,
                     isError: ev.data.is_error,
+                    toolKind: ev.data.kind,
                     // F4 T02b: forward structured produced_files when the
                     // runtime amendment surfaces them. Renders inline via the
                     // OutputDispatcher in MessageElement (T10). Absent on
@@ -191,6 +206,23 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
                 ],
               };
             });
+          } else if (ev.event === "asking_user") {
+            // Spec 30 (D-30-2): the chat-proactive-question rail. The shared
+            // loop emits this for a tool-gap / MCP-gap consent offer (the
+            // question prose also streamed as chunks above). Attach the
+            // interactive prompt to the assistant turn so the rail renders
+            // inline; `proposal` (when present) carries the accept→grant→retry
+            // descriptor. A plain clarifying ask (no proposal) renders the 3+1
+            // / free-text prompt without a grant action.
+            patch((a) => ({
+              ...a,
+              proactive: {
+                question: ev.data.question,
+                options: ev.data.options,
+                allowFreeForm: ev.data.allow_free_form,
+                proposal: ev.data.proposal,
+              },
+            }));
           } else if (ev.event === "done") {
             patch((a) => ({ ...a, tier: ev.data.tier }));
           }
@@ -211,5 +243,50 @@ export function useChat(conversationId: string, initial: ChatMessageView[]) {
     [conversationId, streaming, token, reload],
   );
 
-  return { messages, streaming, error, send, reload };
+  // Spec 30 (D-30-2): grant a capability the runtime offered (the rail's
+  // accept path). For an `mcp:<server>` proposal the API consent path admits
+  // catalog-valid MCP names (D-30-X-mcp-gap-accept-target). RLS-scoped via the
+  // bearer token. Persisting the grant to the persona's allow-list is what makes
+  // the retry effective — the next turn rebuilds the toolbox with the new tool.
+  const grantCapability = useCallback(
+    async (toolName: string) => {
+      const jwt = await token();
+      const client = createApiClient(() => Promise.resolve(jwt));
+      await unwrap(
+        await client.POST("/v1/personas/{persona_id}/tools", {
+          params: { path: { persona_id: personaId } },
+          body: { tool_name: toolName },
+        }),
+      );
+    },
+    [personaId, token],
+  );
+
+  // Spec 30 (D-30-2): answer an in-chat proactive question. The enable option
+  // (with a `grant_tool` proposal) grants the capability then RE-SENDS the prior
+  // user message (surface-and-retry — chat is request/response, no held SSE).
+  // Every other answer (decline / explain / free-form) is just the next user
+  // message. Clears the prompt on the assistant turn either way.
+  const respondToProactive = useCallback(
+    async (
+      messageId: string,
+      answer: string,
+      opts: { isAccept: boolean; proposal?: ProactiveProposal },
+    ) => {
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === messageId ? { ...msg, proactive: undefined } : msg,
+        ),
+      );
+      if (opts.isAccept && opts.proposal?.action === "grant_tool") {
+        await grantCapability(opts.proposal.name);
+        await send(lastUserMessage.current);
+        return;
+      }
+      await send(answer);
+    },
+    [grantCapability, send],
+  );
+
+  return { messages, streaming, error, send, reload, respondToProactive };
 }

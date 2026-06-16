@@ -29,6 +29,7 @@ from persona.schema.chunks import ChunkProvenance, PersonaChunk, WriteSource
 from persona.stores import SelfFactsStore
 from persona.stores.postgres import PostgresBackend
 from persona.tools import known_tool_names
+from persona.tools.mcp.catalog import known_mcp_server_names
 from sqlalchemy import select, update
 
 from persona_api.db.models import personas as personas_t
@@ -52,6 +53,24 @@ def _logical_id(tool_name: str) -> str:
     return f"tool_consent::{tool_name}"
 
 
+def _is_valid_consent_target(tool_name: str) -> bool:
+    """Whether ``tool_name`` may be granted onto a persona's allow-list.
+
+    A built-in tool (catalog name), OR a built-in MCP server in the form
+    ``mcp:<server>`` whose ``<server>`` is in the MCP catalog (Spec 30,
+    D-30-X-mcp-gap-accept-target — the MCP-gap accept reuses this consent path).
+    Never a hallucinated name. Bring-your-own MCP servers are NOT granted here —
+    they use the assignment path (D-30-6), not the catalog allow-list.
+    """
+    if tool_name in known_tool_names():
+        return True
+    if tool_name.startswith("mcp:"):
+        parts = tool_name.split(":")
+        server = parts[1] if len(parts) >= 2 else ""
+        return bool(server) and server in known_mcp_server_names()
+    return False
+
+
 def grant_tool_consent(
     *,
     rls_engine: Engine,
@@ -72,7 +91,8 @@ def grant_tool_consent(
         audit_root: JSONL audit root for the self_facts store.
         persona_id: The persona to grant the tool to.
         owner_id: The persona's owner (for YAML re-validation).
-        tool_name: The catalog tool to enable.
+        tool_name: The catalog tool to enable, or an ``mcp:<server>`` built-in
+            MCP server (Spec 30, D-30-X-mcp-gap-accept-target).
         written_by: The acting user id (recorded on the audit chunk).
         now: tz-aware UTC timestamp.
         turn_index: Optional conversation turn the consent came from (audit).
@@ -82,10 +102,11 @@ def grant_tool_consent(
         had it (idempotent — no write, no audit).
 
     Raises:
-        ToolNotAllowedError: ``tool_name`` is not a known catalog tool.
+        ToolNotAllowedError: ``tool_name`` is neither a known catalog tool nor a
+            catalog-valid ``mcp:<server>`` (never a hallucinated name).
         PersonaNotFoundError: the persona does not exist (under the RLS scope).
     """
-    if tool_name not in known_tool_names():
+    if not _is_valid_consent_target(tool_name):
         raise ToolNotAllowedError(
             "cannot enable an unknown tool",
             context={"tool": tool_name, "persona_id": persona_id},

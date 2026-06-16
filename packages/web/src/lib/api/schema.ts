@@ -19,7 +19,11 @@ export interface paths {
     put?: never;
     /**
      * Create Persona
-     * @description Create a persona from YAML; populate its memory stores (D-08-8).
+     * @description Create a persona from YAML; populate memory stores; auto-generate an avatar.
+     *
+     *     The avatar is generated only when the builder supplied none (D-29-3); the
+     *     generation is fail-soft so create never fails on an imagegen problem
+     *     (D-29-X-fail-soft). A user-supplied ``avatar_url`` always wins (criterion 6).
      */
     post: operations["create_persona_v1_personas_post"];
     delete?: never;
@@ -77,6 +81,83 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/personas/recommend-tools": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Recommend Tools
+     * @description Recommend a ranked tool subset for a persona description (spec 26 T09).
+     *
+     *     Authoring-time assist: given the natural-language description, a single
+     *     mid-tier call (D-26-2) returns up to 10 catalog-valid tool recommendations,
+     *     highest-confidence first. Reuses the description-only ``AuthorPersonaRequest``
+     *     body. Deducts the flat authoring credit (a mid-tier LLM call).
+     */
+    post: operations["recommend_tools_v1_personas_recommend_tools_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/personas/recommend-capabilities": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Recommend Capabilities
+     * @description Recommend a unified, provider-tagged capability set (spec 27 T10).
+     *
+     *     The D-26-10 generalisation of ``/recommend-tools``: one mid-tier call ranks
+     *     built-in tools, skills, and MCP servers together (each tagged with its
+     *     provider), capped at the combined maximum (D-27-13). Deducts the same flat
+     *     authoring credit (a mid-tier LLM call).
+     */
+    post: operations["recommend_capabilities_v1_personas_recommend_capabilities_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/personas/{persona_id}/tools": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Grant Tool
+     * @description Enable a tool on the persona's allow-list via runtime consent (spec 26 T11).
+     *
+     *     Called when the user accepts a runtime tool-gap offer (T10). Adds the tool to
+     *     the persona's ``tools`` list (persisted in the YAML column — no migration)
+     *     and records the grant as a versioned ``persona_self`` self-fact (force +
+     *     confidence ≥ 0.8 + reason, D-26-X-self-facts-consent-write-contract). Returns
+     *     the updated persona detail. Idempotent: re-granting an already-enabled tool
+     *     is a no-op that still returns 200.
+     */
+    post: operations["grant_tool_v1_personas__persona_id__tools_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/personas/{persona_id}": {
     parameters: {
       query?: never;
@@ -103,6 +184,30 @@ export interface paths {
      * @description Replace a persona's YAML (re-validated) and re-index its memory.
      */
     patch: operations["update_persona_v1_personas__persona_id__patch"];
+    trace?: never;
+  };
+  "/v1/personas/{persona_id}/consent": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Set Consent
+     * @description Set the persona's auto-dispatch consent (grant / decline / revoke).
+     *
+     *     Spec 21 T09 (D-21-2/7/8): only this ``user``-sourced settings write may
+     *     change consent; ``persona_self`` never can. Each transition stamps
+     *     ``consent_updated_at`` and emits an ``AuditEvent`` naming the transition.
+     */
+    patch: operations["set_consent_v1_personas__persona_id__consent_patch"];
     trace?: never;
   };
   "/v1/personas/{persona_id}/conversations": {
@@ -414,6 +519,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/mcp-catalog": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Mcp Catalog
+     * @description List the built-in MCP servers (spec 30 T11) for the capability-management UI.
+     */
+    get: operations["list_mcp_catalog_v1_mcp_catalog_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/conversations/{conversation_id}/documents": {
     parameters: {
       query?: never;
@@ -621,6 +746,122 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/mcp-servers": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Mcp Servers
+     * @description List the caller's BYO MCP servers (credential redacted).
+     */
+    get: operations["list_mcp_servers_v1_mcp_servers_get"];
+    put?: never;
+    /**
+     * Create Mcp Server
+     * @description Add a bring-your-own MCP server (SSRF-validated; credential encrypted).
+     */
+    post: operations["create_mcp_server_v1_mcp_servers_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/mcp-servers/{server_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Mcp Server
+     * @description Get one BYO MCP server (RLS-scoped → 404).
+     */
+    get: operations["get_mcp_server_v1_mcp_servers__server_id__get"];
+    put?: never;
+    post?: never;
+    /**
+     * Delete Mcp Server
+     * @description Delete a BYO MCP server (assignments cascade; RLS-scoped → 404).
+     */
+    delete: operations["delete_mcp_server_v1_mcp_servers__server_id__delete"];
+    options?: never;
+    head?: never;
+    /**
+     * Update Mcp Server
+     * @description Patch a BYO MCP server (re-validates a new URL; re-encrypts credentials).
+     */
+    patch: operations["update_mcp_server_v1_mcp_servers__server_id__patch"];
+    trace?: never;
+  };
+  "/v1/mcp-servers/{server_id}/test": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Check Mcp Server Connection
+     * @description Test-connect to the server (SSRF-pinned) and discover its tools (D-30-5).
+     */
+    post: operations["check_mcp_server_connection_v1_mcp_servers__server_id__test_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/personas/{persona_id}/mcp-servers": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Persona Mcp Servers
+     * @description List the BYO MCP servers assigned to a persona (RLS-scoped).
+     */
+    get: operations["list_persona_mcp_servers_v1_personas__persona_id__mcp_servers_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/personas/{persona_id}/mcp-servers/{server_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Assign Mcp Server
+     * @description Assign a BYO MCP server to a persona (D-30-6; idempotent; RLS both ends).
+     */
+    put: operations["assign_mcp_server_v1_personas__persona_id__mcp_servers__server_id__put"];
+    post?: never;
+    /**
+     * Unassign Mcp Server
+     * @description Remove a persona↔server assignment (idempotent; RLS-scoped).
+     */
+    delete: operations["unassign_mcp_server_v1_personas__persona_id__mcp_servers__server_id__delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -812,6 +1053,29 @@ export interface components {
       title: string;
     };
     /**
+     * CreateMCPServerRequest
+     * @description Add a bring-your-own MCP server (spec 30, D-30-3/4).
+     *
+     *     ``url`` is SSRF-validated (https-only, public target) at the route AND on
+     *     every live connect. ``credential`` (a bearer token for ``auth_method =
+     *     "bearer"``) is encrypted at rest (T07) and NEVER returned or logged; it is
+     *     required when ``auth_method`` is not ``"none"``.
+     */
+    CreateMCPServerRequest: {
+      /** Name */
+      name: string;
+      /** Url */
+      url: string;
+      /**
+       * Auth Method
+       * @default none
+       * @enum {string}
+       */
+      auth_method: "none" | "bearer";
+      /** Credential */
+      credential?: string | null;
+    };
+    /**
      * CreatePersonaRequest
      * @description Create a persona from a YAML document (validated against the v1.0 schema).
      *
@@ -876,6 +1140,19 @@ export interface components {
        * @default []
        */
       images: components["schemas"]["ImageContent"][];
+    };
+    /**
+     * GrantToolRequest
+     * @description Enable a tool on a persona's allow-list via runtime consent (spec 26 T11).
+     *
+     *     Sent when the user accepts a runtime tool-gap offer. ``turn_index`` is the
+     *     conversation turn the offer came from (recorded in the persona_self audit).
+     */
+    GrantToolRequest: {
+      /** Tool Name */
+      tool_name: string;
+      /** Turn Index */
+      turn_index?: number | null;
     };
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -1008,6 +1285,75 @@ export interface components {
       | "vision_handoff_required"
       | "vision_handoff";
     /**
+     * MCPCatalogServer
+     * @description A built-in MCP server in the management catalog (spec 30 T11).
+     *
+     *     A persona enables a server by adding ``mcp:<name>`` to its ``tools``
+     *     allow-list. ``provider`` is the recommender tag (``mcp:builtin`` /
+     *     ``mcp:optional``); ``required_env`` lists env vars an operator must set.
+     */
+    MCPCatalogServer: {
+      /** Name */
+      name: string;
+      /** Description */
+      description: string;
+      /** Provider */
+      provider: string;
+      /** Default Enabled */
+      default_enabled: boolean;
+      /** Required Env */
+      required_env?: string[];
+    };
+    /**
+     * MCPServerDetail
+     * @description A bring-your-own MCP server as returned to its owner (spec 30, D-30-3).
+     *
+     *     The credential is NEVER included — only ``has_credential`` (whether one is
+     *     stored). ``discovered_tools`` is the cached eager-discovery result (D-30-5),
+     *     ``None`` until a successful test-connection.
+     */
+    MCPServerDetail: {
+      /** Id */
+      id: string;
+      /** Name */
+      name: string;
+      /** Url */
+      url: string;
+      /** Auth Method */
+      auth_method: string;
+      /** Enabled */
+      enabled: boolean;
+      /** Has Credential */
+      has_credential: boolean;
+      /** Discovered Tools */
+      discovered_tools?: string[] | null;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+    };
+    /**
+     * MCPServerTestResult
+     * @description Outcome of a BYO-MCP test-connection (spec 30, D-30-5).
+     *
+     *     ``ok`` true → ``tools`` lists the discovered tool names (cached on the row).
+     *     ``ok`` false → ``error`` is a short, non-sensitive reason category.
+     */
+    MCPServerTestResult: {
+      /** Ok */
+      ok: boolean;
+      /** Tools */
+      tools?: string[];
+      /** Error */
+      error?: string | null;
+    };
+    /**
      * MessageView
      * @description A single message in a conversation history.
      */
@@ -1079,6 +1425,10 @@ export interface components {
       /** Avatar Url */
       avatar_url?: string | null;
       capabilities?: components["schemas"]["PersonaCapabilities"] | null;
+      /** Consent To Auto Dispatch */
+      consent_to_auto_dispatch?: boolean | null;
+      /** Consent Updated At */
+      consent_updated_at?: string | null;
       /**
        * Created At
        * Format: date-time
@@ -1195,12 +1545,68 @@ export interface components {
       error?: string | null;
     };
     /**
+     * SetConsentRequest
+     * @description Set a persona's auto-dispatch consent (spec 21 T09, D-21-7/2).
+     *
+     *     ``granted``: ``True`` = grant (auto-dispatch), ``False`` = decline (stable,
+     *     no re-prompt), ``None`` = revoke back to "ask" (the settings-toggle OFF
+     *     path, which re-arms the prompt on the next autonomous dispatch).
+     */
+    SetConsentRequest: {
+      /** Granted */
+      granted?: boolean | null;
+    };
+    /**
      * StartRunRequest
      * @description Start an agentic run for a task (§5.3).
      */
     StartRunRequest: {
       /** Task */
       task: string;
+    };
+    /**
+     * ToolRecommendation
+     * @description One recommended capability for a persona (spec 26 T09 / spec 27 T10).
+     *
+     *     Spec 27 realises the D-26-10 unification: the same shape now carries a
+     *     provider tag so built-in tools, skills, and MCP servers rank together. The
+     *     ``provider`` field defaults to ``"builtin"`` so the Spec-26 shape (and its
+     *     callers/tests) stay a forward-compatible strict subset.
+     *
+     *     Attributes:
+     *         tool_name: The capability name — a built-in tool name from
+     *             ``persona.tools.TOOL_CATALOG``, a skill id, or an ``mcp:<server>``
+     *             reference. Hallucinated names are filtered out post-hoc.
+     *         rationale: One-line reason the capability fits this persona.
+     *         confidence: Recommender confidence in [0, 1]; entries below the floor
+     *             are dropped before return.
+     *         provider: Where the capability comes from — ``"builtin"`` (tool),
+     *             ``"skill"``, ``"mcp:builtin"`` (default-enabled MCP server), or
+     *             ``"mcp:optional"`` (opt-in / BYO MCP server). The UI groups by
+     *             provider but ranks across all (spec 27 §2.3 / D-27-13).
+     */
+    ToolRecommendation: {
+      /** Tool Name */
+      tool_name: string;
+      /** Rationale */
+      rationale: string;
+      /** Confidence */
+      confidence: number;
+      /**
+       * Provider
+       * @default builtin
+       */
+      provider: string;
+    };
+    /**
+     * ToolRecommendationResponse
+     * @description The ranked tool-recommendation list returned by ``/personas/recommend-tools``.
+     */
+    ToolRecommendationResponse: {
+      /** Recommendations */
+      recommendations?: components["schemas"]["ToolRecommendation"][];
+      /** Prompt Version */
+      prompt_version: string;
     };
     /**
      * ToolSummary
@@ -1211,6 +1617,26 @@ export interface components {
       name: string;
       /** Description */
       description: string;
+    };
+    /**
+     * UpdateMCPServerRequest
+     * @description Patch a BYO MCP server (spec 30). All fields optional; omitted = unchanged.
+     *
+     *     Setting ``credential`` replaces the stored secret (re-encrypted); to clear a
+     *     credential, set ``auth_method = "none"``. ``enabled`` toggles the server
+     *     without deleting it.
+     */
+    UpdateMCPServerRequest: {
+      /** Name */
+      name?: string | null;
+      /** Url */
+      url?: string | null;
+      /** Auth Method */
+      auth_method?: ("none" | "bearer") | null;
+      /** Credential */
+      credential?: string | null;
+      /** Enabled */
+      enabled?: boolean | null;
     };
     /**
      * UpdatePersonaRequest
@@ -1398,6 +1824,107 @@ export interface operations {
       };
     };
   };
+  recommend_tools_v1_personas_recommend_tools_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AuthorPersonaRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ToolRecommendationResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  recommend_capabilities_v1_personas_recommend_capabilities_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AuthorPersonaRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ToolRecommendationResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  grant_tool_v1_personas__persona_id__tools_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        persona_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["GrantToolRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PersonaDetail"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   get_persona_v1_personas__persona_id__get: {
     parameters: {
       query?: never;
@@ -1470,6 +1997,41 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["UpdatePersonaRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PersonaDetail"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  set_consent_v1_personas__persona_id__consent_patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        persona_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SetConsentRequest"];
       };
     };
     responses: {
@@ -1930,6 +2492,26 @@ export interface operations {
       };
     };
   };
+  list_mcp_catalog_v1_mcp_catalog_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MCPCatalogServer"][];
+        };
+      };
+    };
+  };
   list_documents_v1_conversations__conversation_id__documents_get: {
     parameters: {
       query?: never;
@@ -2103,7 +2685,7 @@ export interface operations {
         limit?: number;
         offset?: number;
         source?: ("upload" | "generated") | null;
-        type?: ("image" | "chart" | "doc" | "data") | null;
+        type?: ("image" | "chart" | "doc" | "data" | "diagram") | null;
         conversation_id?: string | null;
         q?: string | null;
       };
@@ -2142,6 +2724,276 @@ export interface operations {
       path: {
         persona_id: string;
         ref: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  list_mcp_servers_v1_mcp_servers_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MCPServerDetail"][];
+        };
+      };
+    };
+  };
+  create_mcp_server_v1_mcp_servers_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateMCPServerRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MCPServerDetail"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  get_mcp_server_v1_mcp_servers__server_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        server_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MCPServerDetail"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  delete_mcp_server_v1_mcp_servers__server_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        server_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  update_mcp_server_v1_mcp_servers__server_id__patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        server_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UpdateMCPServerRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MCPServerDetail"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  check_mcp_server_connection_v1_mcp_servers__server_id__test_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        server_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MCPServerTestResult"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  list_persona_mcp_servers_v1_personas__persona_id__mcp_servers_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        persona_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MCPServerDetail"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  assign_mcp_server_v1_personas__persona_id__mcp_servers__server_id__put: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        persona_id: string;
+        server_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  unassign_mcp_server_v1_personas__persona_id__mcp_servers__server_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        persona_id: string;
+        server_id: string;
       };
       cookie?: never;
     };

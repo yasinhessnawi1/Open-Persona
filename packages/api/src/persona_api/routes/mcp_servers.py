@@ -1,0 +1,213 @@
+"""Bring-your-own MCP server routes (spec 30 T09, D-30-3/4/5/6).
+
+RLS-scoped CRUD + test-connection/discovery for user-owned MCP servers, plus
+persona↔server assignment. The user-supplied URL is SSRF-validated at every
+mutation (and resolve-then-pinned on the live connect, in the store/runtime);
+credentials are encrypted at rest and NEVER returned (only ``has_credential``).
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Request, status
+
+from persona_api.auth import AuthenticatedUser, get_current_user
+from persona_api.mcp import store as mcp_store
+from persona_api.middleware.rate_limit import rate_limit
+from persona_api.schemas import (
+    CreateMCPServerRequest,
+    MCPServerDetail,
+    MCPServerTestResult,
+    UpdateMCPServerRequest,
+)
+from persona_api.services import audit_service
+
+router = APIRouter(prefix="/v1", tags=["mcp"])
+
+__all__ = ["router"]
+
+
+@router.post(
+    "/mcp-servers",
+    response_model=MCPServerDetail,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit("default"))],
+)
+async def create_mcp_server(
+    body: CreateMCPServerRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> MCPServerDetail:
+    """Add a bring-your-own MCP server (SSRF-validated; credential encrypted)."""
+    detail = mcp_store.create_server(
+        rls_engine=request.app.state.rls_engine,
+        config=request.app.state.config,
+        owner_id=user.id,
+        name=body.name,
+        url=body.url,
+        auth_method=body.auth_method,
+        credential=body.credential,
+    )
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action="mcp.server_add",
+        target=detail["id"],
+    )
+    return MCPServerDetail(**detail)
+
+
+@router.get("/mcp-servers", response_model=list[MCPServerDetail])
+async def list_mcp_servers(
+    request: Request,
+    _user: AuthenticatedUser = Depends(get_current_user),
+) -> list[MCPServerDetail]:
+    """List the caller's BYO MCP servers (credential redacted)."""
+    return [
+        MCPServerDetail(**d)
+        for d in mcp_store.list_servers(rls_engine=request.app.state.rls_engine)
+    ]
+
+
+@router.get("/mcp-servers/{server_id}", response_model=MCPServerDetail)
+async def get_mcp_server(
+    server_id: str,
+    request: Request,
+    _user: AuthenticatedUser = Depends(get_current_user),
+) -> MCPServerDetail:
+    """Get one BYO MCP server (RLS-scoped → 404)."""
+    return MCPServerDetail(
+        **mcp_store.get_server(rls_engine=request.app.state.rls_engine, server_id=server_id)
+    )
+
+
+@router.patch(
+    "/mcp-servers/{server_id}",
+    response_model=MCPServerDetail,
+    dependencies=[Depends(rate_limit("default"))],
+)
+async def update_mcp_server(
+    server_id: str,
+    body: UpdateMCPServerRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> MCPServerDetail:
+    """Patch a BYO MCP server (re-validates a new URL; re-encrypts credentials)."""
+    detail = mcp_store.update_server(
+        rls_engine=request.app.state.rls_engine,
+        config=request.app.state.config,
+        server_id=server_id,
+        name=body.name,
+        url=body.url,
+        auth_method=body.auth_method,
+        credential=body.credential,
+        enabled=body.enabled,
+    )
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action="mcp.server_update",
+        target=server_id,
+    )
+    return MCPServerDetail(**detail)
+
+
+@router.delete("/mcp-servers/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_mcp_server(
+    server_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> None:
+    """Delete a BYO MCP server (assignments cascade; RLS-scoped → 404)."""
+    mcp_store.delete_server(rls_engine=request.app.state.rls_engine, server_id=server_id)
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action="mcp.server_delete",
+        target=server_id,
+    )
+
+
+@router.post(
+    "/mcp-servers/{server_id}/test",
+    response_model=MCPServerTestResult,
+    dependencies=[Depends(rate_limit("default"))],
+)
+async def check_mcp_server_connection(
+    server_id: str,
+    request: Request,
+    _user: AuthenticatedUser = Depends(get_current_user),
+) -> MCPServerTestResult:
+    """Test-connect to the server (SSRF-pinned) and discover its tools (D-30-5)."""
+    result = await mcp_store.test_connection(
+        rls_engine=request.app.state.rls_engine,
+        config=request.app.state.config,
+        server_id=server_id,
+    )
+    return MCPServerTestResult(**result)
+
+
+@router.get(
+    "/personas/{persona_id}/mcp-servers",
+    response_model=list[MCPServerDetail],
+)
+async def list_persona_mcp_servers(
+    persona_id: str,
+    request: Request,
+    _user: AuthenticatedUser = Depends(get_current_user),
+) -> list[MCPServerDetail]:
+    """List the BYO MCP servers assigned to a persona (RLS-scoped)."""
+    return [
+        MCPServerDetail(**d)
+        for d in mcp_store.list_servers_for_persona(
+            rls_engine=request.app.state.rls_engine, persona_id=persona_id
+        )
+    ]
+
+
+@router.put(
+    "/personas/{persona_id}/mcp-servers/{server_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(rate_limit("default"))],
+)
+async def assign_mcp_server(
+    persona_id: str,
+    server_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> None:
+    """Assign a BYO MCP server to a persona (D-30-6; idempotent; RLS both ends)."""
+    mcp_store.assign_to_persona(
+        rls_engine=request.app.state.rls_engine,
+        persona_id=persona_id,
+        server_id=server_id,
+    )
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action="mcp.server_assign",
+        target=f"{persona_id}:{server_id}",
+    )
+
+
+@router.delete(
+    "/personas/{persona_id}/mcp-servers/{server_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def unassign_mcp_server(
+    persona_id: str,
+    server_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> None:
+    """Remove a persona↔server assignment (idempotent; RLS-scoped)."""
+    mcp_store.unassign_from_persona(
+        rls_engine=request.app.state.rls_engine,
+        persona_id=persona_id,
+        server_id=server_id,
+    )
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action="mcp.server_unassign",
+        target=f"{persona_id}:{server_id}",
+    )

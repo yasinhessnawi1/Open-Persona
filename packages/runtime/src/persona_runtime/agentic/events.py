@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from persona.schema.tools import ToolCall, ToolResult
 
@@ -84,9 +84,32 @@ class RunEvent(BaseModel):
         return cls(type="thinking", step=step, data={}, timestamp=datetime.now(UTC))
 
     @classmethod
-    def tool_calling(cls, step: int, tool_calls: list[ToolCall]) -> RunEvent:
-        """The model requested tool dispatches this step (JSON-safe call list)."""
-        calls = [{"name": c.name, "call_id": c.call_id, "args": c.args} for c in tool_calls]
+    def tool_calling(
+        cls,
+        step: int,
+        tool_calls: list[ToolCall],
+        *,
+        kind_of: Callable[[str], str] | None = None,
+    ) -> RunEvent:
+        """The model requested tool dispatches this step (JSON-safe call list).
+
+        Spec 30 T01 (D-30-1): when ``kind_of`` is provided, each call dict carries
+        an additive ``kind`` (``builtin`` / ``skill`` / ``mcp:builtin`` /
+        ``mcp:optional``) so the frontend can badge the call by source. Absent
+        (``kind_of is None``) the payload is byte-identical to the pre-spec-30
+        shape — the back-compat default (the ``produced_files`` precedent). The
+        resolver is :meth:`persona.tools.Toolbox.kind_for`; passing it (rather
+        than the kind values) keeps the single resolution site authoritative.
+        """
+        calls = [
+            {
+                "name": c.name,
+                "call_id": c.call_id,
+                "args": c.args,
+                **({"kind": kind_of(c.name)} if kind_of is not None else {}),
+            }
+            for c in tool_calls
+        ]
         names = ", ".join(c.name for c in tool_calls)
         return cls(
             type="tool_calling",
@@ -96,7 +119,9 @@ class RunEvent(BaseModel):
         )
 
     @classmethod
-    def tool_result(cls, step: int, tool_name: str, result: ToolResult) -> RunEvent:
+    def tool_result(
+        cls, step: int, tool_name: str, result: ToolResult, *, kind: str | None = None
+    ) -> RunEvent:
         """A tool dispatch completed (success or ``is_error=True``).
 
         D-F4-X-event-kind-for-produced-files (Spec F4 Phase 5 T02b — Option A):
@@ -123,6 +148,12 @@ class RunEvent(BaseModel):
             "is_error": result.is_error,
             "content": result.content,
         }
+        # Spec 30 T01 (D-30-1): additive source badge. Same single-site,
+        # back-compat-when-absent shape as produced_files/artifacts below; covers
+        # both chat SSE and RunEvent transports. Omitted when the caller does not
+        # resolve a kind (pre-spec-30 frames).
+        if kind is not None:
+            data["kind"] = kind
         if result.data is not None:
             pf = result.data.get("produced_files")
             if isinstance(pf, list) and pf:
@@ -150,6 +181,7 @@ class RunEvent(BaseModel):
         *,
         options: Sequence[QuestionOption] | None = None,
         allow_free_form: bool = True,
+        proposal: Mapping[str, str] | None = None,
     ) -> RunEvent:
         """The persona asked the user a question.
 
@@ -173,6 +205,12 @@ class RunEvent(BaseModel):
         if options is not None:
             data["options"] = [{"label": o.label, "description": o.description} for o in options]
             data["allow_free_form"] = allow_free_form
+        # Spec 30 (D-30-2): the general chat-proactive-question rail descriptor.
+        # Additive — absent on a plain clarifying ask (the Spec-21 path); present
+        # on a capability-gap offer so the web wires accept → grant/assign →
+        # retry. The LOCKED {kind, name, provider?, action} envelope Spec 31 reuses.
+        if proposal is not None:
+            data["proposal"] = dict(proposal)
         return cls(type="asking_user", step=step, data=data, timestamp=datetime.now(UTC))
 
     @classmethod

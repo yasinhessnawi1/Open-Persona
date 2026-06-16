@@ -10,7 +10,7 @@
       "post": {
         "tags": ["personas"],
         "summary": "Create Persona",
-        "description": "Create a persona from YAML; populate its memory stores (D-08-8).",
+        "description": "Create a persona from YAML; populate memory stores; auto-generate an avatar.\n\nThe avatar is generated only when the builder supplied none (D-29-3); the\ngeneration is fail-soft so create never fails on an imagegen problem\n(D-29-X-fail-soft). A user-supplied ``avatar_url`` always wins (criterion 6).",
         "operationId": "create_persona_v1_personas_post",
         "requestBody": {
           "required": true,
@@ -180,6 +180,137 @@
         }
       }
     },
+    "/v1/personas/recommend-tools": {
+      "post": {
+        "tags": ["personas"],
+        "summary": "Recommend Tools",
+        "description": "Recommend a ranked tool subset for a persona description (spec 26 T09).\n\nAuthoring-time assist: given the natural-language description, a single\nmid-tier call (D-26-2) returns up to 10 catalog-valid tool recommendations,\nhighest-confidence first. Reuses the description-only ``AuthorPersonaRequest``\nbody. Deducts the flat authoring credit (a mid-tier LLM call).",
+        "operationId": "recommend_tools_v1_personas_recommend_tools_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorPersonaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolRecommendationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas/recommend-capabilities": {
+      "post": {
+        "tags": ["personas"],
+        "summary": "Recommend Capabilities",
+        "description": "Recommend a unified, provider-tagged capability set (spec 27 T10).\n\nThe D-26-10 generalisation of ``/recommend-tools``: one mid-tier call ranks\nbuilt-in tools, skills, and MCP servers together (each tagged with its\nprovider), capped at the combined maximum (D-27-13). Deducts the same flat\nauthoring credit (a mid-tier LLM call).",
+        "operationId": "recommend_capabilities_v1_personas_recommend_capabilities_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorPersonaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolRecommendationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas/{persona_id}/tools": {
+      "post": {
+        "tags": ["personas"],
+        "summary": "Grant Tool",
+        "description": "Enable a tool on the persona's allow-list via runtime consent (spec 26 T11).\n\nCalled when the user accepts a runtime tool-gap offer (T10). Adds the tool to\nthe persona's ``tools`` list (persisted in the YAML column \u2014 no migration)\nand records the grant as a versioned ``persona_self`` self-fact (force +\nconfidence \u2265 0.8 + reason, D-26-X-self-facts-consent-write-contract). Returns\nthe updated persona detail. Idempotent: re-granting an already-enabled tool\nis a no-op that still returns 200.",
+        "operationId": "grant_tool_v1_personas__persona_id__tools_post",
+        "parameters": [
+          {
+            "name": "persona_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Persona Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantToolRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonaDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/personas/{persona_id}": {
       "get": {
         "tags": ["personas"],
@@ -288,6 +419,57 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas/{persona_id}/consent": {
+      "patch": {
+        "tags": ["personas"],
+        "summary": "Set Consent",
+        "description": "Set the persona's auto-dispatch consent (grant / decline / revoke).\n\nSpec 21 T09 (D-21-2/7/8): only this ``user``-sourced settings write may\nchange consent; ``persona_self`` never can. Each transition stamps\n``consent_updated_at`` and emits an ``AuditEvent`` naming the transition.",
+        "operationId": "set_consent_v1_personas__persona_id__consent_patch",
+        "parameters": [
+          {
+            "name": "persona_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Persona Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetConsentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonaDetail"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -893,6 +1075,30 @@
         }
       }
     },
+    "/v1/mcp-catalog": {
+      "get": {
+        "tags": ["catalog"],
+        "summary": "List Mcp Catalog",
+        "description": "List the built-in MCP servers (spec 30 T11) for the capability-management UI.",
+        "operationId": "list_mcp_catalog_v1_mcp_catalog_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MCPCatalogServer"
+                  },
+                  "type": "array",
+                  "title": "Response List Mcp Catalog V1 Mcp Catalog Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/conversations/{conversation_id}/documents": {
       "get": {
         "tags": ["documents"],
@@ -1198,7 +1404,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "enum": ["image", "chart", "doc", "data"],
+                  "enum": ["image", "chart", "doc", "data", "diagram"],
                   "type": "string"
                 },
                 {
@@ -1290,6 +1496,360 @@
             "schema": {
               "type": "string",
               "title": "Ref"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/mcp-servers": {
+      "get": {
+        "tags": ["mcp"],
+        "summary": "List Mcp Servers",
+        "description": "List the caller's BYO MCP servers (credential redacted).",
+        "operationId": "list_mcp_servers_v1_mcp_servers_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MCPServerDetail"
+                  },
+                  "type": "array",
+                  "title": "Response List Mcp Servers V1 Mcp Servers Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["mcp"],
+        "summary": "Create Mcp Server",
+        "description": "Add a bring-your-own MCP server (SSRF-validated; credential encrypted).",
+        "operationId": "create_mcp_server_v1_mcp_servers_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMCPServerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPServerDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/mcp-servers/{server_id}": {
+      "get": {
+        "tags": ["mcp"],
+        "summary": "Get Mcp Server",
+        "description": "Get one BYO MCP server (RLS-scoped \u2192 404).",
+        "operationId": "get_mcp_server_v1_mcp_servers__server_id__get",
+        "parameters": [
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Server Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPServerDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["mcp"],
+        "summary": "Update Mcp Server",
+        "description": "Patch a BYO MCP server (re-validates a new URL; re-encrypts credentials).",
+        "operationId": "update_mcp_server_v1_mcp_servers__server_id__patch",
+        "parameters": [
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Server Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMCPServerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPServerDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["mcp"],
+        "summary": "Delete Mcp Server",
+        "description": "Delete a BYO MCP server (assignments cascade; RLS-scoped \u2192 404).",
+        "operationId": "delete_mcp_server_v1_mcp_servers__server_id__delete",
+        "parameters": [
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Server Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/mcp-servers/{server_id}/test": {
+      "post": {
+        "tags": ["mcp"],
+        "summary": "Check Mcp Server Connection",
+        "description": "Test-connect to the server (SSRF-pinned) and discover its tools (D-30-5).",
+        "operationId": "check_mcp_server_connection_v1_mcp_servers__server_id__test_post",
+        "parameters": [
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Server Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPServerTestResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas/{persona_id}/mcp-servers": {
+      "get": {
+        "tags": ["mcp"],
+        "summary": "List Persona Mcp Servers",
+        "description": "List the BYO MCP servers assigned to a persona (RLS-scoped).",
+        "operationId": "list_persona_mcp_servers_v1_personas__persona_id__mcp_servers_get",
+        "parameters": [
+          {
+            "name": "persona_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Persona Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPServerDetail"
+                  },
+                  "title": "Response List Persona Mcp Servers V1 Personas  Persona Id  Mcp Servers Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/personas/{persona_id}/mcp-servers/{server_id}": {
+      "put": {
+        "tags": ["mcp"],
+        "summary": "Assign Mcp Server",
+        "description": "Assign a BYO MCP server to a persona (D-30-6; idempotent; RLS both ends).",
+        "operationId": "assign_mcp_server_v1_personas__persona_id__mcp_servers__server_id__put",
+        "parameters": [
+          {
+            "name": "persona_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Persona Id"
+            }
+          },
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Server Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["mcp"],
+        "summary": "Unassign Mcp Server",
+        "description": "Remove a persona\u2194server assignment (idempotent; RLS-scoped).",
+        "operationId": "unassign_mcp_server_v1_personas__persona_id__mcp_servers__server_id__delete",
+        "parameters": [
+          {
+            "name": "persona_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Persona Id"
+            }
+          },
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Server Id"
             }
           }
         ],
@@ -1651,6 +2211,45 @@
         "title": "CreateConversationRequest",
         "description": "Start a new conversation against a persona."
       },
+      "CreateMCPServerRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url"
+          },
+          "auth_method": {
+            "type": "string",
+            "enum": ["none", "bearer"],
+            "title": "Auth Method",
+            "default": "none"
+          },
+          "credential": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["name", "url"],
+        "title": "CreateMCPServerRequest",
+        "description": "Add a bring-your-own MCP server (spec 30, D-30-3/4).\n\n``url`` is SSRF-validated (https-only, public target) at the route AND on\nevery live connect. ``credential`` (a bearer token for ``auth_method =\n\"bearer\"``) is encrypted at rest (T07) and NEVER returned or logged; it is\nrequired when ``auth_method`` is not ``\"none\"``."
+      },
       "CreatePersonaRequest": {
         "properties": {
           "yaml": {
@@ -1782,6 +2381,32 @@
         "title": "DocumentRef",
         "description": "Reference to an attached document \u2014 the API-boundary type.\n\nPersisted alongside the original file as a ``{doc_ref}.meta.json``\nsidecar in the workspace. Returned by :func:`upload`,\n:func:`list_for_conversation`, and (via JSON) the API GET endpoint\n(T18). Carries the metadata T14/T15/T16 need to render the prompt\nsections + the synopsis."
       },
+      "GrantToolRequest": {
+        "properties": {
+          "tool_name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tool Name"
+          },
+          "turn_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Index"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["tool_name"],
+        "title": "GrantToolRequest",
+        "description": "Enable a tool on a persona's allow-list via runtime consent (spec 26 T11).\n\nSent when the user accepts a runtime tool-gap offer. ``turn_index`` is the\nconversation turn the offer came from (recorded in the persona_self audit)."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1882,6 +2507,135 @@
         "title": "IngestStrategy",
         "description": "The ingestion paths a document can take.\n\n``VISION_HANDOFF_REQUIRED`` is what :func:`ingest_document` returns when\nthe parser sets ``needs_vision_handoff=True`` \u2014 the caller (T13's\n:func:`persona_api.services.document_service.upload`) detects this and\nperforms the actual rasterisation + ImageContent creation (T21). The\ncaller-side outcome ``VISION_HANDOFF`` records the completed handoff\non the persisted :class:`DocumentRef`."
       },
+      "MCPCatalogServer": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "default_enabled": {
+            "type": "boolean",
+            "title": "Default Enabled"
+          },
+          "required_env": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Env"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["name", "description", "provider", "default_enabled"],
+        "title": "MCPCatalogServer",
+        "description": "A built-in MCP server in the management catalog (spec 30 T11).\n\nA persona enables a server by adding ``mcp:<name>`` to its ``tools``\nallow-list. ``provider`` is the recommender tag (``mcp:builtin`` /\n``mcp:optional``); ``required_env`` lists env vars an operator must set."
+      },
+      "MCPServerDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "auth_method": {
+            "type": "string",
+            "title": "Auth Method"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "has_credential": {
+            "type": "boolean",
+            "title": "Has Credential"
+          },
+          "discovered_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovered Tools"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "url",
+          "auth_method",
+          "enabled",
+          "has_credential",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MCPServerDetail",
+        "description": "A bring-your-own MCP server as returned to its owner (spec 30, D-30-3).\n\nThe credential is NEVER included \u2014 only ``has_credential`` (whether one is\nstored). ``discovered_tools`` is the cached eager-discovery result (D-30-5),\n``None`` until a successful test-connection."
+      },
+      "MCPServerTestResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tools"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["ok"],
+        "title": "MCPServerTestResult",
+        "description": "Outcome of a BYO-MCP test-connection (spec 30, D-30-5).\n\n``ok`` true \u2192 ``tools`` lists the discovered tool names (cached on the row).\n``ok`` false \u2192 ``error`` is a short, non-sensitive reason category."
+      },
       "MessageView": {
         "properties": {
           "id": {
@@ -1974,6 +2728,29 @@
                 "type": "null"
               }
             ]
+          },
+          "consent_to_auto_dispatch": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consent To Auto Dispatch"
+          },
+          "consent_updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consent Updated At"
           },
           "created_at": {
             "type": "string",
@@ -2178,6 +2955,25 @@
         "title": "RunStatusResponse",
         "description": "A run's status + its accumulated steps (JSON-serialised Run/Step)."
       },
+      "SetConsentRequest": {
+        "properties": {
+          "granted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Granted"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SetConsentRequest",
+        "description": "Set a persona's auto-dispatch consent (spec 21 T09, D-21-7/2).\n\n``granted``: ``True`` = grant (auto-dispatch), ``False`` = decline (stable,\nno re-prompt), ``None`` = revoke back to \"ask\" (the settings-toggle OFF\npath, which re-arms the prompt on the next autonomous dispatch)."
+      },
       "StartRunRequest": {
         "properties": {
           "task": {
@@ -2191,6 +2987,54 @@
         "required": ["task"],
         "title": "StartRunRequest",
         "description": "Start an agentic run for a task (\u00a75.3)."
+      },
+      "ToolRecommendation": {
+        "properties": {
+          "tool_name": {
+            "type": "string",
+            "title": "Tool Name"
+          },
+          "rationale": {
+            "type": "string",
+            "title": "Rationale"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "default": "builtin"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["tool_name", "rationale", "confidence"],
+        "title": "ToolRecommendation",
+        "description": "One recommended capability for a persona (spec 26 T09 / spec 27 T10).\n\nSpec 27 realises the D-26-10 unification: the same shape now carries a\nprovider tag so built-in tools, skills, and MCP servers rank together. The\n``provider`` field defaults to ``\"builtin\"`` so the Spec-26 shape (and its\ncallers/tests) stay a forward-compatible strict subset.\n\nAttributes:\n    tool_name: The capability name \u2014 a built-in tool name from\n        ``persona.tools.TOOL_CATALOG``, a skill id, or an ``mcp:<server>``\n        reference. Hallucinated names are filtered out post-hoc.\n    rationale: One-line reason the capability fits this persona.\n    confidence: Recommender confidence in [0, 1]; entries below the floor\n        are dropped before return.\n    provider: Where the capability comes from \u2014 ``\"builtin\"`` (tool),\n        ``\"skill\"``, ``\"mcp:builtin\"`` (default-enabled MCP server), or\n        ``\"mcp:optional\"`` (opt-in / BYO MCP server). The UI groups by\n        provider but ranks across all (spec 27 \u00a72.3 / D-27-13)."
+      },
+      "ToolRecommendationResponse": {
+        "properties": {
+          "recommendations": {
+            "items": {
+              "$ref": "#/components/schemas/ToolRecommendation"
+            },
+            "type": "array",
+            "title": "Recommendations"
+          },
+          "prompt_version": {
+            "type": "string",
+            "title": "Prompt Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["prompt_version"],
+        "title": "ToolRecommendationResponse",
+        "description": "The ranked tool-recommendation list returned by ``/personas/recommend-tools``."
       },
       "ToolSummary": {
         "properties": {
@@ -2208,6 +3052,75 @@
         "required": ["name", "description"],
         "title": "ToolSummary",
         "description": "A tool or skill name + description (read-only listing)."
+      },
+      "UpdateMCPServerRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "auth_method": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["none", "bearer"]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Method"
+          },
+          "credential": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "UpdateMCPServerRequest",
+        "description": "Patch a BYO MCP server (spec 30). All fields optional; omitted = unchanged.\n\nSetting ``credential`` replaces the stored secret (re-encrypted); to clear a\ncredential, set ``auth_method = \"none\"``. ``enabled`` toggles the server\nwithout deleting it."
       },
       "UpdatePersonaRequest": {
         "properties": {

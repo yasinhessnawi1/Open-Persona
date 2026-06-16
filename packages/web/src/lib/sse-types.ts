@@ -20,12 +20,26 @@
 
 import type { RawSSEEvent } from "./sse";
 
+/**
+ * Spec 30 (D-30-1) — the source badge the runtime resolves for every tool call
+ * (`persona.tools.kind.resolve_tool_kind`). Mirrors the four-value Python
+ * taxonomy. `string` (not a strict union) on the wire types because the field
+ * is additive + forward-compatible; the card narrows it for rendering.
+ */
+export type ToolKind = "builtin" | "skill" | "mcp:builtin" | "mcp:optional";
+
 // ----- shared tool-event payloads (identical in chat + run) -----
 
 export interface ToolCallPayload {
   name: string;
   call_id: string;
   args: Record<string, unknown>;
+  /**
+   * Spec 30 T01 (D-30-1): the call's source badge. Additive — absent on
+   * pre-spec-30 frames (the `options`/`produced_files` precedent); the chat +
+   * run consumers fall back to an unbadged card when absent.
+   */
+  kind?: string;
 }
 
 export interface ToolCallingData {
@@ -73,6 +87,11 @@ export interface ToolResultData {
   is_error: boolean;
   content: string;
   /**
+   * Spec 30 T01 (D-30-1): the call's source badge (see {@link ToolCallPayload.kind}).
+   * Additive — absent on pre-spec-30 frames.
+   */
+  kind?: string;
+  /**
    * D-F4-X-event-kind-for-produced-files: structured produced files
    * surfaced from sandbox-backed tools (Spec 12 stdout-only / Spec 16
    * docx-pptx-xlsx-pdf / Spec 17 charts). Omitted on tools that don't
@@ -107,9 +126,19 @@ export type ChatEvent =
   | { event: "chunk"; data: ChatChunkData }
   | { event: "tool_calling"; data: ToolCallingData }
   | { event: "tool_result"; data: ToolResultData }
+  // Spec 30 (D-30-2): the chat-proactive-question rail. The shared loop already
+  // emits `asking_user` to the chat stream (tool-gap / MCP-gap offers); the web
+  // now parses it (previously dropped) so the rail can render inline.
+  | { event: "asking_user"; data: AskingUserData }
   | { event: "done"; data: ChatDoneData };
 
-const CHAT_EVENTS = new Set(["chunk", "tool_calling", "tool_result", "done"]);
+const CHAT_EVENTS = new Set([
+  "chunk",
+  "tool_calling",
+  "tool_result",
+  "asking_user",
+  "done",
+]);
 
 /**
  * Parse one raw chat frame into a typed {@link ChatEvent}. `data` is the bare
@@ -160,6 +189,23 @@ export interface QuestionOption {
   label: string;
   description?: string;
 }
+/**
+ * Spec 30 (D-30-2) — the general, source-agnostic action a proactive question
+ * proposes. The LOCKED `{kind, name, provider?, action}` envelope the chat rail
+ * carries (tool-gap + MCP-gap now; Spec 31 autonomy prompts later). The web maps
+ * `action` → the endpoint to call on accept.
+ */
+export interface ProactiveProposal {
+  /** Category: `"tool"` / `"mcp"` (spec 30); future sources set their own. */
+  kind: string;
+  /** The identifier the action consumes — a tool name or `mcp:<server>` entry. */
+  name: string;
+  /** What to do on accept: `"grant_tool"` (POST /personas/{id}/tools) / `"assign_mcp"` / … */
+  action: string;
+  /** Provider tag for display — `"builtin"` / `"mcp:builtin"` / `"mcp:optional"`. */
+  provider?: string;
+}
+
 export interface AskingUserData {
   question: string;
   /**
@@ -170,6 +216,11 @@ export interface AskingUserData {
    */
   options?: QuestionOption[];
   allow_free_form?: boolean;
+  /**
+   * Spec 30 (D-30-2): the source-agnostic accept→grant/assign→retry descriptor.
+   * Absent on a plain clarifying ask; present on a capability-gap offer.
+   */
+  proposal?: ProactiveProposal;
 }
 export interface CompletedData {
   output: string;

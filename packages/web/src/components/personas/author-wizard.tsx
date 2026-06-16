@@ -15,6 +15,7 @@ import { createPersona } from "@/lib/persona-actions";
 import { type PersonaDoc, yamlToDoc } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
 import { PersonaEditor } from "./persona-editor";
+import type { McpCatalogEntry } from "./persona-form";
 
 type Phase = "describe" | "loading" | "review";
 
@@ -52,9 +53,11 @@ const MAX_REFINE_ROUNDS = 3;
 export function AuthorWizard({
   tools,
   skills,
+  mcpServers = [],
 }: {
   tools: string[];
   skills: string[];
+  mcpServers?: McpCatalogEntry[];
 }) {
   const t = useTranslations("author");
   const { author, refine } = useAuthor();
@@ -145,6 +148,7 @@ export function AuthorWizard({
           initialDoc={doc}
           tools={tools}
           skills={skills}
+          mcpServers={mcpServers}
           onSave={createPersona}
           saveLabel={t("save")}
           refinement={{

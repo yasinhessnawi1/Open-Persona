@@ -65,6 +65,15 @@ class APIConfig(BaseSettings):
     jwt_algorithms: str = "HS256"
     jwt_audience: str = ""
 
+    # Spec 30 T07 (D-30-4) — bring-your-own MCP credential encryption-at-rest.
+    # One or more comma-separated url-safe-base64 Fernet keys; the FIRST encrypts,
+    # all decrypt (MultiFernet → zero-downtime rotation, documented in
+    # MAINTENANCE.md). Unset → BYO-MCP credential storage fails fast at the route
+    # (a server with auth cannot be saved without a key). Never logged.
+    mcp_credential_key: SecretStr | None = Field(
+        default=None, validation_alias="MCP_CREDENTIAL_KEY", repr=False
+    )
+
     # Memory embedding (D-08-8).
     embedder_model: str = "BAAI/bge-small-en-v1.5"
 

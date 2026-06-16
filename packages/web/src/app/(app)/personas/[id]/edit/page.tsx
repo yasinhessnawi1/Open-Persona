@@ -2,8 +2,10 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { mapMcpCatalog } from "@/components/personas/mcp-catalog";
 import { PersonaEditor } from "@/components/personas/persona-editor";
 import { type ToolSummary, unwrap } from "@/lib/api";
+import type { components } from "@/lib/api/schema";
 import { serverApi } from "@/lib/api/server";
 import { parsePersonaYaml } from "@/lib/persona";
 import { savePersona } from "@/lib/persona-actions";
@@ -24,9 +26,10 @@ export default async function EditPersonaPage({
   if (personaRes.response.status === 404) notFound();
   const detail = await unwrap(personaRes);
 
-  const [tools, skills] = await Promise.all([
+  const [tools, skills, mcpCatalog] = await Promise.all([
     unwrap(await api.GET("/v1/tools")),
     unwrap(await api.GET("/v1/skills")),
+    unwrap(await api.GET("/v1/mcp-catalog")),
   ]);
 
   const doc = yamlToDoc(detail.yaml);
@@ -48,6 +51,10 @@ export default async function EditPersonaPage({
         initialDoc={doc}
         tools={(tools as ToolSummary[]).map((x) => x.name)}
         skills={(skills as ToolSummary[]).map((x) => x.name)}
+        mcpServers={mapMcpCatalog(
+          mcpCatalog as components["schemas"]["MCPCatalogServer"][],
+        )}
+        personaId={id}
         onSave={savePersona.bind(null, id)}
         saveLabel={t("save")}
       />

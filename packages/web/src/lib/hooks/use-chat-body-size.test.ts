@@ -91,7 +91,7 @@ describe("F3 T22 — chat-message body size regression guard (production-safety)
       },
     ];
 
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send(
       "Please analyse these four images in detail.",
       refs,
@@ -117,7 +117,7 @@ describe("F3 T22 — chat-message body size regression guard (production-safety)
   it("STRUCTURAL: text-only send body is <500 B (no images, no shape drift)", async () => {
     const { captures, restore: r } = installCapture();
     restore = r;
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send("hello");
     await waitFor(() => expect(captures.length).toBeGreaterThan(0));
 
@@ -137,7 +137,7 @@ describe("F3 T22 — chat-message body size regression guard (production-safety)
     ];
     const fourRefs: ImageRef[] = Array.from({ length: 4 }, () => oneRef[0]);
 
-    const { result } = renderHook(() => useChat("conv_1", []));
+    const { result } = renderHook(() => useChat("conv_1", [], "persona_1"));
     await result.current.send("first", oneRef);
     await waitFor(() => expect(captures.length).toBe(1));
     const oneRefSize = captures[0].body.length;

@@ -67,12 +67,60 @@ class TestToolEvents:
         assert ev.data["is_error"] is True
         assert ev.data["content"] == "not available"
 
+    def test_tool_calling_omits_kind_without_resolver(self) -> None:
+        # Spec 30 T01 (D-30-1): back-compat — no kind_of → no kind key.
+        calls = [ToolCall(name="web_search", args={}, call_id="c-1")]
+        ev = RunEvent.tool_calling(1, calls)
+        assert "kind" not in ev.data["tool_calls"][0]
+
+    def test_tool_calling_badges_each_call_with_kind(self) -> None:
+        # Spec 30 T01 (D-30-1): kind_of resolver tags every call by source; an
+        # MCP call names its server in the tool name and resolves to an mcp:* kind.
+        from persona.tools import resolve_tool_kind
+
+        calls = [
+            ToolCall(name="web_search", args={}, call_id="c-1"),
+            ToolCall(name="use_skill", args={"skill_name": "web_research"}, call_id="c-2"),
+            ToolCall(name="mcp:time:now", args={}, call_id="c-3"),
+        ]
+        ev = RunEvent.tool_calling(1, calls, kind_of=resolve_tool_kind)
+        kinds = [c["kind"] for c in ev.data["tool_calls"]]
+        assert kinds == ["builtin", "skill", "mcp:builtin"]
+
+    def test_tool_result_carries_kind_when_provided(self) -> None:
+        result = ToolResult(tool_name="mcp:github:create_issue", content="ok", call_id="c-1")
+        ev = RunEvent.tool_result(1, "mcp:github:create_issue", result, kind="mcp:optional")
+        assert ev.data["kind"] == "mcp:optional"
+
+    def test_tool_result_omits_kind_without_arg(self) -> None:
+        result = ToolResult(tool_name="web_search", content="ok", call_id="c-1")
+        ev = RunEvent.tool_result(1, "web_search", result)
+        assert "kind" not in ev.data
+
 
 class TestActionEvents:
     def test_asking_user(self) -> None:
         ev = RunEvent.asking_user(4, "Which apartment?")
         assert ev.type == "asking_user"
         assert ev.data == {"question": "Which apartment?"}
+
+    def test_asking_user_carries_general_proposal(self) -> None:
+        # Spec 30 (D-30-2): the rail descriptor rides additively in the payload.
+        ev = RunEvent.asking_user(
+            -1,
+            "Enable web_search?",
+            proposal={"kind": "tool", "name": "web_search", "action": "grant_tool"},
+        )
+        assert ev.data["proposal"] == {
+            "kind": "tool",
+            "name": "web_search",
+            "action": "grant_tool",
+        }
+
+    def test_asking_user_omits_proposal_when_absent(self) -> None:
+        # Back-compat: a plain clarifying ask carries no proposal key.
+        ev = RunEvent.asking_user(4, "Which apartment?")
+        assert "proposal" not in ev.data
 
     def test_reasoning(self) -> None:
         ev = RunEvent.reasoning(2, "let me think")
