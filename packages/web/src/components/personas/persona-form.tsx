@@ -2,7 +2,6 @@
 
 import { Plus, X } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 // Spec V6 C2 — the voice-selector contribution (F5/Spec 10 own the screen).
@@ -22,6 +21,7 @@ import {
   writeWorldview,
 } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
+import { CollapsibleSection } from "./collapsible-section";
 import { RoutingSection } from "./routing-section";
 
 // Spec 30 T11 — a built-in MCP server in the capability-management catalog.
@@ -78,7 +78,7 @@ export function PersonaForm({
   return (
     <div className="flex flex-col gap-5">
       {/* Identity */}
-      <Section title={t("identityTitle")}>
+      <Section id="identity" title={t("identityTitle")} defaultOpen>
         <Field label={t("name")}>
           <Input
             value={identity.name}
@@ -128,7 +128,7 @@ export function PersonaForm({
       </Section>
 
       {/* Voice — its own card (a persona's audible identity, V6 C2). */}
-      <Section title={t("voiceTitle")}>
+      <Section id="voice" title={t("voiceTitle")}>
         <Field label={t("voice")} hint={t("voiceDescription")}>
           <VoiceSelector
             value={currentVoiceId}
@@ -146,7 +146,7 @@ export function PersonaForm({
       </Section>
 
       {/* Self-facts */}
-      <Section title={t("selfFactsTitle")}>
+      <Section id="self-facts" title={t("selfFactsTitle")}>
         {selfFacts.map((f, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional
           <div key={i} className="flex items-start gap-2">
@@ -202,7 +202,7 @@ export function PersonaForm({
       </Section>
 
       {/* Worldview */}
-      <Section title={t("worldviewTitle")}>
+      <Section id="worldview" title={t("worldviewTitle")}>
         {worldview.map((w, i) => {
           const set = (patch: Partial<typeof w>) =>
             onChange(
@@ -285,7 +285,7 @@ export function PersonaForm({
       </Section>
 
       {/* Capabilities: tools + skills + MCP as one set (spec 30 T11) */}
-      <Section title={t("capabilitiesTitle")}>
+      <Section id="capabilities" title={t("capabilitiesTitle")}>
         <p
           className={cn(
             "text-xs",
@@ -421,20 +421,24 @@ function McpToggle({
   );
 }
 
+// A collapsible section card (Settings-style). `defaultOpen` controls the
+// initial state; the editor opens only Identity, the rest start collapsed and
+// expand on click (or via the left timeline nav).
 function Section({
+  id,
   title,
+  defaultOpen,
   children,
 }: {
+  id: string;
   title: string;
+  defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <Card className="gap-3 p-5">
-      <h2 className="font-heading text-sm font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </h2>
+    <CollapsibleSection id={id} title={title} defaultOpen={defaultOpen}>
       {children}
-    </Card>
+    </CollapsibleSection>
   );
 }
 

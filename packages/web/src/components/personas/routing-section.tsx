@@ -3,7 +3,6 @@
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { buttonVariants } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   presetToWeights,
@@ -13,6 +12,7 @@ import {
   weightsToPreset,
 } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
+import { CollapsibleSection } from "./collapsible-section";
 
 /**
  * RoutingSection (Spec 31, T2) — the routing-controls surface in the persona
@@ -40,16 +40,10 @@ export function RoutingSection({
   const advancedOpen = showAdvanced || preset === "custom";
 
   return (
-    <Card className="gap-4 p-5" data-slot="routing-section">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex flex-col">
-          <h2 className="font-heading text-sm font-semibold tracking-wide text-muted-foreground uppercase">
-            {t("title")}
-          </h2>
-          <p className="type-caption text-muted-foreground">
-            {t("enableHint")}
-          </p>
-        </div>
+    <CollapsibleSection
+      id="routing"
+      title={t("title")}
+      headerAccessory={
         <button
           type="button"
           role="switch"
@@ -71,7 +65,14 @@ export function RoutingSection({
         >
           {value.intelligentEnabled ? t("on") : t("off")}
         </button>
-      </div>
+      }
+    >
+      <p
+        className="type-caption text-muted-foreground"
+        data-slot="routing-section"
+      >
+        {t("enableHint")}
+      </p>
 
       {value.intelligentEnabled ? (
         <div className="flex flex-col gap-4" data-slot="routing-config">
@@ -210,7 +211,7 @@ export function RoutingSection({
           </div>
         </div>
       ) : null}
-    </Card>
+    </CollapsibleSection>
   );
 }
 

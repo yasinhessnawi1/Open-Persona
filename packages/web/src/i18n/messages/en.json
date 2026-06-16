@@ -312,7 +312,11 @@
       "perDayWarning": "Per-day caps aren't enforced yet — setting one stops this persona from running with intelligent routing. Use per-turn or per-session instead.",
       "cents": "cents",
       "capPlaceholder": "none"
-    }
+    },
+    "sectionsNav": "Sections",
+    "expand": "Expand section",
+    "collapse": "Collapse section",
+    "autonomyTitle": "Autonomy"
   },
   "chat": {
     "placeholder": "Message {name}…",

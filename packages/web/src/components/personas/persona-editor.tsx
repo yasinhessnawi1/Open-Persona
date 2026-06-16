@@ -9,7 +9,6 @@ import {
   type AutonomyLevel,
 } from "@/components/persona/autonomy-consent-section";
 import { buttonVariants } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { ClarifyingQuestion } from "@/lib/api";
@@ -23,6 +22,11 @@ import {
 } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
 import { ByoMcpManager } from "./byo-mcp-manager";
+import {
+  CollapsibleSection,
+  SectionGroup,
+  SectionTimelineNav,
+} from "./collapsible-section";
 import { type McpCatalogEntry, PersonaForm } from "./persona-form";
 import {
   applyRecommendation,
@@ -201,90 +205,106 @@ export function PersonaEditor({
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      <PersonaForm
-        doc={doc}
-        onChange={onFormChange}
-        tools={tools}
-        skills={skills}
-        mcpServers={mcpServers}
-      />
-
-      <SuggestCapabilities
-        description={suggestDescription}
-        onApply={applyRec}
-        isApplied={(rec) => recommendationApplied(rec, currentCapabilities())}
-      />
-
-      {/* Spec 30 T12 — BYO MCP servers (only for a saved persona). */}
-      {personaId ? <ByoMcpManager personaId={personaId} /> : null}
-      {/* Autonomy + consent: existing-persona edit only (D-31-X-autonomy-placement). */}
-      {personaId && onConsentChange ? (
-        <Card className="p-5" data-slot="autonomy-card">
-          <AutonomyConsentSection
-            autonomy={readAutonomy(doc)}
-            onAutonomyChange={(level) =>
-              onFormChange({ ...doc, autonomy: level })
-            }
-            consent={consent}
-            onConsentChange={(granted) => void handleConsentChange(granted)}
-            pending={consentPending}
+    <SectionGroup>
+      <div className="lg:grid lg:grid-cols-[14rem_1fr] lg:gap-6">
+        <SectionTimelineNav />
+        <div className="flex min-w-0 flex-col gap-5">
+          <PersonaForm
+            doc={doc}
+            onChange={onFormChange}
+            tools={tools}
+            skills={skills}
+            mcpServers={mcpServers}
           />
-          {consentError ? (
-            <p className="mt-2 text-sm text-destructive">
-              {t("saveError", { error: consentError })}
-            </p>
-          ) : null}
-        </Card>
-      ) : null}
 
-      <div className="flex flex-col gap-2">
-        <button
-          type="button"
-          onClick={() => setShowYaml((v) => !v)}
-          className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <Code2 className="size-4" />
-          {showYaml ? t("hideRawYaml") : t("editRawYaml")}
-        </button>
-        {showYaml ? (
-          <>
-            <YAMLEditor value={yamlText} onChange={onYamlChange} />
-            {yamlError ? (
-              <p className="text-sm text-destructive">
-                {t("yamlInvalid", { error: yamlError })}
+          {/* Autonomy + consent: existing-persona edit only (D-31-X-autonomy-placement). */}
+          {personaId && onConsentChange ? (
+            <CollapsibleSection id="autonomy" title={t("autonomyTitle")}>
+              <AutonomyConsentSection
+                autonomy={readAutonomy(doc)}
+                onAutonomyChange={(level) =>
+                  onFormChange({ ...doc, autonomy: level })
+                }
+                consent={consent}
+                onConsentChange={(granted) => void handleConsentChange(granted)}
+                pending={consentPending}
+              />
+              {consentError ? (
+                <p className="mt-2 text-sm text-destructive">
+                  {t("saveError", { error: consentError })}
+                </p>
+              ) : null}
+            </CollapsibleSection>
+          ) : null}
+
+          <SuggestCapabilities
+            description={suggestDescription}
+            onApply={applyRec}
+            isApplied={(rec) =>
+              recommendationApplied(rec, currentCapabilities())
+            }
+          />
+
+          {/* Spec 30 T12 — BYO MCP servers (only for a saved persona). */}
+          {personaId ? <ByoMcpManager personaId={personaId} /> : null}
+
+          {/* Spec-10 seam: clarifying questions + refinement (D-10-2 / D-10-5).
+              Authoring-only; a collapsible section that opens by default so it
+              is the second open card in the authoring flow. */}
+          {refinement && refinement.round >= refinement.maxRounds ? (
+            <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+              {t("refineLimitReached")}
+            </p>
+          ) : refinement && refinement.questions.length > 0 ? (
+            <CollapsibleSection
+              id="refine"
+              title={t("questionsTitle")}
+              defaultOpen
+            >
+              <RefineQuestions refinement={refinement} currentYaml={yamlText} />
+            </CollapsibleSection>
+          ) : null}
+
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => setShowYaml((v) => !v)}
+              className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+            >
+              <Code2 className="size-4" />
+              {showYaml ? t("hideRawYaml") : t("editRawYaml")}
+            </button>
+            {showYaml ? (
+              <>
+                <YAMLEditor value={yamlText} onChange={onYamlChange} />
+                {yamlError ? (
+                  <p className="text-sm text-destructive">
+                    {t("yamlInvalid", { error: yamlError })}
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+
+          <div className="flex items-center justify-end gap-3">
+            {saveError ? (
+              <p className="flex-1 text-sm text-destructive">
+                {t("saveError", { error: saveError })}
               </p>
             ) : null}
-          </>
-        ) : null}
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={saving || yamlError !== null}
+              className={cn(buttonVariants(), "gap-2")}
+            >
+              <Save className="size-4" />
+              {saving ? t("saving") : saveLabel}
+            </button>
+          </div>
+        </div>
       </div>
-
-      {/* Spec-10 seam: clarifying questions + refinement (D-10-2 / D-10-5). */}
-      {refinement && refinement.round >= refinement.maxRounds ? (
-        <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-          {t("refineLimitReached")}
-        </p>
-      ) : refinement && refinement.questions.length > 0 ? (
-        <RefineQuestions refinement={refinement} currentYaml={yamlText} />
-      ) : null}
-
-      <div className="flex items-center justify-end gap-3">
-        {saveError ? (
-          <p className="flex-1 text-sm text-destructive">
-            {t("saveError", { error: saveError })}
-          </p>
-        ) : null}
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={saving || yamlError !== null}
-          className={cn(buttonVariants(), "gap-2")}
-        >
-          <Save className="size-4" />
-          {saving ? t("saving") : saveLabel}
-        </button>
-      </div>
-    </div>
+    </SectionGroup>
   );
 }
 
@@ -299,16 +319,11 @@ function RefineQuestions({
   const [answers, setAnswers] = useState<Record<number, string>>({});
 
   return (
-    <div className="flex flex-col gap-3 rounded-md border bg-muted/30 px-4 py-3">
-      <div>
-        <p className="flex items-center gap-1.5 font-medium text-sm">
-          <Sparkles className="size-4 text-primary" />
-          {t("questionsTitle")}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          {t("questionsHint", { max: refinement.maxRounds })}
-        </p>
-      </div>
+    <div className="flex flex-col gap-3">
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Sparkles className="size-3.5 text-primary" />
+        {t("questionsHint", { max: refinement.maxRounds })}
+      </p>
       <ul className="flex flex-col gap-3">
         {refinement.questions.map((q, i) => {
           const answer = answers[i] ?? "";
