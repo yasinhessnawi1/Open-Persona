@@ -24,7 +24,9 @@ services:
   # Cartesia websocket per the V5 note). `--dev` enables the in-memory dev mode
   # (no Redis) suitable for a single-session local call.
   livekit:
-    image: livekit/livekit-server:v1.8
+    # Exact pin: livekit-client@2.19 uses the `/rtc/v1/` signaling path, which
+    # only newer servers serve (v1.8 returned "v1 RTC path not found").
+    image: livekit/livekit-server:v1.13.1
     command: ["--dev", "--bind", "0.0.0.0"]
     environment:
       LIVEKIT_KEYS: "devkey: secret"
