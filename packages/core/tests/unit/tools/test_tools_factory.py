@@ -270,9 +270,7 @@ class TestBuildDefaultToolboxWithMCP:
         persona = _persona(tools=["file_read"])
         byo = MCPClient(server_name="byo", server_url="https://byo.example/mcp")
 
-        toolbox, clients = await build_default_toolbox(
-            config, persona, extra_mcp_clients=[byo]
-        )
+        toolbox, clients = await build_default_toolbox(config, persona, extra_mcp_clients=[byo])
 
         names = toolbox.names()
         assert "file_read" in names

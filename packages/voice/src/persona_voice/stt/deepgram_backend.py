@@ -408,9 +408,7 @@ class DeepgramStreamingSTT:
             # _terminate_iterators). The mapped error is observable via the log.
             self._terminate_iterators()
 
-    async def _on_close(
-        self, _client: Any = None, _close: Any = None, **_kwargs: Any
-    ) -> None:
+    async def _on_close(self, _client: Any = None, _close: Any = None, **_kwargs: Any) -> None:
         """Server-side close — terminate the output iterators cleanly.
 
         The SDK fires ``Close`` with a different arity than the data events
