@@ -277,6 +277,8 @@
     "byoDisabled": "disabled",
     "byoAddError": "Could not add the server (check the URL — https only, public host).",
     "voice": "Voice",
+    "voiceTitle": "Voice",
+    "voiceDescription": "The voice this persona speaks with on a call.",
     "routing": {
       "title": "Model routing",
       "description": "Choose how this persona picks a model for each turn.",

@@ -125,7 +125,11 @@ export function PersonaForm({
             }
           />
         </Field>
-        <Field label={t("voice")}>
+      </Section>
+
+      {/* Voice — its own card (a persona's audible identity, V6 C2). */}
+      <Section title={t("voiceTitle")}>
+        <Field label={t("voice")} hint={t("voiceDescription")}>
           <VoiceSelector
             value={currentVoiceId}
             onChange={(voice) =>
@@ -436,15 +440,20 @@ function Section({
 
 function Field({
   label,
+  hint,
   children,
 }: {
   label: string;
+  hint?: string;
   children: React.ReactNode;
 }) {
   return (
     // biome-ignore lint/a11y/noLabelWithoutControl: the form control is passed as children
     <label className="flex flex-col gap-1.5">
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      {hint ? (
+        <span className="text-xs text-muted-foreground/80">{hint}</span>
+      ) : null}
       {children}
     </label>
   );
