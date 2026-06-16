@@ -358,8 +358,17 @@ class DeepgramStreamingSTT:
         except Exception:  # noqa: BLE001 — surface via close, not raise (callback context)
             await self.close()
 
-    async def _on_close(self, _client: Any, _close: Any, **_kwargs: Any) -> None:
-        """Server-side close — terminate the output iterators cleanly."""
+    async def _on_close(
+        self, _client: Any = None, _close: Any = None, **_kwargs: Any
+    ) -> None:
+        """Server-side close — terminate the output iterators cleanly.
+
+        The SDK fires ``Close`` with a different arity than the data events
+        (the close payload arrives as a keyword, or is omitted entirely), so
+        both positional args carry defaults — otherwise a missing ``_close``
+        raises ``TypeError`` inside the callback and cascades into a task-tree
+        cancellation storm (``RecursionError``). We ignore the payload anyway.
+        """
         await self.close()
 
     @staticmethod
