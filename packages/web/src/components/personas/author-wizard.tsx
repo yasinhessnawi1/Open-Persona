@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import { PersonaEditor } from "./persona-editor";
 import type { McpCatalogEntry } from "./persona-form";
 
-type Phase = "describe" | "loading" | "review";
+type Phase = "describe" | "loading" | "creating" | "review";
 
 /**
  * Server-side cap (D-10-5). UI hides the questions after this; server backstops.
@@ -43,7 +43,7 @@ const MAX_REFINE_ROUNDS = 3;
  *   - heading `font-heading text-2xl/3xl font-semibold tracking-tight` →
  *     `.type-heading` / `.type-display` (Fraunces lives in the token now);
  *   - body `text-sm text-muted-foreground` → `.type-body` / `.type-ui`;
- *   - shadcn `<Skeleton>` in `<AuthorLoading>` → T21 `<SkeletonLine>`
+ *   - shadcn `<Skeleton>` in `<WizardLoading>` → T21 `<SkeletonLine>`
  *     (token-resolved animation-duration via F1 `--motion-duration-*`);
  *   - hand-rolled outer `<div className="flex flex-col gap-6">` → T20 `<Stack>`;
  *   - inline error `text-sm text-destructive` → `.type-ui text-destructive` with
@@ -127,6 +127,24 @@ export function AuthorWizard({
     }
   }
 
+  // Wrap createPersona so the create wait shows a dedicated loader — this is
+  // when the avatar is actually generated (Spec 29's build-time hook in POST
+  // /personas, fail-soft, up to ~25s). On success createPersona redirects; it
+  // only returns here on a validation error, which drops back to review.
+  async function handleCreate(
+    yaml: string,
+    _avatarUrl?: string | null,
+  ): Promise<{ error: string } | undefined> {
+    setPhase("creating");
+    setError(null);
+    const result = await createPersona(yaml);
+    if (result?.error) {
+      setError(result.error);
+      setPhase("review");
+    }
+    return result;
+  }
+
   if (phase === "review" && draft && doc) {
     return (
       <Stack gap={6} data-slot="author-wizard-review">
@@ -149,7 +167,7 @@ export function AuthorWizard({
           tools={tools}
           skills={skills}
           mcpServers={mcpServers}
-          onSave={createPersona}
+          onSave={handleCreate}
           saveLabel={t("save")}
           refinement={{
             questions: draft.questions ?? [],
@@ -164,7 +182,24 @@ export function AuthorWizard({
   }
 
   if (phase === "loading") {
-    return <AuthorLoading />;
+    return (
+      <WizardLoading
+        title={t("loadingTitle")}
+        steps={[t("loadingStep1"), t("loadingStep2"), t("loadingStep3")]}
+      />
+    );
+  }
+
+  if (phase === "creating") {
+    // The persona is drafted; now it's being created + its identity image
+    // generated. No taking-shape skeleton here — the content already exists.
+    return (
+      <WizardLoading
+        title={t("creatingTitle")}
+        steps={[t("creatingStep1"), t("creatingStep2"), t("creatingStep3")]}
+        skeleton={false}
+      />
+    );
   }
 
   const examples = [t("example1"), t("example2"), t("example3")];
@@ -251,15 +286,21 @@ export function AuthorWizard({
  * `<SkeletonLine>` (motion resolves through F1 `--motion-duration-*` tokens),
  * retokenises typography, and wraps in T20 `<Stack>`.
  */
-function AuthorLoading() {
-  const t = useTranslations("author");
-  const steps = [t("loadingStep1"), t("loadingStep2"), t("loadingStep3")];
+function WizardLoading({
+  title,
+  steps,
+  skeleton = true,
+}: {
+  title: string;
+  steps: string[];
+  skeleton?: boolean;
+}) {
   const [i, setI] = useState(0);
 
   useEffect(() => {
-    const id = setInterval(() => setI((n) => (n + 1) % 3), 2800);
+    const id = setInterval(() => setI((n) => (n + 1) % steps.length), 2800);
     return () => clearInterval(id);
-  }, []);
+  }, [steps.length]);
 
   return (
     <Stack gap={6} data-slot="author-wizard-loading">
@@ -270,7 +311,7 @@ function AuthorLoading() {
         />
         <div>
           <h1 className="type-heading" data-slot="author-wizard-loading-title">
-            {t("loadingTitle")}
+            {title}
           </h1>
           <p
             className="type-ui mt-1 text-muted-foreground"
@@ -281,15 +322,17 @@ function AuthorLoading() {
           </p>
         </div>
       </header>
-      <Stack gap={4}>
-        {[0, 1, 2].map((row) => (
-          <Card key={row} className="gap-3 p-5">
-            <SkeletonLine className="w-24" />
-            <SkeletonLine className="w-3/4" />
-            <SkeletonLine className="w-1/2" />
-          </Card>
-        ))}
-      </Stack>
+      {skeleton ? (
+        <Stack gap={4}>
+          {[0, 1, 2].map((row) => (
+            <Card key={row} className="gap-3 p-5">
+              <SkeletonLine className="w-24" />
+              <SkeletonLine className="w-3/4" />
+              <SkeletonLine className="w-1/2" />
+            </Card>
+          ))}
+        </Stack>
+      ) : null}
     </Stack>
   );
 }

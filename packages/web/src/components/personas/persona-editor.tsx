@@ -21,6 +21,7 @@ import {
   yamlToDoc,
 } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
+import { AvatarEditor } from "./avatar-editor";
 import { ByoMcpManager } from "./byo-mcp-manager";
 import {
   CollapsibleSection,
@@ -89,6 +90,7 @@ export function PersonaEditor({
   saveLabel,
   refinement,
   initialConsent,
+  initialAvatarUrl,
   onConsentChange,
 }: {
   initialDoc: PersonaDoc;
@@ -102,10 +104,14 @@ export function PersonaEditor({
   // when set with `onConsentChange`, the selector + toggle are surfaced (a
   // consent PATCH needs a persisted persona; the author/new flow omits them).
   personaId?: string;
-  onSave: (yaml: string) => Promise<SaveResult>;
+  // The persona's avatar is carried on the YAML save's `avatar_url` field; the
+  // editor tracks it out-of-band from the doc (it's a presentation field, not
+  // schema). Absent in the author/new flow (the avatar auto-generates at create).
+  onSave: (yaml: string, avatarUrl?: string | null) => Promise<SaveResult>;
   saveLabel: string;
   refinement?: Refinement;
   initialConsent?: boolean | null;
+  initialAvatarUrl?: string | null;
   onConsentChange?: (granted: boolean | null) => Promise<SaveResult>;
 }) {
   const t = useTranslations("author");
@@ -122,6 +128,11 @@ export function PersonaEditor({
   );
   const [consentPending, setConsentPending] = useState(false);
   const [consentError, setConsentError] = useState<string | null>(null);
+  // The avatar (a presentation field) rides the YAML save's `avatar_url`; a
+  // replacement uploads immediately for preview and persists on Save.
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(
+    initialAvatarUrl ?? null,
+  );
 
   const onFormChange = useCallback((next: PersonaDoc) => {
     setDoc(next);
@@ -195,7 +206,7 @@ export function PersonaEditor({
     setSaving(true);
     setSaveError(null);
     try {
-      const result = await onSave(yamlText);
+      const result = await onSave(yamlText, avatarUrl);
       if (result?.error) setSaveError(result.error);
     } catch {
       setSaveError(t("saveFailed"));
@@ -209,6 +220,16 @@ export function PersonaEditor({
       <div className="lg:grid lg:grid-cols-[14rem_1fr] lg:gap-6">
         <SectionTimelineNav />
         <div className="flex min-w-0 flex-col gap-5">
+          {/* Avatar — existing-persona edit only (upload needs a persisted id). */}
+          {personaId ? (
+            <AvatarEditor
+              personaId={personaId}
+              name={identity.name}
+              avatarUrl={avatarUrl}
+              onChange={setAvatarUrl}
+            />
+          ) : null}
+
           <PersonaForm
             doc={doc}
             onChange={onFormChange}

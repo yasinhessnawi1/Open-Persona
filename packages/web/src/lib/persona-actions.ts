@@ -20,15 +20,20 @@ function formatDetail(detail: unknown, fallback: string): string {
  * Persist an edited persona YAML (PATCH, re-validated server-side) and redirect
  * to its detail page (T08). Returns a structured error on validation failure so
  * the editor can surface it instead of crashing (redirect only on success).
+ *
+ * ``avatarUrl`` (a workspace ref from an avatar upload) rides the same PATCH; the
+ * API leaves the avatar untouched when it is null/omitted, so an unchanged avatar
+ * is preserved.
  */
 export async function savePersona(
   personaId: string,
   yaml: string,
+  avatarUrl?: string | null,
 ): Promise<{ error: string } | undefined> {
   const api = await serverApi();
   const res = await api.PATCH("/v1/personas/{persona_id}", {
     params: { path: { persona_id: personaId } },
-    body: { yaml },
+    body: { yaml, avatar_url: avatarUrl ?? null },
   });
   if (res.error !== undefined) {
     const body = res.error as { error?: string; detail?: unknown };

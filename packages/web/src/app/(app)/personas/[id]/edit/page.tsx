@@ -58,6 +58,7 @@ export default async function EditPersonaPage({
         onSave={savePersona.bind(null, id)}
         saveLabel={t("save")}
         initialConsent={detail.consent_to_auto_dispatch ?? null}
+        initialAvatarUrl={detail.avatar_url ?? null}
         onConsentChange={setConsent.bind(null, id)}
       />
     </div>

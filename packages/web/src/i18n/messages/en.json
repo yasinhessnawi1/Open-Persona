@@ -316,7 +316,15 @@
     "sectionsNav": "Sections",
     "expand": "Expand section",
     "collapse": "Collapse section",
-    "autonomyTitle": "Autonomy"
+    "autonomyTitle": "Autonomy",
+    "avatarReplace": "Replace image",
+    "avatarUploading": "Uploading…",
+    "avatarHint": "PNG, JPG or WebP. A square image works best.",
+    "avatarUploadError": "Couldn't upload that image — try a different file.",
+    "creatingTitle": "Creating your persona",
+    "creatingStep1": "Saving your persona…",
+    "creatingStep2": "Generating identity image…",
+    "creatingStep3": "Bringing your persona to life…"
   },
   "chat": {
     "placeholder": "Message {name}…",
