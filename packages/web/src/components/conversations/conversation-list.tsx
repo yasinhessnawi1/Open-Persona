@@ -3,7 +3,7 @@
 import { ChevronRight, MoreVertical, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useFormatter, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 import { PersonaAvatar } from "@/components/persona/persona-avatar";
 import {
@@ -46,6 +46,10 @@ export function ConversationList({
   personaById,
 }: ConversationListProps) {
   const t = useTranslations("conversations");
+  // next-intl's formatter is pinned to the active locale on both server + client,
+  // so the rendered date matches (a bare `toLocaleDateString()` used the runtime
+  // default locale, which differs SSR↔browser → hydration mismatch).
+  const format = useFormatter();
   const router = useRouter();
   const api = useApi();
   const search = useSearchParams();
@@ -114,7 +118,9 @@ export function ConversationList({
                 <span className="type-caption text-muted-foreground">
                   {persona ? persona.name : t("unknownPersona")}
                   {" · "}
-                  {new Date(c.updated_at).toLocaleDateString()}
+                  {format.dateTime(new Date(c.updated_at), {
+                    dateStyle: "medium",
+                  })}
                 </span>
               </span>
               <ChevronRight

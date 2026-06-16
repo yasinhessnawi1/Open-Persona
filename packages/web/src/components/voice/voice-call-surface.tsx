@@ -16,7 +16,7 @@
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { IdentityOrb } from "@/components/voice/identity-orb";
 import { VoiceCaptions } from "@/components/voice/voice-captions";
@@ -65,6 +65,14 @@ export function VoiceCallSurface({
     getPersonaLevel,
   } = call;
 
+  // The call starts as soon as the surface mounts — reaching here IS the user's
+  // "call" click (the chat-header phone control navigated in). No separate
+  // "Start call" step. `start()` is idempotent (no-ops if a room exists), and
+  // the autoplay-gesture fallback covers the rare case audio needs a tap.
+  useEffect(() => {
+    void start();
+  }, [start]);
+
   const stateLabel =
     state.agentState === "thinking"
       ? t("thinking")
@@ -73,8 +81,9 @@ export function VoiceCallSurface({
         : t("listening");
 
   const live = state.phase === "connected" || state.phase === "reconnecting";
-  const canStart =
-    state.phase === "idle" ||
+  // Only a recovery affordance now (no initial Start button) — the call
+  // auto-starts; this lets the user re-try after a drop/error/clean end.
+  const canRetry =
     state.phase === "ended" ||
     state.phase === "dropped" ||
     state.phase === "error";
@@ -129,10 +138,8 @@ export function VoiceCallSurface({
       ) : null}
 
       <div className="flex items-center gap-3">
-        {canStart ? (
-          <Button onClick={() => void start()}>
-            {state.phase === "idle" ? t("start") : t("retry")}
-          </Button>
+        {canRetry ? (
+          <Button onClick={() => void start()}>{t("retry")}</Button>
         ) : null}
 
         {live ? (
