@@ -13,6 +13,14 @@ cd "$(dirname "$0")"
 # Developer keys (DeepSeek PERSONA_API_KEY, web-search, etc.) from the repo root.
 if [ -f ../../.env ]; then set -a; . ../../.env; set +a; fi
 
+# CA bundle for outbound TLS. The macOS Python.framework doesn't use the system
+# keychain, so the agent's STT (Deepgram) + TTS (Cartesia) websockets fail with
+# "CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate" and the
+# call hangs on "Listening". Point Python's SSL at certifi's bundle. (Prod uses
+# a container image that carries ca-certificates — the V5 note; this is the
+# host-dev equivalent.)
+export SSL_CERT_FILE="${SSL_CERT_FILE:-$(uv run python -m certifi 2>/dev/null)}"
+
 export DATABASE_URL="postgresql+psycopg://persona:persona@localhost:5436/persona"
 export APP_DATABASE_URL="postgresql+psycopg://persona_app:persona_app@localhost:5436/persona"
 
