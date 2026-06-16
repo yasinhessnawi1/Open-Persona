@@ -242,7 +242,8 @@
 		"save": "Save persona",
 		"saving": "Saving…",
 		"saveError": "Couldn't save — {error}",
-		"saveFailed": "Something went wrong while saving."
+		"saveFailed": "Something went wrong while saving.",
+		"voice": "Voice"
 	},
 	"chat": {
 		"placeholder": "Message {name}…",
@@ -356,6 +357,14 @@
 		"enableAudio": "Tap to enable audio",
 		"errorTitle": "Couldn’t start the call",
 		"you": "You",
-		"captions": "Live captions"
+		"captions": "Live captions",
+		"voiceLabel": "Voice",
+		"voiceDefault": "Default voice",
+		"voicePreview": "Preview",
+		"voiceStop": "Stop",
+		"voiceSelected": "Selected",
+		"voicesLoading": "Loading voices…",
+		"voicesUnavailable": "Voice selection is unavailable right now.",
+		"voicesError": "Couldn’t load voices."
 	}
 }

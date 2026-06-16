@@ -15,6 +15,7 @@ from persona.auth.jwt_verifier import AuthenticatedUser
 from persona.errors import AuthenticationError, CreditsExhaustedError
 from persona_voice.config import VoiceConfig
 from persona_voice.http.app import build_app
+from persona_voice.tts.types import VoiceCatalogueEntry
 from pydantic import SecretStr
 
 
@@ -169,3 +170,61 @@ def test_voice_config_reads_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.jwt_secret.get_secret_value() == "env_secret"
     # Comma-separated list parsed by the computed property.
     assert cfg.jwt_algorithms_list == ["HS256", "RS256"]
+
+
+# ---------- GET /v1/voices (spec V6 C2) -------------------------------------
+
+
+class _FakeCatalogue:
+    """A VoiceCatalogue stub returning one entry (no provider/network)."""
+
+    @property
+    def provider_name(self) -> str:
+        return "cartesia"
+
+    async def list_voices(
+        self,
+        *,
+        gender: object = None,  # noqa: ARG002
+        language: object = None,  # noqa: ARG002
+        limit: int | None = None,  # noqa: ARG002
+    ) -> tuple[VoiceCatalogueEntry, ...]:
+        return (
+            VoiceCatalogueEntry(
+                voice_id="v_clara",
+                name="Clara",
+                gender="feminine",
+                language="en",
+                description="warm & professional",
+                preview_url="https://cdn.test/clara.mp3",
+            ),
+        )
+
+
+def test_voices_endpoint_requires_bearer() -> None:
+    client = _build_test_client()
+    resp = client.get("/v1/voices")
+    assert resp.status_code == 401
+
+
+def test_voices_endpoint_returns_catalogue_with_preview_url() -> None:
+    client = _build_test_client()
+    client.app.state.voice_catalogue = _FakeCatalogue()
+    resp = client.get("/v1/voices", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["provider"] == "cartesia"
+    assert len(data["voices"]) == 1
+    assert data["voices"][0]["voice_id"] == "v_clara"
+    assert data["voices"][0]["gender"] == "feminine"
+    # preview_url is passed through for the voice-selector's hear-before-choosing.
+    assert data["voices"][0]["preview_url"] == "https://cdn.test/clara.mp3"
+
+
+def test_voices_endpoint_returns_empty_when_tts_unconfigured() -> None:
+    client = _build_test_client()
+    # Simulate the no-PERSONA_TTS_API_KEY path: catalogue resolves to None.
+    client.app.state.voice_catalogue = None
+    resp = client.get("/v1/voices", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    assert resp.json() == {"provider": None, "voices": []}
