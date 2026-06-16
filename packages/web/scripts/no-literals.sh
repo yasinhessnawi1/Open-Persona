@@ -54,7 +54,6 @@ LEGACY=(
   'src/components/runs/step-card.tsx:47'            # T30 closes
   'src/components/runs/step-card.tsx:51'            # T30 closes
   'src/app/(app)/personas/[id]/page.tsx:136'        # T28 closes
-  'src/app/page.tsx:106'                            # out-of-spec; post-T34 follow-up
 )
 
 SCOPES=(

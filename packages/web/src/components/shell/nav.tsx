@@ -1,12 +1,13 @@
 "use client";
 
-import { MessagesSquare, Settings, Sparkles } from "lucide-react";
+import { Home, MessagesSquare, Settings, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 
 const ITEMS = [
+  { href: "/", key: "home", icon: Home },
   { href: "/personas", key: "personas", icon: Sparkles },
   { href: "/conversations", key: "conversations", icon: MessagesSquare },
   { href: "/settings", key: "settings", icon: Settings },

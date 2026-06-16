@@ -2,7 +2,9 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
 // Next 16 renamed `middleware.ts` → `proxy.ts`. Clerk's clerkMiddleware is the
 // default export. Protected routes are the authenticated (app) group; the
-// landing (/) and auth pages stay public.
+// auth pages stay public. The root `/` is intentionally NOT force-protected:
+// it is auth-aware and handles the signed-out case itself (redirect to the
+// marketing site), so the middleware leaves it alone.
 const isProtected = createRouteMatcher([
   "/personas(.*)",
   "/chat(.*)",

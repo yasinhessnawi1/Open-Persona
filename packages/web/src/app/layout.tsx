@@ -22,10 +22,36 @@ const fraunces = Fraunces({
   display: "swap",
 });
 
+// metadataBase resolves the file-convention social images
+// (app/opengraph-image.png, app/twitter-image.png) + manifest/icon URLs to
+// absolute URLs. Sourced from NEXT_PUBLIC_APP_URL with a localhost fallback so
+// dev still produces valid (if local) absolute tags.
+const appUrl =
+  process.env.NEXT_PUBLIC_APP_URL?.trim() || "http://localhost:3000";
+const title = "Open Persona";
+const description =
+  "Build and run typed-memory AI personas with a tier-routed runtime.";
+
 export const metadata: Metadata = {
-  title: "Open Persona",
-  description:
-    "Build and run typed-memory AI personas with a tier-routed runtime.",
+  metadataBase: new URL(appUrl),
+  applicationName: title,
+  title,
+  description,
+  // og/twitter *images* are supplied by the app-root file conventions
+  // (opengraph-image.png / twitter-image.png + their .alt.txt); we only add the
+  // accompanying text + card type here. Icons come from app/favicon.ico,
+  // app/icon.svg, app/apple-icon.png + app/manifest.ts.
+  openGraph: {
+    type: "website",
+    siteName: title,
+    title,
+    description,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+  },
 };
 
 export default async function RootLayout({

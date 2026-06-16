@@ -8,17 +8,31 @@
     "subtitle": "Scaffold is live. Auth, personas, chat, runs, and authoring land in the spec-09 tasks.",
     "cta": "View personas"
   },
-  "landing": {
-    "kicker": "Typed-memory persona runtime",
-    "headline": "AI personas with a memory you can read.",
-    "subhead": "Open Persona gives every agent a typed identity, a worldview, and episodic memory — then routes each turn to the right model tier.",
-    "signIn": "Sign in",
-    "getStarted": "Get started",
-    "openApp": "Open Persona",
-    "tierRail": "Routed per turn",
-    "tierSmall": "Small",
-    "tierMid": "Mid",
-    "tierFrontier": "Frontier",
+  "home": {
+    "title": "Home",
+    "subtitle": "Your typed-memory agents, ready when you are.",
+    "subtitleNew": "Welcome to Open Persona — let's build your first agent.",
+    "create": "New persona",
+    "jumpBackIn": "Jump back in",
+    "manageAll": "Manage all personas",
+    "entry": {
+      "chat": "Chat",
+      "call": "Call"
+    },
+    "recent": {
+      "heading": "Recent conversations",
+      "untitled": "Untitled conversation",
+      "unknownPersona": "Unknown persona"
+    },
+    "onboarding": {
+      "kicker": "Get started",
+      "title": "Give your AI a self worth trusting.",
+      "body": "Describe a persona in a sentence and the authoring flow drafts the rest — a typed identity, a worldview, and episodic memory.",
+      "create": "Create your first persona",
+      "docs": "Read the docs",
+      "featuresHeading": "What you get",
+      "featureCta": "Start here"
+    },
     "features": {
       "identity": {
         "title": "Identity is data",
@@ -36,11 +50,10 @@
         "title": "Tier-routed",
         "body": "Each turn runs on the right model — small, mid, or frontier — so you spend on power only when a turn needs it."
       }
-    },
-    "ctaTitle": "Give your AI a self worth trusting.",
-    "footer": "Open source · built on a typed-memory core."
+    }
   },
   "nav": {
+    "home": "Home",
     "personas": "Personas",
     "conversations": "Conversations",
     "settings": "Settings",
