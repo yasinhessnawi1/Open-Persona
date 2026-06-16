@@ -276,7 +276,9 @@
 		"byoUnassign": "Assigned",
 		"byoDisabled": "disabled",
 		"byoAddError": "Could not add the server (check the URL — https only, public host).",
-		"voice": "Voice"
+		"voice": "Voice",
+		"voiceTitle": "Voice",
+		"voiceDescription": "The voice this persona speaks with on a call."
 	},
 	"chat": {
 		"placeholder": "Message {name}…",
