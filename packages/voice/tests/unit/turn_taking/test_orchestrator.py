@@ -328,3 +328,43 @@ async def test_turn_end_records_endpoint_silence_wait() -> None:
     await sched.fire_last()
     # The controller measured ~820 ms of silence at the END_TURN decision.
     assert orch.last_endpoint_silence_wait_ms == pytest.approx(820.0)
+
+
+async def test_continuation_race_does_not_crash_when_floor_already_moved() -> None:
+    """A concurrent speech-activity source can race the floor past PROCESSING
+    during the ``cancel_generation()`` await; ``on_speech_started`` must then NOT
+    fire an illegal ``user_speaking --user_continuation-->`` transition (the
+    live-pass crash). It re-checks the floor and no-ops.
+    """
+
+    class _RacingActions(_RecordingActions):
+        """``cancel_generation`` simulates a concurrent continuation that already
+        moved the floor to USER_SPEAKING while this handler was awaiting."""
+
+        orch: ConversationalOrchestrator | None = None
+
+        async def cancel_generation(self) -> None:
+            await super().cancel_generation()
+            assert self.orch is not None
+            self.orch._state = ConversationalState.USER_SPEAKING  # noqa: SLF001
+
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RacingActions()
+    listener = _RecordingListener()
+    orch = _build(clock, sched, actions, listener)
+    actions.orch = orch
+
+    # Drive LISTENING → USER_SPEAKING → PROCESSING.
+    await orch.on_speech_started(_started())
+    await orch.on_transcript(Transcript(is_final=True, text="hei", confidence=0.95))
+    await orch.on_speech_ended(_ended(ts_emit=_BASE))
+    clock.set_ms_after_base(800.0)
+    await sched.fire_last()
+    assert orch.state is ConversationalState.PROCESSING
+
+    # A continuation onset; cancel_generation() races the floor to USER_SPEAKING.
+    # on_speech_started must not raise InvalidConversationalTransitionError.
+    await orch.on_speech_started(_started())
+    assert orch.state is ConversationalState.USER_SPEAKING
+    assert actions.cancelled == 1

@@ -227,6 +227,15 @@ class ConversationalOrchestrator:
             # continuation. Cancel the (audio-less) generation and re-open the
             # turn, keeping the accumulated transcript.
             await self._actions.cancel_generation()
+            # cancel_generation() awaited — a concurrent speech-activity source
+            # (provider + VAD drains run as separate tasks) can have raced the
+            # floor past PROCESSING in the meantime (e.g. its own continuation
+            # already fired PROCESSING→USER_SPEAKING). Only fire the transition
+            # if we still hold PROCESSING; otherwise the continuation is already
+            # reflected and firing USER_CONTINUATION here is an illegal
+            # user_speaking→user_continuation move.
+            if self._state is not ConversationalState.PROCESSING:
+                return
             self._last_offset = None
             await self._transition(TransitionTrigger.USER_CONTINUATION)
         elif self._state is ConversationalState.PERSONA_SPEAKING:
