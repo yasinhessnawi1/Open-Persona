@@ -7,21 +7,27 @@ vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: async () => "jwt" }),
 }));
 
-vi.mock("@/lib/voice/voices", () => ({
-  fetchVoices: vi.fn(async () => ({
-    provider: "cartesia",
-    voices: [
-      {
-        voice_id: "v1",
-        name: "Clara",
-        gender: "feminine",
-        language: "en",
-        description: "warm",
-        preview_url: "https://cdn/c.mp3",
-      },
-    ],
-  })),
-}));
+// Keep the real `voiceDisplayName` (the name-stripping helper the selector uses)
+// and override only the network fetch.
+vi.mock("@/lib/voice/voices", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./voices")>();
+  return {
+    ...actual,
+    fetchVoices: vi.fn(async () => ({
+      provider: "cartesia",
+      voices: [
+        {
+          voice_id: "v1",
+          name: "Clara - Warm Storyteller",
+          gender: "feminine",
+          language: "en",
+          description: "warm",
+          preview_url: "https://cdn/c.mp3",
+        },
+      ],
+    })),
+  };
+});
 
 const messages = {
   voice: {
@@ -50,9 +56,12 @@ describe("VoiceSelector (C2)", () => {
   it("lists catalogue voices; choosing one sets the full {provider, voice_id}", async () => {
     const onChange = vi.fn();
     renderSelector({ value: null, onChange });
-    await waitFor(() => expect(screen.getByText("Clara")).toBeInTheDocument());
+    // The picker strips the provider's human name ("Clara") to the descriptor.
+    await waitFor(() =>
+      expect(screen.getByText("Warm Storyteller")).toBeInTheDocument(),
+    );
 
-    fireEvent.click(screen.getByText("Clara"));
+    fireEvent.click(screen.getByText("Warm Storyteller"));
     expect(onChange).toHaveBeenCalledWith({
       provider: "cartesia",
       voice_id: "v1",

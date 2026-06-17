@@ -33,6 +33,27 @@ export interface VoiceList {
   voices: VoiceSummary[];
 }
 
+/**
+ * The label to show for a voice in the picker.
+ *
+ * Provider voice names embed a human first name ("Kari - Crisp Coordinator",
+ * "Lars - Casual Conversationalist"), which contradicts the persona's OWN
+ * identity — the voice is the persona's voice, not a separate character. Strip
+ * the human name to the role descriptor; when the name is a bare first name with
+ * no descriptor, fall back to a gender label rather than surface the clashing
+ * name.
+ */
+export function voiceDisplayName(voice: VoiceSummary): string {
+  const sep = voice.name.indexOf(" - ");
+  if (sep >= 0) {
+    const descriptor = voice.name.slice(sep + 3).trim();
+    if (descriptor) return descriptor;
+  }
+  const gender = voice.gender.trim();
+  if (gender) return `${gender[0].toUpperCase()}${gender.slice(1)} voice`;
+  return voice.name;
+}
+
 export interface FetchVoicesOptions {
   getToken: TokenGetter;
   signal?: AbortSignal;

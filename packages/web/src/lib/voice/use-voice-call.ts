@@ -93,6 +93,12 @@ export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
   const personaAnalyserRef = useRef<Analyser | null>(null);
   const endedByUserRef = useRef(false);
   const reconnectTriedRef = useRef(false);
+  // Synchronous in-flight guard: `roomRef` isn't set until AFTER the async token
+  // fetch, so two rapid `start()` calls (the auto-start effect under React Strict
+  // Mode, a double-render, or a double-click) would both pass a `roomRef`-only
+  // check and each launch its own agent + Room — the user joins both and hears
+  // the turn-0 greeting twice. This flag is set before the first await.
+  const startingRef = useRef(false);
   // Keep the latest options accessible inside long-lived SDK callbacks without
   // re-subscribing every render.
   const optionsRef = useRef(options);
@@ -286,45 +292,52 @@ export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
   );
 
   const start = useCallback(async () => {
-    if (roomRef.current) return;
-    endedByUserRef.current = false;
-    reconnectTriedRef.current = false;
-    setCaptions([]);
-    patch({ phase: "connecting", error: null });
-
-    let token: MintedToken;
+    // Guard against a room already up AND a start already in flight (the async
+    // token fetch below means a roomRef-only check races — see startingRef).
+    if (roomRef.current || startingRef.current) return;
+    startingRef.current = true;
     try {
-      token = await fetchToken();
-    } catch (err) {
-      const error =
-        err instanceof ApiError
-          ? callErrorForTokenStatus(err.status)
-          : {
-              kind: "service_unavailable" as const,
-              message: "The voice service is unavailable.",
-            };
-      patch({ phase: "error", error });
-      return;
-    }
+      endedByUserRef.current = false;
+      reconnectTriedRef.current = false;
+      setCaptions([]);
+      patch({ phase: "connecting", error: null });
 
-    const room = new Room({
-      audioCaptureDefaults: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
-    roomRef.current = room;
-    wireRoom(room);
+      let token: MintedToken;
+      try {
+        token = await fetchToken();
+      } catch (err) {
+        const error =
+          err instanceof ApiError
+            ? callErrorForTokenStatus(err.status)
+            : {
+                kind: "service_unavailable" as const,
+                message: "The voice service is unavailable.",
+              };
+        patch({ phase: "error", error });
+        return;
+      }
 
-    try {
-      await connectMicAndAudio(room, token);
-    } catch (err) {
-      patch({ phase: "error", error: callErrorForMediaError(err) });
-      endedByUserRef.current = true;
-      await room.disconnect().catch(() => undefined);
-      teardownAudio();
-      roomRef.current = null;
+      const room = new Room({
+        audioCaptureDefaults: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      roomRef.current = room;
+      wireRoom(room);
+
+      try {
+        await connectMicAndAudio(room, token);
+      } catch (err) {
+        patch({ phase: "error", error: callErrorForMediaError(err) });
+        endedByUserRef.current = true;
+        await room.disconnect().catch(() => undefined);
+        teardownAudio();
+        roomRef.current = null;
+      }
+    } finally {
+      startingRef.current = false;
     }
   }, [connectMicAndAudio, fetchToken, patch, teardownAudio, wireRoom]);
 

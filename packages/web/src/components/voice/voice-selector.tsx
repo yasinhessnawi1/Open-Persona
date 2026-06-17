@@ -18,7 +18,11 @@ import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { fetchVoices, type VoiceSummary } from "@/lib/voice/voices";
+import {
+  fetchVoices,
+  type VoiceSummary,
+  voiceDisplayName,
+} from "@/lib/voice/voices";
 
 const TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE;
 
@@ -127,7 +131,7 @@ export function VoiceSelector({
         <li key={voice.voice_id}>
           <VoiceRow
             selected={value === voice.voice_id}
-            label={voice.name}
+            label={voiceDisplayName(voice)}
             description={voice.description ?? undefined}
             onSelect={() => onChange({ provider, voice_id: voice.voice_id })}
             selectedLabel={t("voiceSelected")}
