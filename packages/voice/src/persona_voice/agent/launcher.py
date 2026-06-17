@@ -133,24 +133,23 @@ class InProcessAgentLauncher:
                 self._tier_registry = tier_registry_from_env()
 
     async def warm(self) -> None:
-        """Build + start warming the shared singletons at SERVER STARTUP.
+        """Build + warm the shared singletons at SERVER STARTUP (BLOCKING).
 
         The embedder's first ``encode()`` materialises the bge model + CPU
         kernels synchronously (~tens of seconds on some machines). Paying that
         lazily on the first call blocks that call's first turn — the persona
-        cannot recall memory, so the reply is empty and the call hangs. Warming
-        here (fire-and-forget, off the event loop) lets the model finish loading
-        while the operator opens the browser, so the first real call is warm.
-        Best-effort: a failed warm just means the first call pays the per-call
-        warm-up (the ring degrade ladder still covers it).
+        cannot recall memory, so the reply is empty and the call hangs. Called
+        from the app's lifespan startup, this **awaits** the cold load off the
+        event loop, so the server is "ready" only once the embedder is warm.
+        uvicorn holds incoming requests until lifespan-startup completes, so the
+        first call simply waits a few seconds, then runs warm — no hang, ever.
+        Best-effort: a failed warm is swallowed (a turn pays the cold load then).
         """
         from persona_voice.agent.warmup import start_embedder_warmup
 
         await self._ensure_singletons()
         if self._embedder is not None:
-            task = start_embedder_warmup(self._embedder)
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            await start_embedder_warmup(self._embedder)
 
     async def aclose(self) -> None:
         """Cancel any in-flight sessions + dispose the shared tier registry."""

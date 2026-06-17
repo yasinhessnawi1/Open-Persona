@@ -32,7 +32,8 @@ import uuid
 # be importable at runtime or FastAPI mis-reads the params (e.g. treating
 # ``request: Request`` as a query parameter). Same pattern as
 # persona-api ``auth/deps.py``.
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -216,8 +217,33 @@ def build_app(config: VoiceConfig) -> FastAPI:
     Engine bound to the ``persona_app`` RLS-scoped role) before serving
     requests. Tests can override ``owns_persona`` instead to skip the DB hop.
     """
-    app = FastAPI(title="persona-voice", version="0.1.0")
+    # Spec V6 A0 (D-V6-X-agent-worker) — the dev/operator-pass-grade in-process
+    # agent launcher, built BEFORE the app so the lifespan can warm it. When
+    # enabled, the token endpoint spawns the agent that joins the call's Room and
+    # becomes the persona. Default-off keeps token-only deploys + tests unaffected.
+    launcher = None
+    if config.agent_inprocess:
+        from persona_voice.agent import InProcessAgentLauncher
+
+        launcher = InProcessAgentLauncher(config)
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Startup: BLOCK until the bge embedder cold-load (~tens of seconds on
+        # CPU) finishes, off the event loop. uvicorn holds incoming requests
+        # until lifespan-startup completes, so the first call waits a few seconds
+        # then runs warm — instead of its first turn hanging on memory recall
+        # (the V6 operator-pass finding). `on_event("startup")` did NOT fire
+        # under the factory; the lifespan always does.
+        if launcher is not None:
+            await launcher.warm()
+        yield
+        if launcher is not None:
+            await launcher.aclose()
+
+    app = FastAPI(title="persona-voice", version="0.1.0", lifespan=_lifespan)
     app.state.voice_config = config
+    app.state.agent_launcher = launcher
     if config.database_url:
         app.state.ownership_engine = create_engine(config.database_url, pool_size=1)
 
@@ -232,27 +258,7 @@ def build_app(config: VoiceConfig) -> FastAPI:
             allow_headers=["*"],
         )
 
-    # Spec V6 A0 (D-V6-X-agent-worker) — the dev/operator-pass-grade in-process
-    # agent launcher. When enabled, the token endpoint spawns the agent that
-    # joins the call's Room and becomes the persona. Default-off keeps the
-    # token-only deployment + every existing test unaffected.
-    app.state.agent_launcher = None
-    if config.agent_inprocess:
-        from persona_voice.agent import InProcessAgentLauncher
-
-        launcher = InProcessAgentLauncher(config)
-        app.state.agent_launcher = launcher
-
-        @app.on_event("startup")
-        async def _warm_agent_launcher() -> None:
-            # Pay the bge embedder cold-load (~tens of seconds on CPU) at server
-            # startup, off the event loop, so the FIRST call's first turn is warm
-            # instead of hanging on memory recall (V6 operator-pass finding).
-            await launcher.warm()
-
-        @app.on_event("shutdown")
-        async def _close_agent_launcher() -> None:
-            await launcher.aclose()
+    # (the agent launcher is built above + warmed/closed via the lifespan.)
 
     @app.exception_handler(AuthenticationError)
     async def _auth_error_handler(_req: Request, exc: AuthenticationError) -> object:
