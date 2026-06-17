@@ -236,6 +236,9 @@ identity | self_facts | worldview | constraints | tools | skills.
 {EXAMPLE_COMPLEX_QUESTIONS}
 
 ## Now produce the persona for the user's description.
+Reminder: language_default is the language the persona SPEAKS. Infer it from the
+description's cues; if the description gives NO language cue at all, fall back to
+the language the description itself is written in.
 """
 
 
