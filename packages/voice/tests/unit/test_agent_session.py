@@ -137,6 +137,41 @@ async def test_agent_session_runs_connect_active_pipeline_then_awaits_disconnect
     ]
 
 
+async def test_agent_session_launches_greet_after_pipeline_start() -> None:
+    """Greet-first (Spec 32 A3): turn 0 is kicked off the run() path, after the
+    pipeline starts and before run() blocks on disconnect."""
+    calls: list[str] = []
+    ended = asyncio.Event()
+
+    async def _greet() -> None:
+        calls.append("greet")
+
+    agent = AgentSession(
+        voice_room=_FakeRoom(calls),  # type: ignore[arg-type]
+        loop=_FakeLoop(calls),  # type: ignore[arg-type]
+        stt_seam=_FakeSttSeam(calls),  # type: ignore[arg-type]
+        tts_seam=_FakeTtsSeam(calls),
+        session=_FakeSessionMachine(calls),  # type: ignore[arg-type]
+        mcp_clients=[_FakeMcpClient(calls)],  # type: ignore[list-item]
+        livekit_url="ws://localhost:7880",
+        agent_token="tok",
+        ended=ended,
+        greet=_greet,
+    )
+    task = asyncio.create_task(agent.run())
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if "greet" in calls:
+            break
+
+    # Greet ran after the pipeline started (turn 0 once the loop is live).
+    assert "greet" in calls
+    assert calls.index("greet") > calls.index("start_pipeline")
+
+    ended.set()
+    await task
+
+
 async def test_agent_session_teardown_is_best_effort_when_a_step_raises() -> None:
     calls: list[str] = []
     agent, ended = _make_session(calls, stop_raises=True)

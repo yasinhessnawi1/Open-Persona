@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 import yaml
 from persona.audit import JSONLAuditLogger
 from persona.errors import PersonaError, PersonaNotFoundError
+from persona.language_capability import serviceability_warning
+from persona.logging import get_logger
 from persona.registry import PersonaRegistry
 from persona.schema.persona import Persona
 from persona.stores import (
@@ -52,6 +54,26 @@ __all__ = [
     "summary_of",
     "update_persona",
 ]
+
+
+_LOG = get_logger("services.persona")
+
+
+def _warn_if_language_unserviceable(persona: Persona) -> None:
+    """Author-time voice-language warning (Spec 32 D-32-4).
+
+    Non-blocking: a persona whose declared language the configured voice
+    providers can't serve still saves, but the author is warned (the persona's
+    calls will fall back to English) before a call rather than during one. The
+    complement to the call-time soft-fallback.
+    """
+    warning = serviceability_warning(persona.identity.language_default)
+    if warning is not None:
+        _LOG.warning(
+            "persona declares an unserviceable voice language (persona_id={pid}): {msg}",
+            pid=persona.persona_id or "",
+            msg=warning,
+        )
 
 
 def load_persona_from_yaml(yaml_str: str, *, persona_id: str, owner_id: str) -> Persona:
@@ -112,6 +134,7 @@ def create_persona(
     """
     persona_id = f"persona_{uuid.uuid4().hex}"
     persona = load_persona_from_yaml(yaml_str, persona_id=persona_id, owner_id=owner_id)
+    _warn_if_language_unserviceable(persona)
 
     with rls_engine.begin() as conn:
         conn.execute(
@@ -145,6 +168,7 @@ def update_persona(
     a PATCH semantics for the presentation field).
     """
     persona = load_persona_from_yaml(yaml_str, persona_id=persona_id, owner_id=owner_id)
+    _warn_if_language_unserviceable(persona)
     values: dict[str, object] = {"yaml": yaml_str, "schema_version": persona.schema_version}
     if avatar_url is not None:
         values["avatar_url"] = avatar_url

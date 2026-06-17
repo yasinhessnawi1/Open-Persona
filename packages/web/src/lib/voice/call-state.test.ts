@@ -1,9 +1,94 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyVoiceStateEvent,
   callErrorForMediaError,
   callErrorForTokenStatus,
   callPhaseForConnectionState,
+  INITIAL_CALL_STATE,
 } from "./call-state";
+import type { VoiceStateEvent } from "./voice-events";
+
+const stateEvent = (
+  toState: VoiceStateEvent["toState"],
+  trigger = "model_first_audio",
+  fromState: VoiceStateEvent["fromState"] = "preparing",
+): VoiceStateEvent => ({
+  type: "state",
+  fromState,
+  toState,
+  trigger,
+  at: "2026-06-16T12:00:00+00:00",
+});
+
+describe("applyVoiceStateEvent — greet-first ring lifecycle (Spec 32 C)", () => {
+  it("rings and gates the mic on the preparing frame", () => {
+    const s = applyVoiceStateEvent(
+      INITIAL_CALL_STATE,
+      stateEvent("preparing", "greeting_started"),
+    );
+    expect(s.phase).toBe("ringing");
+    expect(s.agentState).toBe("thinking");
+    expect(s.micActive).toBe(false);
+    expect(s.micGatedForGreeting).toBe(true);
+  });
+
+  it("stops ringing and plays the greeting, mic still gated", () => {
+    let s = applyVoiceStateEvent(
+      INITIAL_CALL_STATE,
+      stateEvent("preparing", "greeting_started"),
+    );
+    s = applyVoiceStateEvent(s, stateEvent("persona_speaking"));
+    expect(s.phase).toBe("connected");
+    expect(s.agentState).toBe("speaking");
+    expect(s.micActive).toBe(false); // greeting plays before the mic opens
+    expect(s.micGatedForGreeting).toBe(true);
+  });
+
+  it("un-gates the mic exactly when the greeting finishes", () => {
+    let s = applyVoiceStateEvent(
+      INITIAL_CALL_STATE,
+      stateEvent("preparing", "greeting_started"),
+    );
+    s = applyVoiceStateEvent(s, stateEvent("persona_speaking"));
+    s = applyVoiceStateEvent(
+      s,
+      stateEvent("listening", "persona_finished", "persona_speaking"),
+    );
+    expect(s.agentState).toBe("listening");
+    expect(s.micActive).toBe(true); // un-gated at greeting-end
+    expect(s.micGatedForGreeting).toBe(false);
+  });
+
+  it("does not re-gate or re-open the mic on later listening transitions", () => {
+    // After the greeting, a normal turn cycle must not flip the mic via the
+    // greeting gate (mute is the user's control thereafter).
+    let s = applyVoiceStateEvent(
+      INITIAL_CALL_STATE,
+      stateEvent("preparing", "greeting_started"),
+    );
+    s = applyVoiceStateEvent(s, stateEvent("persona_speaking"));
+    s = applyVoiceStateEvent(
+      s,
+      stateEvent("listening", "persona_finished", "persona_speaking"),
+    );
+    const muted = { ...s, micActive: false };
+    const after = applyVoiceStateEvent(
+      muted,
+      stateEvent("listening", "persona_finished", "persona_speaking"),
+    );
+    expect(after.micActive).toBe(false); // greeting gate already spent
+  });
+
+  it("bumps the barge-in signal on a real barge-in transition", () => {
+    const base = { ...INITIAL_CALL_STATE, phase: "connected" as const };
+    const s = applyVoiceStateEvent(
+      base,
+      stateEvent("user_speaking", "barge_in", "persona_speaking"),
+    );
+    expect(s.bargeInSignal).toBe(1);
+    expect(s.agentState).toBe("listening");
+  });
+});
 
 describe("callPhaseForConnectionState", () => {
   it("maps the SDK connection states onto call phases", () => {

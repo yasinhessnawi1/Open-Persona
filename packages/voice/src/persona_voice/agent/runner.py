@@ -58,6 +58,8 @@ from persona_runtime.routing import FirstTokenLatencyTracker
 from persona_runtime.tier import tier_registry_from_env
 from sqlalchemy import text
 
+from persona_voice.agent.language import apply_stt_route, apply_tts_route, resolve_call_languages
+from persona_voice.agent.warmup import start_embedder_warmup
 from persona_voice.model import (
     VoiceHistoryCompactor,
     VoiceModelReplyProducer,
@@ -78,7 +80,8 @@ from persona_voice.tts.config import StreamingTTSConfig
 from persona_voice.tts.seam_adapter import build_seam_adapter
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
+    from typing import Any
 
     from persona.stores.embedder import Embedder
     from persona.stores.protocol import MemoryStore
@@ -104,6 +107,15 @@ _logger = get_logger("agent.runner")
 # broadcast (the loop still runs).
 
 _BGE_MODEL = "BAAI/bge-small-en-v1.5"
+
+# The synthetic turn-0 prompt (Spec 32 A3). It rides the normal producer path as
+# the opening "user" message; the persona's reply is the greeting, generated in
+# the declared language (B5). The persona answers the phone — no user input.
+_GREETING_NUDGE = (
+    "(The voice call has just connected. Greet the person warmly in one short "
+    "sentence to open the conversation, in character. Do not wait for them to "
+    "speak first.)"
+)
 
 
 def _load_persona(engine: Engine, persona_id: str) -> Persona:
@@ -171,6 +183,8 @@ class AgentSession:
         livekit_url: str,
         agent_token: str,
         ended: asyncio.Event,
+        embedder_warmup: asyncio.Task[None] | None = None,
+        greet: Callable[[], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         self._voice_room = voice_room
         self._loop = loop
@@ -181,6 +195,11 @@ class AgentSession:
         self._livekit_url = livekit_url
         self._agent_token = agent_token
         self._ended = ended
+        # Held so the off-loop warm-up isn't garbage-collected mid-flight; the
+        # turn-0 path gates on it (D-32-X-warmup-gates-turn0, wired in A3).
+        self._embedder_warmup = embedder_warmup
+        self._greet = greet
+        self._greet_task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
         """Join the Room, run the loop until disconnect, then tear down."""
@@ -191,6 +210,10 @@ class AgentSession:
             await self._voice_room.connect(self._livekit_url, self._agent_token)
             await self._session.mark_active()
             await self._loop.start_pipeline()
+            # Greet-first (Spec 32 A3): kick turn 0 off the run() path so the
+            # session immediately awaits disconnect while the persona greets.
+            if self._greet is not None:
+                self._greet_task = asyncio.create_task(self._greet(), name="greet-on-connect")
             _logger.info(
                 "voice agent session active; awaiting disconnect (session={session_id})",
                 session_id=self._session.session.session_id,
@@ -259,8 +282,9 @@ async def build_agent_session(
     # the agent package stays cheap to import for tests that only touch the
     # lifecycle). The orchestrator import would otherwise pull the full turn-
     # taking subpackage.
-    from persona_voice.loop.streaming import StreamingLoop
+    from persona_voice.loop.streaming import StreamingLoop, Transcript
     from persona_voice.turn_taking.bridge import wire_orchestrated_loop
+    from persona_voice.turn_taking.states import ConversationalState
 
     core_config = core_config or PersonaCoreConfig()
     stt_config = stt_config or StreamingSTTConfig()
@@ -273,10 +297,31 @@ async def build_agent_session(
     if tier_registry is None:
         tier_registry = tier_registry_from_env()
 
+    # Warm the shared embedder OFF the loop now (A1) so turn 0's first recall is
+    # not blocked by the synchronous cold model load — the root fix for the
+    # first-turn truncation. The turn-0 generation path gates on this task's
+    # completion, bounded by the ring degrade ladder (D-32-X-warmup-gates-turn0).
+    embedder_warmup = start_embedder_warmup(embedder)
+
     # --- session RLS engine + persona + stores (tenant-isolated) ---
     rls_engine = make_session_rls_engine(config.database_url, user_id=user_id)
     persona = _load_persona(rls_engine, persona_id)
     stores = _build_stores(rls_engine, embedder, audit_root)
+
+    # --- per-call language plan (Spec 32 B2) ---
+    # Resolve the persona's declared language ONCE into the STT route (B3), the
+    # TTS route (B4), and the reply language (B5). Fail-soft never raises; it
+    # records fallback events we log + emit here (the typed-event path,
+    # D-32-X-typed-event) so an unserved language degrades to English loudly.
+    language_plan = resolve_call_languages(persona.identity.language_default)
+    for fallback in language_plan.fallbacks:
+        _logger.warning(
+            "declared voice language not served; falling back to English "
+            "(declared={declared} provider={provider} reason={reason})",
+            declared=fallback.declared,
+            provider=fallback.provider.value,
+            reason=fallback.reason,
+        )
 
     # The persona's conservative voice toolbox (VoiceToolPolicy narrows the
     # offered set at generation time — D-V5-4). build_default_toolbox is async,
@@ -297,6 +342,7 @@ async def build_agent_session(
         history_manager=ConversationHistoryManager(),
         latency_tracker=tracker,
         toolbox=toolbox,
+        language=language_plan,
     )
     recorder = VoiceTurnRecorder(
         ctx,
@@ -326,11 +372,21 @@ async def build_agent_session(
     def _agent_speaking() -> bool:
         return bool(orch_holder) and bool(orch_holder[0].is_agent_speaking())  # type: ignore[attr-defined]
 
+    # Pin the Deepgram model + language code to the persona's declared language
+    # (Spec 32 B3) — nova-3 + ``no`` for Norwegian, overriding the global env
+    # hint (D-32-X-deepgram-no-nova3). This is what stops the websocket 400 on
+    # ``nb`` and the force-decode of Norwegian speech as English.
+    stt_config = apply_stt_route(stt_config, language_plan.stt)
     stt_backend = load_streaming_stt(stt_config)
     vad = SileroVADAdapter(stt_config, session_state_provider=_agent_speaking)
     stt_seam = V1STTStreamSeamAdapter(backend=stt_backend, vad=vad)
 
     # --- real V3 TTS seam bound to THIS persona's voice ---
+    # Pin the Cartesia synthesis language to the persona's declared language
+    # (Spec 32 B4) — the missing ``language`` param that fixes Norwegian text
+    # being read with English phonetics. Voices are multilingual, so this is a
+    # language code, not a voice constraint.
+    tts_config = apply_tts_route(tts_config, language_plan.tts)
     tts_backend = load_streaming_tts(tts_config)
     tts_seam = build_seam_adapter(
         backend=tts_backend,
@@ -355,14 +411,27 @@ async def build_agent_session(
         if broadcaster_factory
         else (DataChannelBroadcaster(voice_room))
     )
+    # Greet-first (Spec 32 A3): the orchestrator opens in PREPARING so the
+    # persona generates turn 0 (the greeting) before any user input.
     orchestrator = wire_orchestrated_loop(
         loop=loop,
         session=session,
         state_listener=broadcaster,
         turn_transcript_listener=recorder,
+        initial_state=ConversationalState.PREPARING,
     )
     loop.caption_listener = broadcaster
     orch_holder.append(orchestrator)
+
+    async def _greet() -> None:
+        """Run turn 0 — gate on the warm-up, then have the persona greet first."""
+        await orchestrator.begin_greeting(
+            Transcript(is_final=True, text=_GREETING_NUDGE, confidence=1.0),
+            warmup=embedder_warmup,
+            warmup_timeout_s=config.greet_warmup_timeout_s,
+            greet_timeout_s=config.greet_timeout_s,
+        )
+
     # The STT seam dispatches speech-activity events to its listener — the
     # orchestrator (so VAD onset/offset drive the conversational state machine).
     stt_seam.listener = orchestrator
@@ -402,6 +471,8 @@ async def build_agent_session(
         livekit_url=agent_token.livekit_url,
         agent_token=agent_token.token,
         ended=ended,
+        embedder_warmup=embedder_warmup,
+        greet=_greet,
     )
 
 

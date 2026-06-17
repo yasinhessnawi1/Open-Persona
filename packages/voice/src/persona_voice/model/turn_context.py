@@ -47,6 +47,8 @@ if TYPE_CHECKING:
     from persona_runtime.routing import FirstTokenLatencyTracker, IntelligentRouter, Router
     from persona_runtime.tier import TierRegistry
 
+    from persona_voice.agent.language import CallLanguagePlan
+
 __all__ = ["REQUIRED_STORE_KINDS", "VoiceTurnContext"]
 
 #: The four typed memory stores a voice turn must be able to retrieve from to
@@ -102,6 +104,10 @@ class VoiceTurnContext:
     latency_tracker: FirstTokenLatencyTracker | None = None
     intelligent_router: IntelligentRouter | None = None
     toolbox: Toolbox | None = None
+    language: CallLanguagePlan | None = None
+    """The per-call language plan (Spec 32 B2). ``reply_language`` drives the
+    prompt builder's reply-language injection (B5); ``None`` ⇒ the persona's
+    declared default is resolved at prompt-build time (the text-path behaviour)."""
 
     def __post_init__(self) -> None:
         missing = [kind for kind in REQUIRED_STORE_KINDS if kind not in self.stores]

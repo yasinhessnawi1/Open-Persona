@@ -11,6 +11,31 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Voice Experience Enhancements — Persona-Initiated Greeting · Per-Persona Language Routing (Spec 32; code-complete 2026-06-16, operator pass runs jointly with V6's deferred live pass)
+
+> A V6 fast-follow built on the V6 branch: two findings from V6's live bring-up that the frontend alone can't fix. **(A) Ring-until-greeting** — the persona *answers the phone*: the call rings while it generates turn 0 (its opening line) with the cold path warmed off-loop, then it speaks first; the mic stays gated until the greeting finishes. **(B) Per-persona declared-language routing** — each call runs in the persona's `identity.language_default`: STT pinned to the right Deepgram model+code, TTS spoken with the right Cartesia language, and the LLM instructed to reply in that language; English is the fail-soft default. **No schema change, no migration**; additive throughout.
+
+#### Added (persona-core)
+- **Voice-language capability registry** (`language_capability.py`): the centralized spine — a canonical `Language` tag (a mirrored subset of Pipecat's enum, BSD-2 / Daily) + `normalize` (collapsing `nb`/`nb-NO`/`nn`/`nn-NO` → the served `no`, with BCP-47 base-code fallback), per-provider STT/TTS resolution, `is_serviceable` for author-time validation, and a typed `LanguageFallbackEvent`. Unsupported `(language, provider)` resolves to English — never a crash, never a silent wrong-language call.
+
+#### Added (persona-voice)
+- **Greet-first opening** (`turn_taking/states.py`, `orchestrator.py`, `agent/runner.py`): a new `PREPARING` conversational state + the legal turn-0 entry (`PREPARING --model_first_audio--> PERSONA_SPEAKING`) and degrade (`PREPARING --reset--> LISTENING`); `begin_greeting` generates turn 0 from the persona's identity with no user input, gating on the embedder warm-up (bounded by the ring) and degrading to the user's floor if it stalls (never rings forever).
+- **Embedder warm-up off the loop** (`agent/warmup.py`): a one-shot threaded `encode()` at session build — the *root* fix for the first-turn truncation (the cold `bge` load no longer blocks the agent loop).
+- **Per-call language plan** (`agent/language.py`): resolves `language_default` once into the STT route (nova-3 + `no` for Norwegian), the TTS route, and the reply language (keyed on what TTS will actually speak, so a TTS fall-back also steers the reply text); pinned into the Deepgram + Cartesia configs before the sockets open.
+- **Data-channel `preparing` frame + graceful onset handling**: the greet-first ring signal the client binds to; a stray user onset during `PREPARING` is logged and dropped (the mic-gate hand-off is safe-by-construction at the FSM + recover-don't-crash at the orchestrator).
+- **Env-tunable greet bounds** (`PERSONA_VOICE_GREET_WARMUP_TIMEOUT_S`, `PERSONA_VOICE_GREET_TIMEOUT_S`).
+
+#### Added (persona-runtime)
+- **Reply-language injection** (`prompt.py`): a "respond in {language}" directive injected into the system prompt when the resolved language isn't English (mandatory for turn 0, which has no user input to mirror); English personas are unchanged.
+
+#### Added (persona-web)
+- **`ringing` call phase + greet-first mic-gate** (`lib/voice/call-state.ts`, `voice-events.ts`, `use-voice-call.ts`): the ring lifecycle (preparing → greeting → un-gate) as a pure reducer; the mic is held gated until the greeting finishes (un-gate at completion), with a client-side ring backstop.
+- **Ringing surface** (`voice-call-surface.tsx`): a "Calling {persona}…" state distinct from `connecting`.
+- **Author-time language hint** (`lib/voice/language-support.ts`, `persona-form.tsx`): an inline warning when a declared language the providers can't serve is entered (client mirror of the registry), complementing the API-side warning at persona create/update.
+
+#### Fixed
+- **Norwegian voice calls** — STT was force-decoding Norwegian as English (global `language_hint`) and Cartesia spoke Norwegian text with English phonetics (no `language` param). Both now route per the persona's declared language; the Deepgram websocket no longer 400s on `nb` (normalized to `no`).
+
 ### Persona Decision Controls & Transparency — Routing + Autonomy (Spec 31; close-out 2026-06-16, pending sign-off)
 
 > **The web counterpart to intelligent routing (Spec 23) + proactive autonomy (Spec 21):** makes *how a persona decides* controllable and transparent. Three surfaces — routing controls + routing transparency (the net-new core) and the wiring of the already-built autonomy controls — plus one additive, migration-free backend touch surfacing the routing decision on the chat `done` event. **Autonomy-prompts-in-chat consumes Spec 30's merged chat-proactive rail (no fork — the `proposal`-absent clarification path).** No new dependencies; no migration; backward-compatible (personas without `routing.intelligent` are byte-identical).

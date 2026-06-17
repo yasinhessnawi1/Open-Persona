@@ -31,6 +31,8 @@ import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from persona.logging import get_logger
+
 from persona_voice.loop.streaming import Transcript
 from persona_voice.turn_taking.barge_in import BargeInDetector, BargeInVerdict
 from persona_voice.turn_taking.controller import TurnTakingController, TurnVerdict
@@ -56,6 +58,14 @@ __all__ = [
     "SchedulerHandle",
     "TurnActions",
 ]
+
+_logger = get_logger("turn_taking.orchestrator")
+
+# Greet-first turn-0 bounds (Spec 32 A3). Defaults sit on the research degrade
+# ladder (R-32-2); build_agent_session passes the env-configured values
+# (D-32-X-degrade-timeout-env-config).
+DEFAULT_WARMUP_TIMEOUT_S: float = 10.0
+DEFAULT_GREET_TIMEOUT_S: float = 30.0
 
 
 @runtime_checkable
@@ -157,6 +167,7 @@ class ConversationalOrchestrator:
         detector: BargeInDetector | None = None,
         scheduler: Scheduler | None = None,
         clock: Callable[[], datetime] | None = None,
+        initial_state: ConversationalState = ConversationalState.LISTENING,
     ) -> None:
         self._actions = actions
         self._listener = listener
@@ -165,7 +176,10 @@ class ConversationalOrchestrator:
         self._scheduler = scheduler or AsyncioScheduler()
         self._clock = clock or (lambda: datetime.now(UTC))
 
-        self._state = ConversationalState.LISTENING
+        # ``PREPARING`` for a greet-first call (Spec 32 A3) — the persona speaks
+        # turn 0 before any user input; ``LISTENING`` otherwise (back-compat).
+        self._state = initial_state
+        self._greet_handle: SchedulerHandle | None = None
         # Per-turn accumulation.
         self._latest_text: str | None = None
         self._final_transcript: Transcript | None = None
@@ -246,6 +260,16 @@ class ConversationalOrchestrator:
             self._barge_in_handle = self._scheduler.call_later(
                 self._detector_confirm_window_s(), self._on_barge_in_confirm
             )
+        elif self._state is ConversationalState.PREPARING:
+            # Greet-first (Spec 32 A4): the mic should be gated through the
+            # greeting. If an onset slips through (a client-side gate timing
+            # edge), drop it — log, do NOT fire a transition. USER_SPEECH_STARTED
+            # is illegal from PREPARING (A2), so firing it would raise; the guard
+            # makes the hand-off safe-by-construction AND recover-don't-crash.
+            _logger.warning(
+                "user speech onset during PREPARING (greeting); mic-gate likely "
+                "raced — dropping the onset, keeping the floor with the greeting"
+            )
 
     async def on_speech_ended(self, event: SpeechEndedEvent) -> None:
         """Speech-offset — arm turn-end, or resolve a pending barge-in."""
@@ -269,8 +293,14 @@ class ConversationalOrchestrator:
     # ----- loop callbacks (T06 wires these) ----------------------------
 
     async def notify_model_first_audio(self) -> None:
-        """First persona audio reached the rail → PERSONA_SPEAKING."""
-        if self._state is ConversationalState.PROCESSING:
+        """First persona audio reached the rail → PERSONA_SPEAKING.
+
+        Legal from PROCESSING (a normal turn) and from PREPARING (the greet-first
+        turn 0, Spec 32 A3). Reaching audio cancels the greet watchdog — the ring
+        is over, the greeting is playing.
+        """
+        if self._state in (ConversationalState.PROCESSING, ConversationalState.PREPARING):
+            self._cancel_greet_watchdog()
             await self._transition(TransitionTrigger.MODEL_FIRST_AUDIO)
 
     async def notify_persona_finished(self) -> None:
@@ -279,9 +309,87 @@ class ConversationalOrchestrator:
             await self._transition(TransitionTrigger.PERSONA_FINISHED)
 
     async def notify_processing_yielded_no_audio(self) -> None:
-        """Generation ended without audio (empty/error) → RESET to LISTENING."""
-        if self._state is ConversationalState.PROCESSING:
+        """Generation ended without audio (empty/error) → RESET to LISTENING.
+
+        Covers both a normal turn (PROCESSING) and the greet-first turn 0
+        (PREPARING) producing nothing — the floor returns to the user either way.
+        """
+        if self._state in (ConversationalState.PROCESSING, ConversationalState.PREPARING):
+            self._cancel_greet_watchdog()
             await self._transition(TransitionTrigger.RESET)
+
+    # ----- greet-on-connect (turn 0; Spec 32 A3) -----------------------
+
+    async def begin_greeting(
+        self,
+        greeting_transcript: Transcript,
+        *,
+        warmup: Awaitable[None] | None = None,
+        warmup_timeout_s: float = DEFAULT_WARMUP_TIMEOUT_S,
+        greet_timeout_s: float = DEFAULT_GREET_TIMEOUT_S,
+    ) -> None:
+        """Generate turn 0 — the persona greets first, with no user input.
+
+        Runs only from PREPARING (the opening state). Gates on the embedder
+        warm-up so the first recall is warm (D-32-X-warmup-gates-turn0); a slow
+        warm-up does not block — turn 0 proceeds and the greet watchdog still
+        bounds it. If the invocation fails, or no audio reaches the rail within
+        ``greet_timeout_s``, the floor degrades to LISTENING so the mic un-gates
+        and the user can talk — the call never rings forever (D-32-3).
+
+        Args:
+            greeting_transcript: the synthetic turn-0 prompt (the greeting nudge).
+            warmup: the embedder warm-up task to await before generating (A1).
+            warmup_timeout_s: upper bound on the warm-up wait before proceeding.
+            greet_timeout_s: upper bound on reaching first audio before degrading.
+        """
+        if self._state is not ConversationalState.PREPARING:
+            return
+        # Announce PREPARING to the client (Spec 32 A4): ring + keep the mic gated
+        # until the greeting finishes. A direct broadcast — PREPARING is the
+        # initial state (no FSM transition into it), so this frame is the client's
+        # "the agent is here, preparing your greeting" signal.
+        await self._announce_preparing()
+        if warmup is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(warmup), warmup_timeout_s)
+            except TimeoutError:
+                _logger.warning(
+                    "embedder warm-up exceeded {timeout}s before turn 0; proceeding "
+                    "(the greeting covers the remaining cold load)",
+                    timeout=warmup_timeout_s,
+                )
+        try:
+            await self._actions.invoke_model_for_turn(greeting_transcript)
+        except Exception:  # noqa: BLE001 — any turn-0 failure must degrade, not crash
+            _logger.warning("turn-0 greeting invocation failed; degrading to listening")
+            await self.force_reset()
+            return
+        # Never ring forever: if no first audio arrives in time, degrade.
+        self._greet_handle = self._scheduler.call_later(greet_timeout_s, self._on_greet_timeout)
+
+    async def _announce_preparing(self) -> None:
+        """Broadcast the initial PREPARING frame (A4 client ring/mic-gate signal)."""
+        if self._listener is not None:
+            await self._listener.on_state_changed(
+                ConversationalTransition(
+                    from_state=ConversationalState.PREPARING,
+                    to_state=ConversationalState.PREPARING,
+                    trigger=TransitionTrigger.GREETING_STARTED,
+                    at=self._clock(),
+                )
+            )
+
+    async def _on_greet_timeout(self) -> None:
+        """Greet watchdog — turn 0 produced no audio in time → return the floor."""
+        if self._state is ConversationalState.PREPARING:
+            _logger.warning("turn-0 greeting produced no audio in time; degrading to listening")
+            await self.force_reset()
+
+    def _cancel_greet_watchdog(self) -> None:
+        if self._greet_handle is not None:
+            self._greet_handle.cancel()
+            self._greet_handle = None
 
     async def force_reset(self) -> None:
         """Force the floor back to the user (RESET → LISTENING) — the recovery path.
@@ -296,6 +404,7 @@ class ConversationalOrchestrator:
             return
         self._cancel_turn_end()
         self._cancel_barge_in()
+        self._cancel_greet_watchdog()
         self._reset_turn()
         await self._transition(TransitionTrigger.RESET)
 

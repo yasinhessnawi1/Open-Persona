@@ -189,6 +189,7 @@ def wire_orchestrated_loop(
     state_listener: ConversationalStateListener | None = None,
     turn_transcript_listener: TurnTranscriptListener | None = None,
     cancel_watchdog_s: float = DEFAULT_CANCEL_WATCHDOG_S,
+    initial_state: ConversationalState = ConversationalState.LISTENING,
 ) -> ConversationalOrchestrator:
     """Build + wire the orchestrator to ``loop`` and ``session`` (composition root).
 
@@ -213,6 +214,7 @@ def wire_orchestrated_loop(
         detector=detector,
         scheduler=scheduler,
         clock=clock,
+        initial_state=initial_state,
     )
     loop.orchestrator = orchestrator
     loop.speech_activity = orchestrator

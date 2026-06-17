@@ -28,6 +28,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from persona.language_capability import (
+    CanonicalLanguage,
+    default_capability_registry,
+    language_display_name,
+)
 from persona.schema.chunks import PersonaChunk  # noqa: TC002 — Pydantic needs runtime ref
 from persona.schema.conversation import ConversationMessage
 from persona.schema.documents import DocumentChunk  # noqa: TC002 — Pydantic needs runtime ref
@@ -46,6 +51,13 @@ __all__ = [
 ]
 
 _FOOTER = "Stay in character. Cite sources when using tool results."
+
+# The capability registry resolves a persona's declared language to a canonical
+# tag for the reply-language directive (Spec 32 B5). Module-level singleton: the
+# resolution is pure + stateless, and this avoids rebuilding the matrices per
+# prompt. English (the model's default) gets no directive, so existing prompts
+# are unchanged.
+_LANGUAGE_REGISTRY = default_capability_registry()
 
 # Produced-files verification block (D-19-X-prompt-builder-produced-files-verification).
 # Capability-gated — emitted only when the persona has ``code_execution`` in
@@ -186,6 +198,7 @@ class PromptBuilder:
         max_tokens: int,
         matched_skill_content: str | None = None,
         document_context: DocumentContext | None = None,
+        reply_language: str | None = None,
     ) -> list[ConversationMessage]:
         """Build the full prompt as a message list.
 
@@ -202,6 +215,11 @@ class PromptBuilder:
                 truncated) to fit.
             matched_skill_content: Already-budgeted active-skill content from
                 the injector (D-05-7). ``None`` when no skill is active.
+            reply_language: The language the reply must be written in (Spec 32
+                B5). ``None`` ⇒ resolve from ``persona.identity.language_default``
+                (the text-path default). The voice path passes the TTS-resolved
+                language so the reply matches what is spoken. English (the model
+                default) injects no directive.
 
         Returns:
             ``[system_message, *history, user_message]`` — sized to ``max_tokens``.
@@ -218,6 +236,7 @@ class PromptBuilder:
             user_message,
             matched_skill_content,
             document_context,
+            reply_language,
         )
         if self._token_total(messages) <= max_tokens:
             return messages
@@ -236,6 +255,7 @@ class PromptBuilder:
                 user_message,
                 matched_skill_content,
                 reduced_docs,
+                reply_language,
             )
             if self._token_total(messages) <= max_tokens:
                 return messages
@@ -252,6 +272,7 @@ class PromptBuilder:
                 user_message,
                 matched_skill_content,
                 reduced_docs,
+                reply_language,
             )
         return messages
 
@@ -264,10 +285,16 @@ class PromptBuilder:
         user_message: str,
         matched_skill_content: str | None,
         document_context: DocumentContext | None = None,
+        reply_language: str | None = None,
     ) -> list[ConversationMessage]:
         """Compose the message list in the spec §5.1 order."""
         system_text = self._render_system(
-            persona, context, skill_index, matched_skill_content, document_context
+            persona,
+            context,
+            skill_index,
+            matched_skill_content,
+            document_context,
+            reply_language,
         )
         now = datetime.now(UTC)
         system = ConversationMessage(role="system", content=system_text, created_at=now)
@@ -281,6 +308,7 @@ class PromptBuilder:
         skill_index: str,
         matched_skill_content: str | None,
         document_context: DocumentContext | None = None,
+        reply_language: str | None = None,
     ) -> str:
         """Render the system block in the spec §5.1 ordering."""
         parts: list[str] = []
@@ -288,6 +316,16 @@ class PromptBuilder:
         # 1. Identity opener.
         ident = persona.identity
         parts.append(f"You are {ident.name}, {ident.role}.\n{ident.background}".rstrip())
+
+        # 1a. Reply-language directive (Spec 32 B5, D-32-7). The reply must be
+        # generated in the declared language — TTS speaking Norwegian needs the
+        # LLM to WRITE Norwegian; turn 0 (the greeting) has no user input to
+        # mirror. Sits right after identity so it is prominent and never dropped.
+        # English (the model default) injects nothing, so existing prompts are
+        # unchanged.
+        directive = self._reply_language_directive(persona, reply_language)
+        if directive is not None:
+            parts.append(directive)
 
         # 2. Constraints ("You must NOT:" numbered list).
         if ident.constraints:
@@ -363,6 +401,26 @@ class PromptBuilder:
         parts.append(_FOOTER)
 
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _reply_language_directive(persona: Persona, reply_language: str | None) -> str | None:
+        """The "respond in {language}" instruction, or ``None`` for English.
+
+        Resolves ``reply_language`` (the voice TTS-resolved language) when given,
+        else the persona's declared ``language_default``, through the capability
+        registry. English — the model's default — yields ``None`` so existing
+        prompts are unchanged; an unrecognized language fails soft to English and
+        likewise yields ``None`` (B5 / D-32-7).
+        """
+        raw = reply_language if reply_language is not None else persona.identity.language_default
+        canonical = _LANGUAGE_REGISTRY.normalize(raw)
+        if canonical is None or canonical == CanonicalLanguage.EN:
+            return None
+        name = language_display_name(canonical)
+        return (
+            f"Always respond in {name}, regardless of the language the user "
+            f"writes or speaks in. Every reply must be written in {name}."
+        )
 
     @staticmethod
     def _render_whole_inject_documents(document_context: DocumentContext) -> str:

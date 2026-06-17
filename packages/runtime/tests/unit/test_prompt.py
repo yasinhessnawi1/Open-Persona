@@ -122,6 +122,81 @@ class TestSectionOrdering:
         assert "Stay in character." in system
 
 
+def _persona_lang(language_default: str) -> Persona:
+    return Persona(
+        persona_id="astrid",
+        identity=PersonaIdentity(
+            name="Astrid",
+            role="Norwegian tenancy law assistant",
+            background="Knows husleieloven.",
+            language_default=language_default,
+        ),
+        tools=[],
+    )
+
+
+class TestReplyLanguageInjection:
+    """Spec 32 B5 — the reply must be generated in the declared language."""
+
+    def test_english_persona_gets_no_language_directive(self, builder: PromptBuilder) -> None:
+        # English is the model default — no directive, so existing prompts are
+        # unchanged (back-compat).
+        system = builder.build(
+            _persona_lang("en"), RetrievedContext(), [], "", "q", max_tokens=8000
+        )[0].content
+        assert "respond in" not in system.lower()
+
+    def test_norwegian_persona_gets_norwegian_directive(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona_lang("nb"), RetrievedContext(), [], "", "q", max_tokens=8000
+        )[0].content
+        assert "Norwegian" in system
+        assert "respond in norwegian" in system.lower()
+
+    def test_directive_sits_right_after_identity(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona_lang("nb"), RetrievedContext(), [], "", "q", max_tokens=8000
+        )[0].content.lower()
+        assert system.index("you are astrid") < system.index("respond in norwegian")
+
+    def test_reply_language_override_to_english_suppresses_directive(
+        self, builder: PromptBuilder
+    ) -> None:
+        # Voice path: TTS fell back to English, so the reply must be English too —
+        # no Norwegian directive even though the persona declares Norwegian.
+        system = builder.build(
+            _persona_lang("nb"),
+            RetrievedContext(),
+            [],
+            "",
+            "q",
+            max_tokens=8000,
+            reply_language="en",
+        )[0].content
+        assert "respond in" not in system.lower()
+
+    def test_reply_language_override_wins_over_persona_default(
+        self, builder: PromptBuilder
+    ) -> None:
+        system = builder.build(
+            _persona_lang("en"),
+            RetrievedContext(),
+            [],
+            "",
+            "q",
+            max_tokens=8000,
+            reply_language="no",
+        )[0].content
+        assert "respond in norwegian" in system.lower()
+
+    def test_unrecognized_language_no_directive(self, builder: PromptBuilder) -> None:
+        # Fail-soft: an unservable language resolves to English → no directive.
+        system = builder.build(
+            _persona_lang("klingon"), RetrievedContext(), [], "", "q", max_tokens=8000
+        )[0].content
+        assert "respond in" not in system.lower()
+
+
 class TestIdentityFloor:
     def test_identity_and_constraints_survive_budget_reduction(
         self, builder: PromptBuilder

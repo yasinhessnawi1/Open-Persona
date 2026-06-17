@@ -74,6 +74,15 @@ class VoiceConfig(BaseSettings):
     # ``livekit_api_*`` + the provider keys (PERSONA_STT_*/PERSONA_TTS_*/tiers).
     agent_inprocess: bool = Field(default=False)
 
+    # --- Greet-first turn-0 bounds (Spec 32 A3, D-32-X-degrade-timeout-env-config) ---
+    # The ring degrade ladder, env-tunable per the config-via-env standard.
+    # ``greet_warmup_timeout_s`` caps how long turn 0 waits on the embedder warm-up
+    # before proceeding (the ring covers the rest); ``greet_timeout_s`` caps how
+    # long the call may ring with no greeting audio before degrading to the user's
+    # floor (never ring forever, D-32-3). Defaults are the researched ladder.
+    greet_warmup_timeout_s: float = Field(default=10.0, gt=0.0)
+    greet_timeout_s: float = Field(default=30.0, gt=0.0)
+
     @field_validator("jwt_algorithms", mode="before")
     @classmethod
     def _normalise_algorithms(cls, v: object) -> str:

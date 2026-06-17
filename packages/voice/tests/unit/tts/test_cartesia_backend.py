@@ -194,6 +194,26 @@ async def test_synthesize_requests_raw_pcm16_24k_and_zero_buffer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_synthesize_passes_declared_language_to_context() -> None:
+    """Spec 32 B4: the per-call language reaches Cartesia's context — the missing
+    parameter that made Norwegian text read with English phonetics."""
+    ctx = _FakeCtx([_FakeEvent("done")])
+    config = StreamingTTSConfig(provider="cartesia", api_key="ct-key", language="no")
+    backend = CartesiaStreamingTTS(config, client=_FakeClient(ctx))  # type: ignore[arg-type]
+    _ = [f async for f in backend.synthesize(_text("Hei."), _VOICE)]
+    assert ctx.context_kwargs["language"] == "no"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_omits_language_when_unset() -> None:
+    """No declared language → no language param (today's behaviour preserved)."""
+    ctx = _FakeCtx([_FakeEvent("done")])
+    backend = _backend(ctx)
+    _ = [f async for f in backend.synthesize(_text("Hi."), _VOICE)]
+    assert "language" not in ctx.context_kwargs
+
+
+@pytest.mark.asyncio
 async def test_drain_text_feeds_chunks_and_signals_end() -> None:
     # The sender side runs concurrently with receive in synthesize; test it
     # directly for determinism (a scripted receive() can race the sender).

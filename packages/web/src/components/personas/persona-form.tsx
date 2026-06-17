@@ -21,6 +21,7 @@ import {
   writeWorldview,
 } from "@/lib/persona-draft";
 import { cn } from "@/lib/utils";
+import { voiceLanguageWarning } from "@/lib/voice/language-support";
 import { CollapsibleSection } from "./collapsible-section";
 import { RoutingSection } from "./routing-section";
 
@@ -114,6 +115,11 @@ export function PersonaForm({
               )
             }
           />
+          {voiceLanguageWarning(identity.language_default) !== null ? (
+            <output className="type-caption mt-1 block text-amber-600">
+              {voiceLanguageWarning(identity.language_default)}
+            </output>
+          ) : null}
         </Field>
         <Field label={t("constraints")}>
           <ListEditor

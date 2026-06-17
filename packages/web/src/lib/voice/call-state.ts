@@ -7,17 +7,24 @@
  * operator pass exercises the live wiring.
  */
 
-import type { AgentVisualState } from "./voice-events";
+import {
+  type AgentVisualState,
+  agentVisualState,
+  isBargeIn,
+  type VoiceStateEvent,
+} from "./voice-events";
 
 /**
  * The user-facing call phase (D-V6-5 honest states). `connecting` covers token
- * fetch + signaling; `reconnecting` is a transient drop the SDK is recovering;
- * `dropped` is a non-recovered loss; `ended` is a clean hang-up; `error` is a
- * pre-connect failure (mic denied, token 4xx).
+ * fetch + signaling; `ringing` is the Spec 32 greet-first opening (the persona
+ * is preparing its greeting, mic gated); `reconnecting` is a transient drop the
+ * SDK is recovering; `dropped` is a non-recovered loss; `ended` is a clean
+ * hang-up; `error` is a pre-connect failure (mic denied, token 4xx).
  */
 export type CallPhase =
   | "idle"
   | "connecting"
+  | "ringing"
   | "connected"
   | "reconnecting"
   | "dropped"
@@ -37,6 +44,13 @@ export interface VoiceCallState {
   bargeInSignal: number;
   /** Whether the user's mic is publishing (mute toggles this). */
   micActive: boolean;
+  /**
+   * Spec 32 C3 — while true, the mic is held gated for the greet-first opening
+   * (the persona speaks turn 0 first). Set when the call starts ringing; cleared
+   * (un-gating the mic) exactly when the greeting finishes. After that, `micActive`
+   * is the user's mute control and this stays false.
+   */
+  micGatedForGreeting: boolean;
   /** Autoplay blocked the persona audio — surface a "tap to enable audio" affordance. */
   needsAudioGesture: boolean;
   /** A pre-connect / fatal error to surface honestly (D-V6-5). */
@@ -62,9 +76,66 @@ export const INITIAL_CALL_STATE: VoiceCallState = {
   agentState: "listening",
   bargeInSignal: 0,
   micActive: false,
+  micGatedForGreeting: false,
   needsAudioGesture: false,
   error: null,
 };
+
+/**
+ * Fold a decoded conversational-state event into the call state — the Spec 32
+ * greet-first ring lifecycle plus the existing barge-in / orb cue mapping (the
+ * pure core the hook applies; unit-tested without a real Room).
+ *
+ * The ring lifecycle:
+ *   - `preparing`      → ring + gate the mic (the persona is preparing turn 0);
+ *   - `persona_speaking` while gated → stop ringing, play the greeting (mic stays
+ *     gated until it finishes — the MUTE_UNTIL_FIRST_BOT_COMPLETE contract);
+ *   - first `listening` while gated  → the greeting finished → un-gate the mic.
+ * After the gate is spent, only the orb cue (and the barge-in signal) update; the
+ * mic is the user's mute control.
+ */
+export function applyVoiceStateEvent(
+  state: VoiceCallState,
+  event: VoiceStateEvent,
+): VoiceCallState {
+  const agentState = agentVisualState(event.toState);
+
+  if (event.toState === "preparing") {
+    return {
+      ...state,
+      phase: "ringing",
+      agentState,
+      micActive: false,
+      micGatedForGreeting: true,
+    };
+  }
+
+  if (state.micGatedForGreeting) {
+    if (event.toState === "persona_speaking") {
+      // The greeting is starting — stop ringing, but keep the mic gated until it
+      // finishes so the greeting and the user's first words never collide.
+      return { ...state, phase: "connected", agentState };
+    }
+    if (event.toState === "listening") {
+      // Greeting finished → un-gate the mic exactly here (un-gate at completion,
+      // never at the greeting's start). Barge-in is normal from now on.
+      return {
+        ...state,
+        phase: "connected",
+        agentState,
+        micActive: true,
+        micGatedForGreeting: false,
+      };
+    }
+  }
+
+  if (isBargeIn(event)) {
+    // Reflect the REAL V4 barge-in (criterion 4) — bump the signal, never compute.
+    return { ...state, agentState, bargeInSignal: state.bargeInSignal + 1 };
+  }
+
+  return { ...state, agentState };
+}
 
 /**
  * Map a LiveKit `ConnectionState` (+ whether the disconnect was client-initiated)

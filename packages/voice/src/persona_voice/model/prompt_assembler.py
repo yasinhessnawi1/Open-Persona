@@ -99,6 +99,14 @@ class VoicePromptAssembler:
             via the shared ``PromptBuilder`` (criteria 1+2; no persona-bypass).
         """
         context = self.retrieve(user_message)
+        # The reply must be generated in the language TTS will actually speak
+        # (Spec 32 B5). The per-call plan's reply_language already accounts for a
+        # TTS fall-back to English, so a persona whose declared language the
+        # provider cannot speak gets an English reply, not English phonetics over
+        # foreign words. ``None`` ⇒ the prompt builder resolves the persona default.
+        reply_language = (
+            self._ctx.language.reply_language.value if self._ctx.language is not None else None
+        )
         return self._ctx.prompt_builder.build(
             self._ctx.persona,
             context,
@@ -108,4 +116,5 @@ class VoicePromptAssembler:
             max_tokens=max_tokens,
             matched_skill_content=matched_skill_content,
             document_context=document_context,
+            reply_language=reply_language,
         )

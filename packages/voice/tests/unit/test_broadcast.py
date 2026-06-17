@@ -73,6 +73,29 @@ async def test_state_frame_is_reliable_on_topic_and_carries_the_transition() -> 
     }
 
 
+async def test_preparing_frame_serializes_for_the_ring_signal() -> None:
+    """Spec 32 A4: the greet-first 'preparing' frame the client rings on."""
+    room = _CapturingRoom()
+    bc = DataChannelBroadcaster(room)  # type: ignore[arg-type]
+
+    await bc.on_state_changed(
+        ConversationalTransition(
+            from_state=ConversationalState.PREPARING,
+            to_state=ConversationalState.PREPARING,
+            trigger=TransitionTrigger.GREETING_STARTED,
+            at=datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC),
+        )
+    )
+    frame = room.calls[0]["payload"]
+    assert frame == {
+        "type": "state",
+        "from_state": "preparing",
+        "to_state": "preparing",
+        "trigger": "greeting_started",
+        "at": "2026-06-15T12:00:00+00:00",
+    }
+
+
 async def test_user_caption_segment_id_advances_only_after_a_final() -> None:
     room = _CapturingRoom()
     bc = DataChannelBroadcaster(room)  # type: ignore[arg-type]

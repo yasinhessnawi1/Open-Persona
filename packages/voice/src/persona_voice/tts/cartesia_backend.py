@@ -103,6 +103,9 @@ class CartesiaStreamingTTS:
             )
         self._config = config
         self._model = config.model
+        # Per-call synthesis language (Spec 32 B4) — passed into ``context`` so
+        # the persona's declared language is spoken with the right phonetics.
+        self._language = config.language
         self._client: AsyncCartesia = client or AsyncCartesia(
             api_key=key,
             base_url=config.base_url,
@@ -210,11 +213,17 @@ class CartesiaStreamingTTS:
         except CartesiaError as exc:
             raise self._map_error(exc) from exc
 
+        # Include ``language`` only when declared (Spec 32 B4) — preserving the
+        # provider-default behaviour for an unset (English-default) call.
+        language_kwarg: dict[str, Any] = (
+            {"language": self._language} if self._language is not None else {}
+        )
         ctx = connection.context(
             model_id=self._model,
             voice=cast("Any", voice_param),
             output_format=cast("Any", output_format),
             max_buffer_delay_ms=self._config.cartesia_max_buffer_delay_ms,
+            **cast("Any", language_kwarg),
         )
         self._active_ctx = ctx
         sender: asyncio.Task[None] = asyncio.create_task(

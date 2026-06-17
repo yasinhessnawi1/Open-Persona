@@ -463,6 +463,7 @@
     "unmute": "Unmute",
     "muted": "Muted",
     "connecting": "Connecting…",
+    "ringing": "Calling {name}…",
     "reconnecting": "Reconnecting…",
     "dropped": "Call dropped",
     "ended": "Call ended",

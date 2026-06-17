@@ -85,14 +85,21 @@ export function VoiceCallSurface({
         ? t("speaking")
         : t("listening");
 
-  const live = state.phase === "connected" || state.phase === "reconnecting";
+  // `ringing` (Spec 32 greet-first) is a live phase — the orb renders while the
+  // persona prepares its greeting; the mic stays gated until the greeting ends.
+  const live =
+    state.phase === "connected" ||
+    state.phase === "reconnecting" ||
+    state.phase === "ringing";
 
   const statusLine =
     state.phase === "connecting"
       ? t("connecting")
-      : state.phase === "reconnecting"
-        ? t("reconnecting")
-        : stateLabel;
+      : state.phase === "ringing"
+        ? t("ringing", { name: persona.name })
+        : state.phase === "reconnecting"
+          ? t("reconnecting")
+          : stateLabel;
 
   // Terminal phases (D-V6-5) — render an honest EmptyState instead of a dead
   // orb. `error` carries a typed kind so the copy + the recovery action are

@@ -8,6 +8,7 @@ path.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
@@ -368,3 +369,174 @@ async def test_continuation_race_does_not_crash_when_floor_already_moved() -> No
     await orch.on_speech_started(_started())
     assert orch.state is ConversationalState.USER_SPEAKING
     assert actions.cancelled == 1
+
+
+# ---------- Spec 32 A3: greet-on-connect (turn 0) ---------------------------
+
+
+def _greet(text: str = "[connected: greet the user]") -> Transcript:
+    return Transcript(is_final=True, text=text, confidence=1.0)
+
+
+async def test_orchestrator_starts_in_given_initial_state() -> None:
+    orch = ConversationalOrchestrator(
+        actions=_RecordingActions(),  # type: ignore[arg-type]
+        initial_state=ConversationalState.PREPARING,
+    )
+    assert orch.state is ConversationalState.PREPARING
+    # Default is unchanged (back-compat).
+    assert (
+        ConversationalOrchestrator(actions=_RecordingActions()).state  # type: ignore[arg-type]
+        is ConversationalState.LISTENING
+    )
+
+
+async def test_first_audio_moves_preparing_to_persona_speaking() -> None:
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    orch = ConversationalOrchestrator(
+        actions=actions,  # type: ignore[arg-type]
+        scheduler=sched,
+        clock=clock,
+        initial_state=ConversationalState.PREPARING,
+    )
+    await orch.notify_model_first_audio()
+    assert orch.state is ConversationalState.PERSONA_SPEAKING
+    assert orch.is_agent_speaking() is True
+
+
+async def test_no_audio_in_preparing_resets_to_listening() -> None:
+    orch = ConversationalOrchestrator(
+        actions=_RecordingActions(),  # type: ignore[arg-type]
+        initial_state=ConversationalState.PREPARING,
+    )
+    await orch.notify_processing_yielded_no_audio()
+    assert orch.state is ConversationalState.LISTENING
+
+
+async def test_begin_greeting_awaits_warmup_then_invokes_turn0() -> None:
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    orch = ConversationalOrchestrator(
+        actions=actions,  # type: ignore[arg-type]
+        scheduler=sched,
+        initial_state=ConversationalState.PREPARING,
+    )
+    warmed = asyncio.Event()
+
+    async def _warmup() -> None:
+        warmed.set()
+
+    await orch.begin_greeting(_greet(), warmup=_warmup())
+    assert warmed.is_set()
+    assert len(actions.invoked) == 1
+    assert actions.invoked[0].text == "[connected: greet the user]"
+    # A greet watchdog was armed (the never-ring-forever bound).
+    assert sched.scheduled
+
+
+async def test_begin_greeting_invoke_failure_degrades_to_listening() -> None:
+    class _FailingActions(_RecordingActions):
+        async def invoke_model_for_turn(self, final_transcript: Transcript) -> None:  # noqa: ARG002
+            raise RuntimeError("generation boom")
+
+    orch = ConversationalOrchestrator(
+        actions=_FailingActions(),  # type: ignore[arg-type]
+        scheduler=_FakeScheduler(),
+        initial_state=ConversationalState.PREPARING,
+    )
+    await orch.begin_greeting(_greet())
+    assert orch.state is ConversationalState.LISTENING
+
+
+async def test_begin_greeting_watchdog_degrades_when_no_first_audio() -> None:
+    sched = _FakeScheduler()
+    orch = ConversationalOrchestrator(
+        actions=_RecordingActions(),  # type: ignore[arg-type]
+        scheduler=sched,
+        initial_state=ConversationalState.PREPARING,
+    )
+    await orch.begin_greeting(_greet())
+    assert orch.state is ConversationalState.PREPARING  # still ringing
+    # Fire the greet watchdog → degrade to the user's floor (never ring forever).
+    await sched.fire_last()
+    assert orch.state is ConversationalState.LISTENING
+
+
+async def test_first_audio_cancels_greet_watchdog() -> None:
+    sched = _FakeScheduler()
+    orch = ConversationalOrchestrator(
+        actions=_RecordingActions(),  # type: ignore[arg-type]
+        scheduler=sched,
+        initial_state=ConversationalState.PREPARING,
+    )
+    await orch.begin_greeting(_greet())
+    greet_handle = sched.scheduled[-1][2]
+    await orch.notify_model_first_audio()
+    assert orch.state is ConversationalState.PERSONA_SPEAKING
+    assert greet_handle.cancelled is True
+
+
+async def test_begin_greeting_proceeds_when_warmup_times_out() -> None:
+    actions = _RecordingActions()
+    orch = ConversationalOrchestrator(
+        actions=actions,  # type: ignore[arg-type]
+        scheduler=_FakeScheduler(),
+        initial_state=ConversationalState.PREPARING,
+    )
+    never = asyncio.get_event_loop().create_future()  # never resolves
+    await orch.begin_greeting(_greet(), warmup=never, warmup_timeout_s=0.01)
+    # Warm-up was slow, but turn 0 still kicked (the ring covers it; the greet
+    # watchdog still bounds a stuck turn).
+    assert len(actions.invoked) == 1
+    never.cancel()
+
+
+# ---------- Spec 32 A4: preparing frame + graceful onset --------------------
+
+
+async def test_begin_greeting_announces_preparing_frame() -> None:
+    listener = _RecordingListener()
+    orch = ConversationalOrchestrator(
+        actions=_RecordingActions(),  # type: ignore[arg-type]
+        listener=listener,
+        scheduler=_FakeScheduler(),
+        initial_state=ConversationalState.PREPARING,
+    )
+    await orch.begin_greeting(_greet())
+    # The first frame tells the client the agent has joined and is preparing the
+    # greeting → ring + keep the mic gated (the A4 data-channel contract).
+    assert listener.transitions[0].to_state is ConversationalState.PREPARING
+    assert listener.transitions[0].trigger is TransitionTrigger.GREETING_STARTED
+
+
+async def test_user_onset_during_preparing_is_dropped_not_raised() -> None:
+    """Mic should be gated through the greeting; a stray onset that slips through
+    is dropped, never raised — the floor stays in PREPARING (graceful handling)."""
+    listener = _RecordingListener()
+    orch = ConversationalOrchestrator(
+        actions=_RecordingActions(),  # type: ignore[arg-type]
+        listener=listener,
+        initial_state=ConversationalState.PREPARING,
+    )
+    await orch.on_speech_started(_started())  # must not raise
+    assert orch.state is ConversationalState.PREPARING
+    assert listener.transitions == []  # no transition fired
+
+
+async def test_greeting_finish_broadcasts_listening_ungate_signal() -> None:
+    """The mic-gate ordering: the client un-gates on to_state=listening, which is
+    broadcast only after the greeting finishes (PERSONA_SPEAKING → LISTENING)."""
+    listener = _RecordingListener()
+    orch = ConversationalOrchestrator(
+        actions=_RecordingActions(),  # type: ignore[arg-type]
+        listener=listener,
+        scheduler=_FakeScheduler(),
+        initial_state=ConversationalState.PREPARING,
+    )
+    await orch.begin_greeting(_greet())
+    await orch.notify_model_first_audio()  # greeting starts → persona_speaking
+    await orch.notify_persona_finished()  # greeting ends → listening (un-gate)
+    assert listener.transitions[-1].to_state is ConversationalState.LISTENING
+    assert listener.transitions[-1].trigger is TransitionTrigger.PERSONA_FINISHED

@@ -104,6 +104,11 @@ class StreamingTTSConfig(BaseSettings):
     base_url: str | None = None
     request_timeout_s: float = Field(default=60.0, gt=0.0)
     voice_default: str | None = None
+    # The per-call synthesis language code (Spec 32 B4). ``None`` ⇒ no language
+    # param (provider default). build_agent_session pins it to the persona's
+    # declared language via the capability registry; Cartesia voices are
+    # multilingual, so this is a language code, not a voice constraint.
+    language: str | None = None
 
     chunk_min_first_chars: int = Field(default=10, ge=1, le=200)
     chunk_max_first_words: int = Field(default=30, ge=1, le=200)

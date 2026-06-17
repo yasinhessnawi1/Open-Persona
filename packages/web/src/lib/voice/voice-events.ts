@@ -16,8 +16,13 @@
  * rather than deep-validating.
  */
 
-/** The four V4 conversational states the agent broadcasts (`to_state`). */
+/**
+ * The conversational states the agent broadcasts (`to_state`). `preparing` is
+ * the Spec 32 greet-first opening — the persona is generating turn 0 while the
+ * call rings and the mic is gated.
+ */
 export type ConversationalStateName =
+  | "preparing"
   | "listening"
   | "user_speaking"
   | "processing"
@@ -33,6 +38,9 @@ export type AgentVisualState = "listening" | "thinking" | "speaking";
 
 /** The barge-in trigger — the persona yielded because the user cut in (D-V6-1). */
 export const BARGE_IN_TRIGGER = "barge_in";
+
+/** Greet-first opening signal — the agent has joined and is preparing turn 0 (Spec 32 A4). */
+export const GREETING_STARTED_TRIGGER = "greeting_started";
 
 export interface VoiceStateEvent {
   type: "state";
@@ -56,6 +64,7 @@ export interface VoiceTranscriptEvent {
 export type VoiceEvent = VoiceStateEvent | VoiceTranscriptEvent;
 
 const STATE_NAMES = new Set<string>([
+  "preparing",
   "listening",
   "user_speaking",
   "processing",
@@ -70,7 +79,9 @@ const STATE_NAMES = new Set<string>([
 export function agentVisualState(
   state: ConversationalStateName,
 ): AgentVisualState {
-  if (state === "processing") return "thinking";
+  // `preparing` (generating turn 0) is self-driven with no audio yet — the same
+  // "thinking" cue as `processing` (mirrors the backend projection, Spec 32).
+  if (state === "processing" || state === "preparing") return "thinking";
   if (state === "persona_speaking") return "speaking";
   return "listening";
 }

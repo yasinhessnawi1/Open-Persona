@@ -54,6 +54,10 @@ class ConversationalState(StrEnum):
     cross-process-safe boundary form per D-05-9).
     """
 
+    PREPARING = "preparing"
+    """Greet-first opening: the persona is generating turn 0 (the greeting) with
+    no user input while the call "rings" and the mic is gated (Spec 32 Feature A).
+    The only entry to PERSONA_SPEAKING that does not require a prior user turn."""
     LISTENING = "listening"
     """The floor is the user's; the persona is silent, waiting (user silent)."""
     USER_SPEAKING = "user_speaking"
@@ -112,6 +116,11 @@ class TransitionTrigger(StrEnum):
     """The persona finished its reply normally; the floor returns to the user."""
     RESET = "reset"
     """Watchdog / graceful-degradation / error path: force the floor back to LISTENING."""
+    GREETING_STARTED = "greeting_started"
+    """Greet-first opening signal (Spec 32 A4): the agent has joined and is
+    preparing turn 0. **Broadcast-only** — it announces the initial PREPARING
+    state to the client (ring + gate the mic); it is NOT in the transition table
+    (PREPARING is the call's initial state, not entered via a transition)."""
 
 
 # The finite state machine, keyed by ``(current_state, trigger)`` → next
@@ -119,6 +128,18 @@ class TransitionTrigger(StrEnum):
 # transition (:func:`advance` raises). Same-state re-entry is handled by
 # :func:`advance` as an idempotent no-op and is NOT listed here.
 _TRANSITIONS: dict[tuple[ConversationalState, TransitionTrigger], ConversationalState] = {
+    # Greet-first (Spec 32 A2): turn 0's first audio moves the persona's opening
+    # line out of PREPARING into PERSONA_SPEAKING — the ONLY entry to speaking that
+    # does not pass through PROCESSING (the greeting has no user turn to respond
+    # to). Note this does NOT make LISTENING → PERSONA_SPEAKING legal: only the
+    # dedicated PREPARING source has this entry, so the canonical illegal skip is
+    # preserved.
+    (ConversationalState.PREPARING, TransitionTrigger.MODEL_FIRST_AUDIO): (
+        ConversationalState.PERSONA_SPEAKING
+    ),
+    # Turn-0 timeout / failure (the "never ring forever" degrade, D-32-3) drops to
+    # the user's floor so they can still talk — the ring never hangs.
+    (ConversationalState.PREPARING, TransitionTrigger.RESET): (ConversationalState.LISTENING),
     (ConversationalState.LISTENING, TransitionTrigger.USER_SPEECH_STARTED): (
         ConversationalState.USER_SPEAKING
     ),
@@ -215,7 +236,10 @@ def is_legal_transition(
 
 def agent_state_for(state: ConversationalState) -> AgentState:
     """Project the conversational state onto the persona-side view."""
-    if state == ConversationalState.PROCESSING:
+    if state in (ConversationalState.PROCESSING, ConversationalState.PREPARING):
+        # PREPARING (generating turn 0) is self-driven with no audio yet — same
+        # THINKING projection as PROCESSING, so the echo-mute window (D-V2-X) does
+        # not open before the greeting actually plays.
         return AgentState.THINKING
     if state == ConversationalState.PERSONA_SPEAKING:
         return AgentState.SPEAKING
