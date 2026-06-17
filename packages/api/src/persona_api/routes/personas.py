@@ -42,6 +42,7 @@ from persona_api.services import (
     credits_service,
     persona_service,
     tool_consent_service,
+    voice_assignment_service,
 )
 
 if TYPE_CHECKING:
@@ -251,6 +252,12 @@ async def create_persona(
         await _maybe_generate_avatar(
             request, owner_id=user.id, persona_id=persona_id, yaml_str=body.yaml
         )
+    # Issue 1: auto-assign a gender/character-fitting voice when the builder
+    # supplied none — so a persona isn't stuck with the global English-male
+    # default. Fail-soft (never breaks create); a no-op when TTS is unconfigured.
+    await voice_assignment_service.maybe_assign_voice(
+        request, owner_id=user.id, persona_id=persona_id, yaml_str=body.yaml
+    )
     row = persona_service.get_persona(
         rls_engine=request.app.state.rls_engine, persona_id=persona_id
     )

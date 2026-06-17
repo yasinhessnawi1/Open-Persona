@@ -202,6 +202,32 @@ def set_avatar_url(*, rls_engine: Engine, persona_id: str, avatar_url: str) -> N
         )
 
 
+def set_voice(*, rls_engine: Engine, persona_id: str, provider: str, voice_id: str) -> None:
+    """Inject ``identity.voice`` into a persona's stored YAML (Issue 1, narrow write).
+
+    Reads the current YAML, sets ``identity.voice`` to the ``"provider:voice_id"``
+    shorthand the schema accepts (normalised to a ``CatalogueVoice`` at load), and
+    rewrites ONLY the ``yaml`` column — no memory re-index, since the voice is read
+    from the persona definition at synthesis time, never retrieved semantically.
+    Silent if the row is absent or the YAML has no ``identity`` mapping. Mirrors
+    :func:`set_avatar_url`'s narrow-write shape; the build-time voice
+    auto-assignment hook is the only caller and runs only when ``identity.voice``
+    was unset (it never overwrites a builder's chosen voice).
+    """
+    with rls_engine.begin() as conn:
+        row = conn.execute(select(personas_t.c.yaml).where(personas_t.c.id == persona_id)).first()
+        if row is None:
+            return
+        raw = yaml.safe_load(row[0])
+        if not isinstance(raw, dict) or not isinstance(raw.get("identity"), dict):
+            return
+        raw["identity"]["voice"] = f"{provider}:{voice_id}"
+        new_yaml = yaml.safe_dump(raw, sort_keys=False, allow_unicode=True)
+        conn.execute(
+            update(personas_t).where(personas_t.c.id == persona_id).values(yaml=new_yaml)
+        )
+
+
 def get_persona(*, rls_engine: Engine, persona_id: str) -> dict[str, object]:
     """Return a persona row (RLS-scoped → 404 if not the caller's)."""
     with rls_engine.begin() as conn:

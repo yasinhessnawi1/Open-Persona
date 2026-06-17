@@ -94,6 +94,17 @@ class APIConfig(BaseSettings):
     # LLM-assisted authoring (§6.3): the model tier the authoring endpoint uses.
     authoring_tier: str = "frontier"
 
+    # Issue 1 — build-time voice auto-assignment. The persona-voice service base
+    # URL the create flow calls (``GET /v1/voices``, forwarding the caller's
+    # bearer token) to pick a fitting voice from the language-filtered catalogue,
+    # so a persona ships with a gender-appropriate voice instead of the global
+    # English-male default. Empty disables the feature (personas keep the global
+    # default). Read from ``PERSONA_VOICE_SERVICE_URL``.
+    voice_service_url: str = Field(default="", validation_alias="PERSONA_VOICE_SERVICE_URL")
+    # Model tier for the voice-pick reasoning (gender + character match). Small
+    # is ample — it reads the persona identity + the compact catalogue.
+    voice_pick_tier: str = "small"
+
     # Credits (D-08-6): flat per successful chat turn + per authoring call.
     credits_per_turn: int = 1
     authoring_credit_cost: int = 1000
