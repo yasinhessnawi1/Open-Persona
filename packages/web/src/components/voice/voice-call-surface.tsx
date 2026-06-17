@@ -17,7 +17,7 @@
  */
 
 import { useAuth } from "@clerk/nextjs";
-import { Phone } from "lucide-react";
+import { ArrowLeft, Phone } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect } from "react";
@@ -107,7 +107,15 @@ export function VoiceCallSurface({
   const terminal = buildTerminal();
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-6 p-4 sm:gap-8 sm:p-6">
+    <div className="relative flex h-full flex-col items-center justify-center gap-6 p-4 sm:gap-8 sm:p-6">
+      <Link
+        href={`/chat/${conversationId}`}
+        aria-label={t("back")}
+        className="absolute top-4 left-4 inline-flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <ArrowLeft className="size-5" aria-hidden />
+      </Link>
+
       <header className="text-center">
         <h1 className="font-serif text-lg sm:text-xl">
           {t("callWith", { name: persona.name })}
@@ -123,17 +131,7 @@ export function VoiceCallSurface({
           icon={<Phone className="size-6" aria-hidden />}
           title={terminal.title}
           description={terminal.body}
-          action={
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              {terminal.action}
-              <Link
-                href={`/chat/${conversationId}`}
-                className="text-sm text-muted-foreground underline-offset-4 hover:underline"
-              >
-                {t("back")}
-              </Link>
-            </div>
-          }
+          action={terminal.action}
         />
       ) : (
         <>
@@ -188,13 +186,6 @@ export function VoiceCallSurface({
               </span>
             ) : null}
           </div>
-
-          <Link
-            href={`/chat/${conversationId}`}
-            className="text-sm text-muted-foreground underline-offset-4 hover:underline"
-          >
-            {t("back")}
-          </Link>
         </>
       )}
     </div>

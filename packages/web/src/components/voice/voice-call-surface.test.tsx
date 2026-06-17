@@ -102,12 +102,13 @@ describe("VoiceCallSurface (C3) terminal states", () => {
     expect(screen.queryByText("Try again")).not.toBeInTheDocument();
   });
 
-  it("not_found error → only the back link (nothing to retry)", () => {
+  it("not_found error → only the back arrow (nothing to retry)", () => {
     renderSurface(withPhase("error", { kind: "not_found", message: "gone" }));
     expect(screen.getByText("Persona unavailable")).toBeInTheDocument();
     expect(screen.queryByText("Try again")).not.toBeInTheDocument();
     expect(screen.queryByText("Sign in")).not.toBeInTheDocument();
-    expect(screen.getByText("Back to chat")).toBeInTheDocument();
+    // Back is the top-left arrow (aria-label), present in every state.
+    expect(screen.getByLabelText("Back to chat")).toBeInTheDocument();
   });
 
   it("dropped → reconnect affordance", () => {

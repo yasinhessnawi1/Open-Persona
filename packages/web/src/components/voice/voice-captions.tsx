@@ -6,27 +6,25 @@
  * The dual-region split that resolves the live-visual-vs-sane-screen-reader
  * tension:
  *
- *   - **Visual caption** (sighted / hard-of-hearing): a bottom scrim showing the
- *     live tail (current + previous segment), attributed by speaker. It is NOT
- *     an ARIA live region — partials must never be announced. React keys by
- *     `segmentId`, so a partial mutate-and-replaces its segment in place and a
- *     finalized line is never reflowed (its id never receives another partial).
+ *   - **Visual caption** (sighted / hard-of-hearing): a SCROLLABLE transcript of
+ *     the conversation, attributed by speaker. It auto-scrolls to the newest
+ *     line, but the moment the user scrolls up (to re-read what the persona
+ *     asked, say), it stops yanking them down — auto-scroll resumes only when
+ *     they return to the bottom. It is NOT an ARIA live region (partials must
+ *     never be announced). React keys by `segmentId`, so a partial
+ *     mutate-and-replaces its segment in place and a finalized line never reflows.
  *   - **Screen-reader region**: a separate `role="log"` (implicit
  *     `aria-live="polite"`, `aria-atomic="false"`) into which ONLY finalized
- *     segments are appended — one complete attributed utterance at a time, never
- *     a partial, never the whole history re-announced.
+ *     segments are appended — one complete attributed utterance at a time.
  *
- * Persona captions are verbatim from the TTS source (perfect); the user side is
- * ASR. Speaker attribution is explicit (deaf/HoH users can't infer it).
+ * Persona captions are verbatim from the TTS source; the user side is ASR.
+ * Speaker attribution is explicit (deaf/HoH users can't infer it).
  */
 
 import { useTranslations } from "next-intl";
+import { useEffect, useRef, useState } from "react";
 import { Markdown } from "@/components/ui/markdown";
-import {
-  type CaptionSegment,
-  captionTail,
-  finalisedCaptions,
-} from "@/lib/voice/captions";
+import { type CaptionSegment, finalisedCaptions } from "@/lib/voice/captions";
 
 export interface VoiceCaptionsProps {
   captions: CaptionSegment[];
@@ -38,22 +36,42 @@ export function VoiceCaptions({
   personaName,
 }: VoiceCaptionsProps): React.JSX.Element | null {
   const t = useTranslations("voice");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Pinned = follow the newest line. Unpinned = the user scrolled up to read
+  // back; respect their position until they return to the bottom themselves.
+  const [pinned, setPinned] = useState(true);
+
+  // Auto-scroll on new/updated caption text — only while pinned to the bottom.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on every caption mutation
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && pinned) el.scrollTop = el.scrollHeight;
+  }, [captions, pinned]);
+
   if (captions.length === 0) return null;
 
   const speakerLabel = (speaker: CaptionSegment["speaker"]): string =>
     speaker === "user" ? t("you") : personaName;
-
-  const tail = captionTail(captions, 2);
   const finals = finalisedCaptions(captions);
 
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // A small tolerance so sub-pixel rounding at the bottom doesn't unpin.
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    setPinned(atBottom);
+  };
+
   return (
-    <div className="w-full max-w-xl">
-      {/* Visual caption — intentionally NOT a live region (no aria-live). */}
+    <div className="w-full max-w-2xl">
+      {/* Visual caption — scrollable transcript; intentionally NOT a live region. */}
       <div
+        ref={scrollRef}
+        onScroll={handleScroll}
         aria-hidden
-        className="space-y-1 rounded-lg bg-black/65 px-4 py-2 text-left text-sm text-white"
+        className="max-h-44 space-y-2 overflow-y-auto rounded-lg bg-black/65 px-4 py-3 text-left text-sm text-white sm:max-h-60"
       >
-        {tail.map((seg) => {
+        {captions.map((seg) => {
           // Render the persona's finalized text as Markdown — same renderer as
           // the chat thread (the model emits **bold**/lists/emoji). Partials and
           // the ASR user side stay plain text (avoid half-typed `**` flicker,
@@ -62,7 +80,7 @@ export function VoiceCaptions({
           return (
             <div
               key={seg.segmentId}
-              className={seg.isFinal ? undefined : "opacity-75"}
+              className={seg.isFinal ? undefined : "opacity-80"}
             >
               <span className="font-medium">{speakerLabel(seg.speaker)}:</span>{" "}
               {asMarkdown ? (
