@@ -59,7 +59,17 @@
     "settings": "Settings",
     "newPersona": "New persona",
     "menu": "Open menu",
-    "primary": "Primary"
+    "primary": "Primary",
+    "sidebar": {
+      "personas": "Personas",
+      "messages": "Messages",
+      "messagesEmpty": "No conversations yet",
+      "collapse": "Collapse sidebar",
+      "expand": "Expand sidebar",
+      "resize": "Resize sidebar",
+      "untitled": "Untitled conversation",
+      "unknownPersona": "Unknown persona"
+    }
   },
   "theme": {
     "toggle": "Toggle theme",
