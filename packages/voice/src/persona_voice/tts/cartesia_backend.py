@@ -34,6 +34,7 @@ fake client.
 from __future__ import annotations
 
 import contextlib
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 from cartesia import (
@@ -83,6 +84,11 @@ _FALLBACK_LANGUAGE = "en"
 # ``tts_provider_cost_cents_per_minute``.
 _EST_COST_CENTS_PER_MINUTE = 2.3
 
+#: How long a fetched voice catalogue is reused before re-walking the provider.
+#: Voices change rarely; an hour keeps ``GET /v1/voices`` instant after the
+#: first (~30s) walk while staying fresh enough for catalogue additions.
+_CATALOGUE_CACHE_TTL_S = 3600.0
+
 
 class CartesiaStreamingTTS:
     """Streaming-TTS backend for Cartesia Sonic 3.5 (D-V3-1 launch).
@@ -123,6 +129,14 @@ class CartesiaStreamingTTS:
         self._cancelled = False
         self._closed = False
         self._active_ctx: Any | None = None
+        # Voice-catalogue cache (D-V6-E4 perf): ``voices.list`` walks the FULL
+        # provider catalogue (~760 voices, ~30s) on every call, and the
+        # client-side language filter can't short-circuit on ``limit`` for a
+        # rare language — so an uncached ``GET /v1/voices`` could exceed a 25s
+        # caller timeout. Walk once, cache the full (unfiltered) list, and serve
+        # filtered views from memory until the TTL lapses.
+        self._catalogue_cache: tuple[VoiceCatalogueEntry, ...] | None = None
+        self._catalogue_cache_at: float = 0.0
 
     # ----- introspection / capability ---------------------------------
 
@@ -160,30 +174,48 @@ class CartesiaStreamingTTS:
         Gender/language filters are applied client-side over the normalised
         metadata so the surface stays provider-independent; ``preview_url``
         is the provider sample URL passed through for V6/F5 (not rendered).
+
+        Served from the cached full catalogue (walked once, ~30s) so a filtered
+        query — including a rare language that would otherwise force a full walk
+        every call — returns instantly after the first fill.
         """
+        catalogue = await self._cached_catalogue()
+        entries = [
+            entry
+            for entry in catalogue
+            if (gender is None or entry.gender == gender)
+            and (language is None or entry.language == language)
+        ]
+        if limit is not None:
+            entries = entries[:limit]
+        return tuple(entries)
+
+    async def _cached_catalogue(self) -> tuple[VoiceCatalogueEntry, ...]:
+        """Return the full provider catalogue, walking + caching it on a miss."""
+        cache = self._catalogue_cache
+        if cache is not None:
+            age = time.monotonic() - self._catalogue_cache_at
+            if age < _CATALOGUE_CACHE_TTL_S:
+                return cache
         entries: list[VoiceCatalogueEntry] = []
         try:
             async for voice in self._client.voices.list(expand=["preview_file_url"]):
-                entry_gender = normalize_gender(voice.gender)
-                if gender is not None and entry_gender != gender:
-                    continue
-                if language is not None and voice.language != language:
-                    continue
                 entries.append(
                     VoiceCatalogueEntry(
                         voice_id=voice.id,
                         name=voice.name,
-                        gender=entry_gender,
+                        gender=normalize_gender(voice.gender),
                         language=voice.language,
                         description=voice.description,
                         preview_url=voice.preview_file_url,
                     )
                 )
-                if limit is not None and len(entries) >= limit:
-                    break
         except CartesiaError as exc:
             raise self._map_error(exc) from exc
-        return tuple(entries)
+        catalogue = tuple(entries)
+        self._catalogue_cache = catalogue
+        self._catalogue_cache_at = time.monotonic()
+        return catalogue
 
     # ----- synthesis ---------------------------------------------------
 

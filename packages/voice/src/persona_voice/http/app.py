@@ -88,6 +88,37 @@ def _get_voice_catalogue(request: Request) -> VoiceCatalogue | None:
     return catalogue
 
 
+def _prewarm_catalogue(app: FastAPI) -> None:
+    """Build the voice catalogue + walk it once in the background (D-V6-E4 perf).
+
+    Both ``GET /v1/voices`` and the persona-create voice auto-pick walk the full
+    provider catalogue (~30s) on a cold cache, which can exceed a caller timeout.
+    Warming it off the event loop at startup means the first real request is
+    served from the cached list, not a 30s walk. Fail-soft: unconfigured TTS or a
+    walk error just leaves the lazy path intact (the catalogue stays usable).
+    """
+    import asyncio
+
+    try:
+        from persona_voice.tts._factory import load_streaming_tts
+        from persona_voice.tts.config import StreamingTTSConfig
+
+        backend = load_streaming_tts(StreamingTTSConfig())
+    except Exception:  # noqa: BLE001 — unconfigured TTS must not break startup
+        app.state.voice_catalogue = None
+        return
+    app.state.voice_catalogue = backend
+
+    async def _walk() -> None:
+        try:
+            await cast("VoiceCatalogue", backend).list_voices(limit=1)
+        except Exception:  # noqa: BLE001 — a failed warm just defers to the lazy walk
+            return
+
+    # Keep a reference so the fire-and-forget task is not garbage-collected.
+    app.state.catalogue_warm_task = asyncio.create_task(_walk())
+
+
 class TokenRequest(BaseModel):
     """Body for ``POST /v1/voice/token``."""
 
@@ -267,6 +298,10 @@ def build_app(config: VoiceConfig) -> FastAPI:
         # under the factory; the lifespan always does.
         if launcher is not None:
             await launcher.warm()
+        # Warm the voice catalogue off the loop so the first GET /v1/voices (and
+        # the persona-create voice auto-pick) is served from cache, not a ~30s
+        # full-catalogue walk (D-V6-E4).
+        _prewarm_catalogue(_app)
         yield
         if launcher is not None:
             await launcher.aclose()
