@@ -9,19 +9,24 @@ read; (3) ``top_k`` is forwarded to the variable-store queries.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from _fakes import FakeStore  # type: ignore[import-not-found]
 from persona.schema.chunks import PersonaChunk
-from persona_runtime.retrieval import DEFAULT_RETRIEVE_TOP_K, retrieve_context
+from persona_runtime.retrieval import (
+    DEFAULT_RETRIEVE_TOP_K,
+    EARLY_RETRIEVE_TOP_K,
+    dynamic_top_k,
+    retrieve_context,
+)
 
 
-def _chunk(text: str) -> PersonaChunk:
+def _chunk(text: str, *, created_at: datetime | None = None) -> PersonaChunk:
     return PersonaChunk(
         id=f"id-{abs(hash(text)) % 10000}",
         text=text,
         metadata={},
-        created_at=datetime.now(UTC),
+        created_at=created_at or datetime.now(UTC),
     )
 
 
@@ -65,6 +70,72 @@ class TestRetrieveContext:
         stores["self_facts"] = FakeStore(query_results=many)
         ctx = retrieve_context(stores, "astrid", "q", top_k=2)
         assert len(ctx.self_facts) == 2
+
+
+class TestDynamicTopK:
+    def test_fresh_conversation_uses_high_budget(self) -> None:
+        assert dynamic_top_k(0) == EARLY_RETRIEVE_TOP_K
+
+    def test_negative_turns_clamp_to_high(self) -> None:
+        assert dynamic_top_k(-3) == EARLY_RETRIEVE_TOP_K
+
+    def test_budget_decays_one_per_turn(self) -> None:
+        assert dynamic_top_k(1) == EARLY_RETRIEVE_TOP_K - 1
+        assert dynamic_top_k(2) == EARLY_RETRIEVE_TOP_K - 2
+
+    def test_budget_floors_at_default(self) -> None:
+        assert dynamic_top_k(100) == DEFAULT_RETRIEVE_TOP_K
+
+    def test_history_turns_drives_variable_query_budget(self) -> None:
+        many = [_chunk(f"fact {i}") for i in range(20)]
+        stores = _stores()
+        stores["self_facts"] = FakeStore(query_results=many)
+        # A fresh turn pulls the high budget...
+        fresh = retrieve_context(stores, "astrid", "q", history_turns=0)
+        assert len(fresh.self_facts) == EARLY_RETRIEVE_TOP_K
+        # ...a long conversation decays to the floor.
+        deep = retrieve_context(stores, "astrid", "q", history_turns=50)
+        assert len(deep.self_facts) == DEFAULT_RETRIEVE_TOP_K
+
+
+class TestEpisodicRecency:
+    def _episodic_with_recent_turns(self) -> tuple[dict[str, FakeStore], list[str]]:
+        """Episodic store whose recent turns differ from the similarity hit."""
+        base = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
+        recent_turns = [
+            _chunk("USER: the professor gave me a C", created_at=base),
+            _chunk("USER: i worked really hard on it", created_at=base + timedelta(minutes=1)),
+        ]
+        # query() returns an unrelated similarity hit — not the recent tail.
+        episodic = FakeStore(query_results=[_chunk("USER: tell me about mould")])
+        episodic.write("astrid", recent_turns, source=None)  # type: ignore[arg-type]
+        stores = _stores()
+        stores["episodic"] = episodic
+        return stores, [c.text for c in recent_turns]
+
+    def test_recency_surfaces_previous_turns_without_semantic_match(self) -> None:
+        stores, recent_texts = self._episodic_with_recent_turns()
+        ctx = retrieve_context(stores, "astrid", "what were we talking about?", history_turns=0)
+        episodic_texts = [c.text for c in ctx.episodic]
+        # The previous session's tail surfaces even though the query does not
+        # embed near it — that is the continuity fix.
+        for text in recent_texts:
+            assert text in episodic_texts
+
+    def test_recent_turns_ordered_chronologically(self) -> None:
+        stores, recent_texts = self._episodic_with_recent_turns()
+        ctx = retrieve_context(stores, "astrid", "anything?", history_turns=0)
+        present = [c.text for c in ctx.episodic if c.text in recent_texts]
+        assert present == recent_texts  # oldest -> newest
+
+    def test_without_history_turns_recall_is_similarity_only(self) -> None:
+        stores, recent_texts = self._episodic_with_recent_turns()
+        ctx = retrieve_context(stores, "astrid", "what were we talking about?")
+        # Legacy callers (no history_turns) keep the historical behaviour:
+        # similarity hit only, no recency augmentation.
+        assert [c.text for c in ctx.episodic] == ["USER: tell me about mould"]
+        for text in recent_texts:
+            assert text not in [c.text for c in ctx.episodic]
 
 
 class TestIdentityCacheHook:

@@ -59,6 +59,9 @@ class _FakeStore:
         self.get_all_calls += 1
         return list(self._all)
 
+    def recent(self, persona_id: str, limit: int) -> list[PersonaChunk]:
+        return list(self._all[-limit:][::-1]) if limit > 0 else []
+
     def delete(self, persona_id: str) -> None:
         return None
 

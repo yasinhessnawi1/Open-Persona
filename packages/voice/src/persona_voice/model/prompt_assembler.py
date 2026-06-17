@@ -56,12 +56,20 @@ class VoicePromptAssembler:
         return self._cached_identity
 
     def retrieve(
-        self, user_message: str, *, top_k: int = DEFAULT_RETRIEVE_TOP_K
+        self,
+        user_message: str,
+        *,
+        top_k: int = DEFAULT_RETRIEVE_TOP_K,
+        history_turns: int | None = None,
     ) -> RetrievedContext:
         """Retrieve this turn's conditioning context (cached identity + variable).
 
         Uses the shared :func:`~persona_runtime.retrieval.retrieve_context` with
         the cached identity hook (D-V5-1) so the identity store is not re-read.
+        ``history_turns`` (the live-history length) drives the dynamic per-turn
+        budget and recency-augmented episodic recall, so the persona recalls the
+        previous call's tail — the same unified-memory continuity the text path
+        gets (criteria 1+2; no persona-bypass).
         """
         return retrieve_context(
             self._ctx.stores,
@@ -69,6 +77,7 @@ class VoicePromptAssembler:
             user_message,
             top_k=top_k,
             identity=self._identity(),
+            history_turns=history_turns,
         )
 
     def build(
@@ -98,7 +107,7 @@ class VoicePromptAssembler:
             ``[system, *history, user]`` — the same shape the text loop builds,
             via the shared ``PromptBuilder`` (criteria 1+2; no persona-bypass).
         """
-        context = self.retrieve(user_message)
+        context = self.retrieve(user_message, history_turns=len(history))
         # The reply must be generated in the language TTS will actually speak
         # (Spec 32 B5). The per-call plan's reply_language already accounts for a
         # TTS fall-back to English, so a persona whose declared language the

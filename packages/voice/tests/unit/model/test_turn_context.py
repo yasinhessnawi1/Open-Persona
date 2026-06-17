@@ -34,6 +34,9 @@ class _FakeStore:
     def get_all(self, persona_id: str, *, include_superseded: bool = False) -> list[Any]:
         return []
 
+    def recent(self, persona_id: str, limit: int) -> list[Any]:
+        return []
+
     def delete(self, persona_id: str) -> None:
         return None
 

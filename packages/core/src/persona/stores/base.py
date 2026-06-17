@@ -203,6 +203,20 @@ class TypedStore:
             return all_chunks
         return [c for c in all_chunks if c.provenance is None or c.provenance.superseded_by is None]
 
+    def recent(self, persona_id: str, limit: int) -> list[PersonaChunk]:
+        """Return up to ``limit`` most-recently-created current chunks, newest first.
+
+        Recency counterpart to :meth:`query`. Sorts the current heads by
+        ``created_at`` in-process — episodic counts are modest in v0.1; a
+        backend-level ``ORDER BY created_at LIMIT`` is the push-down if this
+        ever sits on the hot path for large stores.
+        """
+        if limit <= 0:
+            return []
+        current = self.get_all(persona_id)
+        current.sort(key=lambda c: c.created_at, reverse=True)
+        return current[:limit]
+
     # ----- delete ----------------------------------------------------------
 
     def delete(self, persona_id: str) -> None:

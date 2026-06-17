@@ -200,6 +200,12 @@ class FakeStore:
     def get_all(self, persona_id: str, *, include_superseded: bool = False) -> list[PersonaChunk]:
         return list(self._all)
 
+    def recent(self, persona_id: str, limit: int) -> list[PersonaChunk]:
+        if limit <= 0:
+            return []
+        ordered = sorted(self._all, key=lambda c: c.created_at, reverse=True)
+        return ordered[:limit]
+
     def delete(self, persona_id: str) -> None: ...
 
     def remove_documents(self, persona_id: str, doc_ids: list[str]) -> None: ...

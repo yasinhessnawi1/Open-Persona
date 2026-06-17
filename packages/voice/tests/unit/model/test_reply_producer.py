@@ -68,6 +68,9 @@ class _FakeStore:
     def get_all(self, persona_id: str, *, include_superseded: bool = False) -> list[PersonaChunk]:
         return list(self._all)
 
+    def recent(self, persona_id: str, limit: int) -> list[PersonaChunk]:
+        return list(self._all[-limit:][::-1]) if limit > 0 else []
+
     def delete(self, persona_id: str) -> None:
         return None
 

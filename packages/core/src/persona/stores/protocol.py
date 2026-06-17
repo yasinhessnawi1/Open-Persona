@@ -88,6 +88,17 @@ class MemoryStore(Protocol):
         """
         ...
 
+    def recent(self, persona_id: str, limit: int) -> list[PersonaChunk]:
+        """Return up to ``limit`` most-recently-created current chunks, newest first.
+
+        The recency-ordered counterpart to :meth:`query` (which ranks by
+        semantic similarity). The shared per-turn recall folds these in so
+        conversational continuity — the tail of the previous session — survives
+        even when the current message is not semantically near a past turn.
+        Only current (non-superseded) chunks are considered.
+        """
+        ...
+
     def delete(self, persona_id: str) -> None:
         """Remove every chunk for ``persona_id``. Idempotent."""
         ...

@@ -368,7 +368,7 @@ class ConversationLoop:
         started = time.perf_counter()
         self.deferred_input_files.clear()  # M1a per-turn reset (D-16-2)
 
-        context = self._retrieve(persona_id, user_message)
+        context = self._retrieve(persona_id, user_message, history_turns=conversation.turn_count)
         history, compacted = await self._manage_history(conversation)
 
         # Spec 21 T06 (D-21-1): proactive clarifying question decision point —
@@ -906,15 +906,18 @@ class ConversationLoop:
         )
         return _ComposedSkill(merged, None, record)
 
-    def _retrieve(self, persona_id: str, user_message: str) -> RetrievedContext:
+    def _retrieve(
+        self, persona_id: str, user_message: str, *, history_turns: int
+    ) -> RetrievedContext:
         """Retrieve per-turn context using the real store signatures (§4.1).
 
         Delegates to the shared :func:`persona_runtime.retrieval.retrieve_context`
         (extracted spec V5 D-V5-6 so the voice turn shares the *same*
-        conditioning retrieval — never reimplemented). Behaviour is byte-identical
-        to the prior inline implementation.
+        conditioning retrieval — never reimplemented). ``history_turns`` is the
+        conversation-progression signal that drives the dynamic per-turn budget
+        and recency-augmented episodic recall.
         """
-        return retrieve_context(self._stores, persona_id, user_message)
+        return retrieve_context(self._stores, persona_id, user_message, history_turns=history_turns)
 
     async def _manage_history(
         self, conversation: Conversation
