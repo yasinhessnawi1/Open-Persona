@@ -30,6 +30,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from persona.logging import get_logger
 from persona.schema.chunks import ChunkProvenance, PersonaChunk, WriteSource, make_chunk_id
 from persona.schema.conversation import ConversationMessage
 
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = ["VoiceTurnRecorder"]
 
+_LOG = get_logger("voice.memory")
 _WRITTEN_BY = "voice.turn"
 
 
@@ -105,7 +107,19 @@ class VoiceTurnRecorder:
             return
 
         heard = reply.heard_text
-        self._write_episodic(user, heard)
+        # Persist to the unified episodic store — BEST-EFFORT. This method MUST
+        # NOT raise (V4 runs it in the invocation's ``finally``): a write failure
+        # — e.g. a misconfigured/un-migrated database (no ``memory_chunks``) —
+        # must not crash the turn or surface as an unretrieved task exception.
+        # The live-history append below keeps in-session continuity regardless.
+        try:
+            self._write_episodic(user, heard)
+        except Exception as exc:  # noqa: BLE001 — episodic persistence is best-effort
+            _LOG.warning(
+                "voice episodic write failed (persona_id={pid}): {err}",
+                pid=self._ctx.persona_id,
+                err=repr(exc)[:300],
+            )
 
         now = self._clock()
         self._ctx.conversation.messages.append(

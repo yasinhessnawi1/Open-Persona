@@ -47,6 +47,14 @@ class _RecordingStore:
         return None
 
 
+class _FailingEpisodicStore(_RecordingStore):
+    """Episodic double whose persistence raises — e.g. an un-migrated DB where
+    ``memory_chunks`` does not exist (the failure seen in the field)."""
+
+    def get_all(self, persona_id: str, *, include_superseded: bool = False) -> list[PersonaChunk]:
+        raise RuntimeError('relation "memory_chunks" does not exist')
+
+
 def _context(
     *, messages: list[ConversationMessage] | None = None
 ) -> tuple[VoiceTurnContext, _RecordingStore]:
@@ -122,6 +130,25 @@ class TestUnifiedWrite:
         )
         assert episodic.chunks == []
         assert ctx.conversation.messages == []
+
+
+class TestEpisodicWriteFailSoft:
+    @pytest.mark.asyncio
+    async def test_write_failure_does_not_raise_and_history_still_appends(self) -> None:
+        ctx, _ = _context()
+        # An un-migrated/misconfigured DB: the episodic persistence raises.
+        ctx.stores["episodic"] = _FailingEpisodicStore()  # type: ignore[index]
+        recorder = VoiceTurnRecorder(ctx)
+        recorder.note_user_message("remember this")
+
+        # MUST NOT raise (V4 calls this in finally) — the turn survives a memory
+        # write failure rather than crashing as an unretrieved task exception.
+        await recorder.on_reply_committed(
+            BargedReply(heard_text="noted", truncated=False, token_count=1)
+        )
+
+        # In-session continuity is preserved even though persistence failed.
+        assert [m.content for m in ctx.conversation.messages] == ["remember this", "noted"]
 
 
 class TestBargeOverHonesty:
