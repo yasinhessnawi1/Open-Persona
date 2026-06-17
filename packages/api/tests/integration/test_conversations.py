@@ -8,6 +8,7 @@ test the SSE streaming, persist-after-final, and channel passthrough end-to-end.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -674,3 +675,117 @@ def test_images_field_rejects_when_extra_forbid_intent_held(
         headers=_auth(uid),
     )
     assert resp.status_code == 422, resp.text
+
+
+# -- last-message preview on the LIST endpoint (sidebar chat previews) -------
+
+
+def _list_conversations(c: TestClient, uid: str) -> list[dict[str, object]]:
+    resp = c.get("/v1/conversations", headers=_auth(uid))
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_list_preview_is_none_when_no_messages(client: tuple[TestClient, str, str]) -> None:
+    """A freshly created conversation (no messages) lists with both
+    last-message fields as None — the UI falls back to the title."""
+    c, uid, persona_id = client
+    conv_id = _new_conversation(c, uid, persona_id)
+
+    item = next(row for row in _list_conversations(c, uid) if row["id"] == conv_id)
+    assert item["last_message_preview"] is None
+    assert item["last_message_role"] is None
+
+
+def test_list_preview_reflects_latest_message_and_role(
+    client: tuple[TestClient, str, str],
+) -> None:
+    """After a turn the LIST preview is the MOST RECENT message (the assistant
+    reply, here) with its role — not the user's first message."""
+    c, uid, persona_id = client
+    conv_id = _new_conversation(c, uid, persona_id)
+    c.post(f"/v1/conversations/{conv_id}/messages", json={"content": "hi"}, headers=_auth(uid))
+
+    item = next(row for row in _list_conversations(c, uid) if row["id"] == conv_id)
+    # _ScriptedLoop appends user("hi") then assistant("Hello there!"); the latest
+    # message is the assistant reply.
+    assert item["last_message_preview"] == "Hello there!"
+    assert item["last_message_role"] == "assistant"
+
+
+def test_list_preview_truncates_long_message(client: tuple[TestClient, str, str]) -> None:
+    """A long assistant reply is trimmed + truncated server-side to the preview
+    cap with a trailing ellipsis — the full body never ships in the list."""
+    c, uid, persona_id = client
+
+    long_reply = "word " * 200  # ~1000 chars, well over the 120 cap
+
+    async def _build_long_loop(_pid: str) -> _ScriptedLoop:
+        return _ScriptedLoop(reply=long_reply)
+
+    c.app.state.build_conversation_loop = _build_long_loop  # type: ignore[attr-defined]
+    conv_id = _new_conversation(c, uid, persona_id)
+    c.post(f"/v1/conversations/{conv_id}/messages", json={"content": "go"}, headers=_auth(uid))
+
+    item = next(row for row in _list_conversations(c, uid) if row["id"] == conv_id)
+    preview = item["last_message_preview"]
+    assert isinstance(preview, str)
+    assert len(preview) <= 120
+    assert preview.endswith("…")
+    assert preview != long_reply
+
+
+def test_list_preserves_updated_at_desc_ordering(client: tuple[TestClient, str, str]) -> None:
+    """The preview join must not disturb the existing updated_at-desc order:
+    the most recently active conversation sorts first."""
+    c, uid, persona_id = client
+    first = _new_conversation(c, uid, persona_id)
+    _second = _new_conversation(c, uid, persona_id)
+    # Activity on `first` bumps its updated_at past `_second` (persist sets it).
+    c.post(f"/v1/conversations/{first}/messages", json={"content": "hi"}, headers=_auth(uid))
+
+    rows = _list_conversations(c, uid)
+    ours = [row["id"] for row in rows if row["id"] in {first, _second}]
+    assert ours[0] == first, "the conversation with the newest activity sorts first"
+
+
+def test_list_preview_is_rls_scoped(client: tuple[TestClient, str, str]) -> None:
+    """Another tenant's conversations + their message previews never leak into
+    the caller's list (RLS scope on the windowed message join)."""
+    c, uid, persona_id = client
+    # Caller's own conversation with a message.
+    mine = _new_conversation(c, uid, persona_id)
+    c.post(f"/v1/conversations/{mine}/messages", json={"content": "mine"}, headers=_auth(uid))
+
+    # A second tenant with their own persona + conversation + message.
+    other = "user_t08_other"
+    su = make_rls_engine(os.environ["DATABASE_URL"])
+    with su.begin() as conn:
+        conn.execute(
+            text("INSERT INTO users (id, email) VALUES (:i, :e) ON CONFLICT DO NOTHING"),
+            {"i": other, "e": f"{other}@x.test"},
+        )
+    su.dispose()
+    other_persona = c.post("/v1/personas", json={"yaml": _VALID_YAML}, headers=_auth(other)).json()[
+        "id"
+    ]
+    other_conv = _new_conversation(c, other, other_persona)
+    c.post(
+        f"/v1/conversations/{other_conv}/messages",
+        json={"content": "secret-other-tenant-body"},
+        headers=_auth(other),
+    )
+
+    # The caller's list contains only their conversation; no leak of the other
+    # tenant's conversation OR its message preview.
+    rows = _list_conversations(c, uid)
+    ids = {row["id"] for row in rows}
+    assert mine in ids
+    assert other_conv not in ids
+    assert all(row["last_message_preview"] != "secret-other-tenant-body" for row in rows)
+
+    # cleanup the extra tenant
+    su = make_rls_engine(os.environ["DATABASE_URL"])
+    with su.begin() as conn:
+        conn.execute(text("DELETE FROM users WHERE id = :i"), {"i": other})
+    su.dispose()

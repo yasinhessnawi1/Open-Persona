@@ -80,3 +80,21 @@ def test_done_event_format_hints_at_model_level(spec: dict) -> None:
     done = DoneEvent(tier="frontier")
     assert done.format_hints == {}
     assert "format_hints" in done.model_dump()
+
+
+def test_conversation_summary_last_message_fields_optional_nullable(spec: dict) -> None:
+    # The web sidebar reads ConversationSummary off the LIST endpoint; the two
+    # last-message fields must be optional (not required) and nullable in the
+    # generated TS client (a conversation with no messages yields null).
+    schemas = spec["components"]["schemas"]
+    assert "ConversationSummary" in schemas
+    props = schemas["ConversationSummary"]["properties"]
+    assert "last_message_preview" in props
+    assert "last_message_role" in props
+    required = schemas["ConversationSummary"].get("required", [])
+    assert "last_message_preview" not in required
+    assert "last_message_role" not in required
+    # both permit null (FastAPI/pydantic-v2 anyOf-with-null shape)
+    for field in ("last_message_preview", "last_message_role"):
+        schema = props[field]
+        assert "anyOf" in schema or schema.get("nullable") is True, field

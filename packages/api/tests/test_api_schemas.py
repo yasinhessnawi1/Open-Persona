@@ -104,3 +104,83 @@ def test_tool_result_event_uses_is_error_not_error_field() -> None:
     assert ev.is_error is False
     with pytest.raises(ValidationError):
         ToolResultEvent(tool="x", content="y", error="boom")  # type: ignore[call-arg]
+
+
+# -- ConversationSummary last-message preview fields -------------------------
+
+
+def test_conversation_summary_preview_fields_default_none() -> None:
+    from datetime import UTC, datetime
+
+    from persona_api.schemas import ConversationSummary
+
+    now = datetime.now(UTC)
+    summary = ConversationSummary(
+        id="conv_1", persona_id="p1", title="t", created_at=now, updated_at=now
+    )
+    # A conversation with no messages: both fields default to None.
+    assert summary.last_message_preview is None
+    assert summary.last_message_role is None
+
+
+def test_conversation_summary_accepts_preview_and_role() -> None:
+    from datetime import UTC, datetime
+
+    from persona_api.schemas import ConversationSummary
+
+    now = datetime.now(UTC)
+    summary = ConversationSummary(
+        id="conv_1",
+        persona_id="p1",
+        title="t",
+        created_at=now,
+        updated_at=now,
+        last_message_preview="Hello there!",
+        last_message_role="assistant",
+    )
+    assert summary.last_message_preview == "Hello there!"
+    assert summary.last_message_role == "assistant"
+
+
+def test_conversation_summary_rejects_unknown_role() -> None:
+    from datetime import UTC, datetime
+
+    from persona_api.schemas import ConversationSummary
+
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError):
+        ConversationSummary(
+            id="c",
+            persona_id="p",
+            title="t",
+            created_at=now,
+            updated_at=now,
+            last_message_role="robot",  # type: ignore[arg-type]
+        )
+
+
+# -- _truncate_preview (server-side preview trimming/truncation) -------------
+
+
+def test_truncate_preview_passes_through_short_text() -> None:
+    from persona_api.services.chat_service import _truncate_preview
+
+    assert _truncate_preview("hello") == "hello"
+    # surrounding whitespace is collapsed
+    assert _truncate_preview("  hi there  ") == "hi there"
+
+
+def test_truncate_preview_returns_none_for_no_message() -> None:
+    from persona_api.services.chat_service import _truncate_preview
+
+    assert _truncate_preview(None) is None
+
+
+def test_truncate_preview_truncates_with_ellipsis() -> None:
+    from persona_api.services.chat_service import LAST_MESSAGE_PREVIEW_MAX_LEN, _truncate_preview
+
+    body = "x" * 500
+    out = _truncate_preview(body)
+    assert out is not None
+    assert len(out) <= LAST_MESSAGE_PREVIEW_MAX_LEN
+    assert out.endswith("…")

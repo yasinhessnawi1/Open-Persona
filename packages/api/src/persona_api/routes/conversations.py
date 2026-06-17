@@ -248,10 +248,17 @@ async def post_message(
 
 
 def _summary(row: dict[str, object]) -> ConversationSummary:
+    # The LIST query (chat_service.list_conversations) attaches the derived
+    # last-message fields (already truncated server-side); the CREATE path
+    # returns a plain conversations row without them, so both are read with
+    # ``.get`` and default to None — a just-created conversation has no
+    # messages anyway, so None is the correct value there too.
     return ConversationSummary(
         id=str(row["id"]),
         persona_id=str(row["persona_id"]),
         title=str(row["title"]),
         created_at=row["created_at"],  # type: ignore[arg-type]
         updated_at=row["updated_at"],  # type: ignore[arg-type]
+        last_message_preview=cast("str | None", row.get("last_message_preview")),
+        last_message_role=cast("Any", row.get("last_message_role")),
     )

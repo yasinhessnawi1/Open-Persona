@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
 from persona.errors import PersonaNotFoundError
 from persona.logging import get_logger
 from persona.schema.conversation import Conversation, ConversationMessage
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, over, select, update
 
 from persona_api.db.models import conversations as conversations_t
 from persona_api.db.models import messages as messages_t
@@ -77,6 +77,11 @@ Role = Literal["user", "assistant", "system", "tool"]
 TitleBuilder = "Callable[[str], Awaitable[str]]"
 _MAX_TITLE_LEN = 120
 
+# Server-side cap on the last-message preview returned by the LIST endpoint, so
+# the sidebar never has to ship/trim a full message body. Longer messages are
+# truncated and get a trailing ellipsis (see _truncate_preview).
+LAST_MESSAGE_PREVIEW_MAX_LEN = 120
+
 
 def create_conversation(*, rls_engine: Engine, owner_id: str, persona_id: str, title: str) -> str:
     """Create a conversation against a persona (RLS-scoped). Returns its id."""
@@ -123,11 +128,53 @@ def set_title(*, rls_engine: Engine, conversation_id: str, title: str) -> None:
 
 
 def list_conversations(*, rls_engine: Engine, limit: int, offset: int) -> list[dict[str, object]]:
-    """List the caller's conversations (RLS-scoped), paginated."""
+    """List the caller's conversations (RLS-scoped), paginated.
+
+    Each returned row carries the conversation columns PLUS two derived
+    last-message fields — ``last_message_preview`` (the most recent message's
+    text, already trimmed + truncated server-side) and ``last_message_role`` —
+    so the web sidebar can render a real preview. Both are ``None`` for a
+    conversation with no messages.
+
+    The latest message per conversation is resolved WITHOUT an N+1 fan-out: a
+    single ``ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY
+    created_at DESC)`` window picks the newest ``messages`` row per
+    conversation, and that subquery LEFT-JOINs onto the paginated
+    conversations (so a conversation with zero messages still appears, with
+    NULL preview fields). The whole statement runs in the one RLS-scoped
+    transaction, so the ``messages`` rows it reads are constrained to the
+    caller's tenant exactly like the conversations are — no cross-tenant leak.
+    """
+    # The "latest message per conversation" subquery: rank messages newest-first
+    # within each conversation and keep only rank 1. ``created_at`` ties are
+    # broken by ``id`` so the pick is deterministic.
+    ranked = select(
+        messages_t.c.conversation_id.label("conversation_id"),
+        messages_t.c.content.label("content"),
+        messages_t.c.role.label("role"),
+        over(
+            func.row_number(),
+            partition_by=messages_t.c.conversation_id,
+            order_by=(messages_t.c.created_at.desc(), messages_t.c.id.desc()),
+        ).label("rn"),
+    ).subquery("ranked_messages")
+    latest = select(ranked).where(ranked.c.rn == 1).subquery("latest_message")
+
     with rls_engine.begin() as conn:
         rows = (
             conn.execute(
-                select(conversations_t)
+                select(
+                    conversations_t,
+                    latest.c.content.label("last_message_content"),
+                    latest.c.role.label("last_message_role"),
+                )
+                .select_from(
+                    conversations_t.join(
+                        latest,
+                        conversations_t.c.id == latest.c.conversation_id,
+                        isouter=True,
+                    )
+                )
                 .order_by(conversations_t.c.updated_at.desc())
                 .limit(limit)
                 .offset(offset)
@@ -135,7 +182,32 @@ def list_conversations(*, rls_engine: Engine, limit: int, offset: int) -> list[d
             .mappings()
             .all()
         )
-    return [dict(r) for r in rows]
+    out: list[dict[str, object]] = []
+    for r in rows:
+        row = dict(r)
+        # Collapse the raw body to the truncated preview at the service boundary
+        # so the route/response never sees a full message body.
+        row["last_message_preview"] = _truncate_preview(
+            cast("str | None", row.pop("last_message_content"))
+        )
+        out.append(row)
+    return out
+
+
+def _truncate_preview(content: str | None) -> str | None:
+    """Trim + truncate a message body to the sidebar preview cap.
+
+    Returns ``None`` for a missing body (a conversation with no messages).
+    Collapses surrounding whitespace, then truncates to
+    :data:`LAST_MESSAGE_PREVIEW_MAX_LEN` characters with a trailing ellipsis
+    when the trimmed text overflows.
+    """
+    if content is None:
+        return None
+    trimmed = content.strip()
+    if len(trimmed) <= LAST_MESSAGE_PREVIEW_MAX_LEN:
+        return trimmed
+    return trimmed[: LAST_MESSAGE_PREVIEW_MAX_LEN - 1].rstrip() + "…"
 
 
 def get_conversation(*, rls_engine: Engine, conversation_id: str) -> dict[str, object]:
@@ -371,12 +443,21 @@ def _persist_turn(
     with rls_engine.begin() as conn:
         for i, msg in enumerate(new_messages):
             is_first_user_msg = i == 0 and msg.role == "user"
+            # Assign an EXPLICIT, strictly-increasing created_at per row instead
+            # of leaning on the column's ``now()`` server default. Postgres'
+            # ``now()`` is constant for the whole transaction, so every message
+            # in one persisted turn would otherwise tie to the same instant —
+            # leaving "the latest message" ambiguous (the LIST preview window in
+            # list_conversations orders by created_at desc). A per-index
+            # microsecond offset preserves the true user→assistant→tool insertion
+            # order so the preview reflects the most recent turn deterministically.
             conn.execute(
                 insert(messages_t).values(
                     id=f"msg_{uuid.uuid4().hex}",
                     conversation_id=conversation.conversation_id,
                     role=msg.role,
                     content=_persisted_content(msg.content),
+                    created_at=now + timedelta(microseconds=i),
                     # Only the user message carries the inbound channel context.
                     channel=channel_json if is_first_user_msg else None,
                     # Only the first user message carries the inbound image refs
