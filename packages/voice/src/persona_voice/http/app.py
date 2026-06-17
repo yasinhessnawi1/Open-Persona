@@ -34,7 +34,8 @@ import uuid
 # persona-api ``auth/deps.py``.
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, cast
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,7 +44,7 @@ from persona.credits import require_credits as _require_credits_core
 from persona.errors import AuthenticationError, CreditsExhaustedError
 from persona.language_capability import default_capability_registry
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, create_engine, event, text
 
 from persona_voice.config import VoiceConfig
 from persona_voice.tokens.issuer import RoomAccessToken, mint_room_access_token
@@ -209,6 +210,35 @@ def _check_persona_ownership(
         raise HTTPException(status_code=404, detail="persona not found")
 
 
+# personas + credits are RLS-FORCED, so the shared HTTP ownership engine must
+# scope every connection to the request's user — otherwise RLS filters every row
+# and the ownership SELECT (above) and persona.credits.require_credits both see
+# nothing → a false 404 at POST /v1/voice/token. This is persona-api's
+# request-scoped pattern (a ContextVar, because one engine serves concurrent
+# requests), NOT make_session_rls_engine's per-session baked user_id.
+_rls_user_id: ContextVar[str] = ContextVar("voice_rls_user_id", default="")
+_SET_RLS_SQL = "SELECT set_config('app.current_user_id', %s, false)"
+
+
+def _make_ownership_engine(url: str) -> Engine:
+    """Shared engine whose connections RLS-scope to ``_rls_user_id`` on checkout."""
+    engine = create_engine(url, pool_size=5, pool_pre_ping=True)
+
+    @event.listens_for(engine, "checkout")
+    def _scope_to_request_user(
+        dbapi_conn: Any,  # noqa: ANN401 — psycopg3 dynamic connection type
+        _record: Any,  # noqa: ANN401
+        _proxy: Any,  # noqa: ANN401
+    ) -> None:
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute(_SET_RLS_SQL, (_rls_user_id.get(),))
+        finally:
+            cursor.close()
+
+    return engine
+
+
 def build_app(config: VoiceConfig) -> FastAPI:
     """Build the persona-voice FastAPI app.
 
@@ -245,7 +275,7 @@ def build_app(config: VoiceConfig) -> FastAPI:
     app.state.voice_config = config
     app.state.agent_launcher = launcher
     if config.database_url:
-        app.state.ownership_engine = create_engine(config.database_url, pool_size=1)
+        app.state.ownership_engine = _make_ownership_engine(config.database_url)
 
     # CORS — the browser calls POST /v1/voice/token + GET /v1/voices cross-origin
     # (mirrors persona-api). Bearer auth (no cookies) → allow_credentials=False.
@@ -290,6 +320,10 @@ def build_app(config: VoiceConfig) -> FastAPI:
         request: Request,
         user: AuthenticatedUser = Depends(get_current_user),
     ) -> TokenResponse:
+        # RLS-scope this request's DB access (personas + credits are RLS-FORCED)
+        # to the authenticated user, so the ownership + credit checks see the
+        # caller's rows instead of an RLS-empty result → a false 404.
+        _rls_user_id.set(user.id)
         _check_persona_ownership(request, persona_id=body.persona_id, user_id=user.id)
         _require_credits(request, user_id=user.id)
         cfg = get_voice_config(request)
