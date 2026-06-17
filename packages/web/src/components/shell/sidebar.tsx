@@ -185,7 +185,12 @@ export function Sidebar({ data }: { data: SidebarData }) {
         data-collapsed={collapsed}
         style={{ width: `${effectiveWidth}px` }}
         className={cn(
-          "relative hidden shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col",
+          // A fixed full-viewport-height column: sticky to the top so it never
+          // scrolls with the page, and capped at the (small) viewport height so
+          // it never grows taller than the screen. This height ceiling is what
+          // lets the MESSAGES region's `min-h-0 flex-1` ScrollArea scroll
+          // internally instead of pushing the pinned Settings footer off-screen.
+          "relative hidden shrink-0 border-r border-sidebar-border bg-sidebar md:sticky md:top-0 md:flex md:h-svh md:flex-col",
           "transition-[width] duration-[var(--motion-duration-normal)] ease-[var(--motion-ease-standard)] motion-reduce:transition-none",
         )}
       >
@@ -230,8 +235,11 @@ export function Sidebar({ data }: { data: SidebarData }) {
             />
           </SidebarSection>
 
-          {/* (6) Settings — pinned bottom. */}
-          <div className="mt-auto">
+          {/* (6) Settings — a non-shrinking footer pinned flush at the bottom.
+           * `shrink-0` keeps it at its natural height (never squeezed) while the
+           * MESSAGES region above it (flex-1) absorbs all remaining space and
+           * scrolls internally, so Settings stays visible at any list length. */}
+          <div className="mt-auto shrink-0">
             <Separator className="mb-2 bg-sidebar-border" />
             <SettingsLink
               collapsed={collapsed}
