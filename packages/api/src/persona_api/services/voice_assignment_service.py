@@ -187,8 +187,16 @@ async def maybe_assign_voice(
             base_url, bearer=bearer, language=persona.identity.language_default
         )
     except Exception as exc:  # noqa: BLE001 — network/provider error → keep default
-        _LOG.info("voice auto-pick skipped: catalogue unavailable", persona_id=persona_id)
-        _LOG.debug("voice catalogue fetch error", error=str(exc)[:200])
+        # Surface WHY at a visible level: a fail-soft skip should be diagnosable.
+        # For an HTTP error the response body carries the real reason (e.g. an
+        # expired/invalid token).
+        body = getattr(getattr(exc, "response", None), "text", "")
+        _LOG.info(
+            "voice auto-pick skipped: catalogue unavailable (persona_id={pid}): {err} {body}",
+            pid=persona_id,
+            err=str(exc)[:300],
+            body=str(body)[:200],
+        )
         return
     if provider is None or not options:
         return

@@ -247,17 +247,20 @@ async def create_persona(
         action="persona.create",
         target=persona_id,
     )
+    # Issue 1: auto-assign a gender/character-fitting voice when the builder
+    # supplied none — so a persona isn't stuck with the global English-male
+    # default. Fail-soft (never breaks create); a no-op when TTS is unconfigured.
+    # Runs BEFORE avatar generation: that hook can block up to avatar_gen_timeout_s
+    # (25s), and the voice pick forwards the caller's short-lived bearer token to
+    # the voice service — so it must fire while that token is still fresh.
+    await voice_assignment_service.maybe_assign_voice(
+        request, owner_id=user.id, persona_id=persona_id, yaml_str=body.yaml
+    )
     # Spec 29: auto-generate an avatar when the builder supplied none. Fail-soft.
     if body.avatar_url is None:
         await _maybe_generate_avatar(
             request, owner_id=user.id, persona_id=persona_id, yaml_str=body.yaml
         )
-    # Issue 1: auto-assign a gender/character-fitting voice when the builder
-    # supplied none — so a persona isn't stuck with the global English-male
-    # default. Fail-soft (never breaks create); a no-op when TTS is unconfigured.
-    await voice_assignment_service.maybe_assign_voice(
-        request, owner_id=user.id, persona_id=persona_id, yaml_str=body.yaml
-    )
     row = persona_service.get_persona(
         rls_engine=request.app.state.rls_engine, persona_id=persona_id
     )
