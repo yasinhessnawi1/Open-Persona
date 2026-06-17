@@ -40,6 +40,13 @@ export function ConversationFilterStrip({
   }, [initialQ]);
 
   useEffect(() => {
+    // Guard against no-op navigation. `search` (useSearchParams) is in the deps
+    // and gets a fresh reference after every navigation, so an unconditional
+    // router.replace() would loop forever: replace → RSC refetch → new `search`
+    // ref → effect re-fires → replace … (GET /conversations indefinitely, even
+    // with empty input). Only navigate when q actually differs from the URL's q.
+    const current = (search.get("q") ?? "").trim();
+    if (q.trim() === current) return;
     const handle = setTimeout(() => {
       const next = new URLSearchParams(search.toString());
       if (q.trim()) next.set("q", q.trim());
