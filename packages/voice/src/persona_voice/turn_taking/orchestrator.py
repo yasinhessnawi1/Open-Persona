@@ -168,6 +168,7 @@ class ConversationalOrchestrator:
         scheduler: Scheduler | None = None,
         clock: Callable[[], datetime] | None = None,
         initial_state: ConversationalState = ConversationalState.LISTENING,
+        min_authoritative_onset_confidence: float = 0.6,
     ) -> None:
         self._actions = actions
         self._listener = listener
@@ -175,6 +176,13 @@ class ConversationalOrchestrator:
         self._detector = detector or BargeInDetector()
         self._scheduler = scheduler or AsyncioScheduler()
         self._clock = clock or (lambda: datetime.now(UTC))
+        # Floor below which a speech onset may NOT, on its own, cancel a reply
+        # (PROCESSING continuation) or start a barge-in (PERSONA_SPEAKING) — the
+        # V6 operator-pass false-barge-in finding. Bare provider VAD events carry
+        # no confidence (``None``) and room noise carries low confidence; both
+        # corroborate but must never independently cut the persona off. A real
+        # Silero onset fires at/above its activation threshold, so it clears this.
+        self._min_authoritative_onset_confidence = min_authoritative_onset_confidence
 
         # ``PREPARING`` for a greet-first call (Spec 32 A3) — the persona speaks
         # turn 0 before any user input; ``LISTENING`` otherwise (back-compat).
@@ -240,6 +248,14 @@ class ConversationalOrchestrator:
             # D-V4-5 — the user added more before the persona spoke: a
             # continuation. Cancel the (audio-less) generation and re-open the
             # turn, keeping the accumulated transcript.
+            #
+            # ...but ONLY for an authoritative onset (a confident Silero onset).
+            # A bare provider VAD event or low-confidence room noise must not
+            # cancel the reply mid-generation — that produced the empty caption +
+            # stuck-Listening in the V6 operator pass. Non-authoritative onsets
+            # are dropped here (they still corroborate a real onset elsewhere).
+            if not self._is_authoritative_onset(event):
+                return
             await self._actions.cancel_generation()
             # cancel_generation() awaited — a concurrent speech-activity source
             # (provider + VAD drains run as separate tasks) can have raced the
@@ -253,7 +269,12 @@ class ConversationalOrchestrator:
             self._last_offset = None
             await self._transition(TransitionTrigger.USER_CONTINUATION)
         elif self._state is ConversationalState.PERSONA_SPEAKING:
-            # A potential barge-in — confirm it over the window (D-V4-2).
+            # A potential barge-in — confirm it over the window (D-V4-2). Only a
+            # confident Silero onset may *start* a barge-in candidate; bare
+            # provider VAD events / low-confidence noise corroborate but never
+            # independently interrupt the persona (V6 operator-pass finding).
+            if not self._is_authoritative_onset(event):
+                return
             self._barge_in_onset = event
             self._barge_in_resolved = False
             self._cancel_barge_in()
@@ -270,6 +291,24 @@ class ConversationalOrchestrator:
                 "user speech onset during PREPARING (greeting); mic-gate likely "
                 "raced — dropping the onset, keeping the floor with the greeting"
             )
+
+    def _is_authoritative_onset(self, event: SpeechStartedEvent) -> bool:
+        """Whether a speech onset may, on its own, cancel a reply / start a barge-in.
+
+        True only for a confidence-bearing onset at/above the floor (a real
+        Silero detection). Bare provider VAD events carry ``confidence is None``
+        and room noise carries low confidence — both return False, so they
+        corroborate a real onset but never independently cut the persona off
+        (the V6 operator-pass false-barge-in finding). The LISTENING turn-start
+        and USER_SPEAKING resume paths are intentionally NOT gated — a phantom
+        turn produces no transcript and resets harmlessly, whereas a wrongly
+        cancelled reply is the damaging case.
+        """
+        confidence = event.confidence
+        return (
+            confidence is not None
+            and confidence >= self._min_authoritative_onset_confidence
+        )
 
     async def on_speech_ended(self, event: SpeechEndedEvent) -> None:
         """Speech-offset — arm turn-end, or resolve a pending barge-in."""

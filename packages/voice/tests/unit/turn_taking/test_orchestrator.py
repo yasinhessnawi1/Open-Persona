@@ -540,3 +540,60 @@ async def test_greeting_finish_broadcasts_listening_ungate_signal() -> None:
     await orch.notify_persona_finished()  # greeting ends → listening (un-gate)
     assert listener.transitions[-1].to_state is ConversationalState.LISTENING
     assert listener.transitions[-1].trigger is TransitionTrigger.PERSONA_FINISHED
+
+
+async def test_non_authoritative_onset_does_not_cancel_reply_in_processing() -> None:
+    """A bare provider VAD event (confidence None) — or low-confidence room noise
+    — during PROCESSING must NOT cancel the reply (V6 false-barge-in finding). A
+    confident Silero onset still does (the continuation is preserved).
+    """
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    listener = _RecordingListener()
+    orch = _build(clock, sched, actions, listener)
+
+    # Drive LISTENING → USER_SPEAKING → PROCESSING.
+    await orch.on_speech_started(_started())
+    await orch.on_transcript(Transcript(is_final=True, text="pitch me", confidence=0.95))
+    await orch.on_speech_ended(_ended(ts_emit=_BASE))
+    clock.set_ms_after_base(800.0)
+    await sched.fire_last()
+    assert orch.state is ConversationalState.PROCESSING
+
+    # Bare provider onset (confidence None) → ignored, reply NOT cancelled.
+    await orch.on_speech_started(_started(confidence=None))
+    assert orch.state is ConversationalState.PROCESSING
+    assert actions.cancelled == 0
+    # Low-confidence noise (below the 0.6 floor) → also ignored.
+    await orch.on_speech_started(_started(confidence=0.3))
+    assert orch.state is ConversationalState.PROCESSING
+    assert actions.cancelled == 0
+    # A confident Silero onset → the continuation fires (reply cancelled).
+    await orch.on_speech_started(_started(confidence=0.9))
+    assert orch.state is ConversationalState.USER_SPEAKING
+    assert actions.cancelled == 1
+
+
+async def test_non_authoritative_onset_does_not_start_barge_in() -> None:
+    """A bare provider VAD event while the persona speaks must NOT start a
+    barge-in candidate (no interrupt)."""
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    listener = _RecordingListener()
+    orch = _build(clock, sched, actions, listener)
+
+    # LISTENING → USER_SPEAKING → PROCESSING → PERSONA_SPEAKING.
+    await orch.on_speech_started(_started())
+    await orch.on_transcript(Transcript(is_final=True, text="go", confidence=0.95))
+    await orch.on_speech_ended(_ended(ts_emit=_BASE))
+    clock.set_ms_after_base(800.0)
+    await sched.fire_last()
+    await orch.notify_model_first_audio()
+    assert orch.state is ConversationalState.PERSONA_SPEAKING
+
+    # Bare provider onset → no barge-in candidate; persona keeps speaking.
+    await orch.on_speech_started(_started(confidence=None))
+    assert orch.state is ConversationalState.PERSONA_SPEAKING
+    assert actions.interrupted == 0

@@ -243,6 +243,13 @@ def build_app(config: VoiceConfig) -> FastAPI:
         launcher = InProcessAgentLauncher(config)
         app.state.agent_launcher = launcher
 
+        @app.on_event("startup")
+        async def _warm_agent_launcher() -> None:
+            # Pay the bge embedder cold-load (~tens of seconds on CPU) at server
+            # startup, off the event loop, so the FIRST call's first turn is warm
+            # instead of hanging on memory recall (V6 operator-pass finding).
+            await launcher.warm()
+
         @app.on_event("shutdown")
         async def _close_agent_launcher() -> None:
             await launcher.aclose()
