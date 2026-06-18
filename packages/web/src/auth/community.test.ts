@@ -32,6 +32,18 @@ describe("community @/auth", () => {
     expect(user.firstName).toBe("Local");
   });
 
+  it("serverAuthToken never reports signed-out (no sign-in wall) and mints no token", async () => {
+    const { serverAuthToken } = await import("./server.community");
+    await expect(serverAuthToken(undefined)).resolves.toEqual({
+      signedOut: false,
+      token: null,
+    });
+    await expect(serverAuthToken("api")).resolves.toEqual({
+      signedOut: false,
+      token: null,
+    });
+  });
+
   it("middleware is a passthrough with an empty matcher (no route protection)", async () => {
     const mod = await import("./middleware.community");
     expect(mod.config.matcher).toEqual([]);

@@ -17,10 +17,51 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ErrorAlert,
+  Field,
   OAuthRow,
   OtpInput,
   useResendCooldown,
 } from "./auth-fields.cloud";
+import { dedupeFieldError } from "./auth-flow.cloud";
+
+/**
+ * Mirrors how the forms compose the banner + a deduped field error: the same
+ * message Clerk surfaces at both the global and field level must render once.
+ */
+function BannerAndField({
+  banner,
+  fieldMessage,
+}: {
+  banner: string | null;
+  fieldMessage: string | null;
+}) {
+  const fieldError = dedupeFieldError(fieldMessage, banner);
+  return (
+    <>
+      <ErrorAlert message={banner} />
+      <Field id="email" label="Email" error={fieldError}>
+        <input id="email" />
+      </Field>
+    </>
+  );
+}
+
+describe("error dedupe (banner + field)", () => {
+  it("renders a duplicated global+field message exactly once", () => {
+    const message = "Couldn't find your account.";
+    render(<BannerAndField banner={message} fieldMessage={message} />);
+    expect(screen.getAllByText(message)).toHaveLength(1);
+    // The surviving copy is the top banner (role=alert kept).
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+  });
+
+  it("still shows a field-specific error that the banner does not carry", () => {
+    const fieldOnly = "Your password must be at least 8 characters.";
+    render(<BannerAndField banner={null} fieldMessage={fieldOnly} />);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(fieldOnly)).toBeTruthy();
+  });
+});
 
 describe("OAuthRow (gated)", () => {
   it("renders nothing while OAUTH_PROVIDERS is empty (v1 default)", () => {

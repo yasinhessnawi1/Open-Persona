@@ -37,6 +37,7 @@ import {
 import {
   type ClerkErrorLike,
   clerkErrorToMessage,
+  dedupeFieldError,
   formatCooldown,
 } from "./auth-flow.cloud";
 import { ArrowIcon, MailIcon } from "./auth-icons.cloud";
@@ -72,6 +73,16 @@ export function SignUp() {
 
   const busy = fetchStatus === "fetching";
   const fieldErrors = errors.fields;
+  // Dedupe against the top banner so an error surfaced at both the global and
+  // field level never renders twice (banner kept; under-field copy suppressed).
+  const emailError = dedupeFieldError(
+    fieldErrors.emailAddress?.message,
+    formError,
+  );
+  const passwordError = dedupeFieldError(
+    fieldErrors.password?.message,
+    formError,
+  );
 
   /** Navigate after a completed sign-up, honouring any pending session task. */
   const finishSession: Parameters<typeof signUp.finalize>[0] = {
@@ -165,11 +176,7 @@ export function SignUp() {
         >
           <ErrorAlert message={formError} />
           <OAuthRow onSelect={handleOAuth} disabled={busy} />
-          <Field
-            id="su-email"
-            label="Email"
-            error={fieldErrors.emailAddress?.message ?? null}
-          >
+          <Field id="su-email" label="Email" error={emailError}>
             <div className={s.control}>
               <input
                 className={s.input}
@@ -190,7 +197,7 @@ export function SignUp() {
             id="su-pw"
             label="Password"
             hint="At least 8 characters."
-            error={fieldErrors.password?.message ?? null}
+            error={passwordError}
           >
             <PasswordInput
               id="su-pw"
@@ -198,7 +205,7 @@ export function SignUp() {
               onChange={setPassword}
               autoComplete="new-password"
               placeholder="Create a password"
-              invalid={Boolean(fieldErrors.password)}
+              invalid={Boolean(passwordError)}
               describedBy="su-pw-hint"
               disabled={busy}
             />

@@ -7,13 +7,24 @@
  */
 import "server-only";
 
-import type { CurrentUser, ServerAuth } from "./types";
+import type { CurrentUser, ServerAuth, ServerTokenResult } from "./types";
 
 const LOCAL_OWNER_ID = "local-owner";
 const LOCAL_OWNER_EMAIL = "local@localhost";
 
 export async function auth(): Promise<ServerAuth> {
   return { userId: LOCAL_OWNER_ID, getToken: async () => null };
+}
+
+/**
+ * Resolve the server-side API token. Community has no sign-in wall and the API
+ * verifies no token, so this never reports `signedOut` and never throws — the
+ * token is always `null` (matching the community `auth().getToken`).
+ */
+export async function serverAuthToken(
+  _template: string | undefined,
+): Promise<ServerTokenResult> {
+  return { signedOut: false, token: null };
 }
 
 export async function currentUser(): Promise<CurrentUser> {

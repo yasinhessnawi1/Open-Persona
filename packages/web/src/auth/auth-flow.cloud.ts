@@ -112,6 +112,31 @@ export function isLockoutError(
 }
 
 /**
+ * Deduplicate a field-level error against the top banner.
+ *
+ * Clerk surfaces some errors at BOTH the form level (our `ErrorAlert` banner,
+ * fed by the mapped action error) AND the field level
+ * (`errors.fields.<field>`), so the same text — e.g. "Couldn't find your
+ * account." — would render twice (once in the banner, once under the field).
+ * Keep the banner; suppress the under-field copy when it is the same message.
+ *
+ * Returns the field message to render under the field, or `null` to render
+ * nothing there. Comparison is whitespace-insensitive so a trailing-space
+ * variant still dedupes. A genuinely field-specific error (one the banner does
+ * NOT show — e.g. a password-rules error with an empty banner) is preserved.
+ */
+export function dedupeFieldError(
+  fieldMessage: string | null | undefined,
+  bannerMessage: string | null | undefined,
+): string | null {
+  const field = fieldMessage?.trim();
+  if (!field) return null;
+  const banner = bannerMessage?.trim();
+  if (banner && banner === field) return null;
+  return fieldMessage ?? null;
+}
+
+/**
  * Format the resend cooldown for display, e.g. `formatCooldown(29) === "29s"`.
  * Returns an empty string at or below zero (cooldown elapsed → no countdown).
  */

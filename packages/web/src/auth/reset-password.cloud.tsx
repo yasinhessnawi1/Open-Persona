@@ -36,6 +36,7 @@ import {
 import {
   type ClerkErrorLike,
   clerkErrorToMessage,
+  dedupeFieldError,
   formatCooldown,
 } from "./auth-flow.cloud";
 import { ArrowIcon } from "./auth-icons.cloud";
@@ -64,6 +65,16 @@ export function ResetPassword() {
 
   const busy = fetchStatus === "fetching";
   const fieldErrors = errors.fields;
+  // Dedupe against the top banner so an error surfaced at both the global and
+  // field level never renders twice (banner kept; under-field copy suppressed).
+  const emailError = dedupeFieldError(
+    fieldErrors.identifier?.message,
+    formError,
+  );
+  const passwordError = dedupeFieldError(
+    fieldErrors.password?.message,
+    formError,
+  );
 
   const finishSession: Parameters<typeof signIn.finalize>[0] = {
     navigate: ({ session, decorateUrl }) => {
@@ -162,11 +173,7 @@ export function ResetPassword() {
             noValidate
           >
             <ErrorAlert message={formError} />
-            <Field
-              id="rp-email"
-              label="Email"
-              error={fieldErrors.identifier?.message ?? null}
-            >
+            <Field id="rp-email" label="Email" error={emailError}>
               <div className={s.control}>
                 <input
                   className={s.input}
@@ -292,7 +299,7 @@ export function ResetPassword() {
               id="rp-pw"
               label="New password"
               hint="At least 8 characters."
-              error={fieldErrors.password?.message ?? null}
+              error={passwordError}
             >
               <PasswordInput
                 id="rp-pw"
@@ -300,7 +307,7 @@ export function ResetPassword() {
                 onChange={setPassword}
                 autoComplete="new-password"
                 placeholder="Create a new password"
-                invalid={Boolean(fieldErrors.password)}
+                invalid={Boolean(passwordError)}
                 describedBy="rp-pw-hint"
                 disabled={busy}
               />

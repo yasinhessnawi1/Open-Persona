@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clerkErrorToMessage,
+  dedupeFieldError,
   formatCooldown,
   GENERIC_ERROR_MESSAGE,
   isLockoutError,
@@ -85,6 +86,44 @@ describe("isLockoutError", () => {
     expect(isLockoutError({ code: "form_password_incorrect" })).toBe(false);
     expect(isLockoutError(null)).toBe(false);
     expect(isLockoutError({})).toBe(false);
+  });
+});
+
+describe("dedupeFieldError", () => {
+  it("suppresses a field error equal to the banner (no double render)", () => {
+    expect(
+      dedupeFieldError(
+        "Couldn't find your account.",
+        "Couldn't find your account.",
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores surrounding whitespace when comparing", () => {
+    expect(
+      dedupeFieldError(
+        "  Couldn't find your account.  ",
+        "Couldn't find your account.",
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps a genuinely field-specific error (different from the banner)", () => {
+    expect(
+      dedupeFieldError("Your password must be at least 8 characters.", null),
+    ).toBe("Your password must be at least 8 characters.");
+    expect(
+      dedupeFieldError(
+        "Your password must be at least 8 characters.",
+        "Couldn't find your account.",
+      ),
+    ).toBe("Your password must be at least 8 characters.");
+  });
+
+  it("returns null for an empty/absent field message", () => {
+    expect(dedupeFieldError(null, "anything")).toBeNull();
+    expect(dedupeFieldError(undefined, null)).toBeNull();
+    expect(dedupeFieldError("   ", null)).toBeNull();
   });
 });
 

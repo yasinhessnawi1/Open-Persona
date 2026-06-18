@@ -79,7 +79,17 @@ export function createApiClient(getToken?: TokenGetter): Client<paths> {
   if (getToken) {
     const auth: Middleware = {
       async onRequest({ request }) {
-        const token = await getToken();
+        // Defensive: a token getter can throw when the session is gone (Clerk's
+        // `getToken()` raises "Session not found" during a logout race). Never
+        // let that escape the fetch as an unhandled 500 — send the request
+        // unauthenticated instead, so the API answers 401 and the caller can
+        // handle it (the server path redirects to /sign-in upstream).
+        let token: string | null | undefined;
+        try {
+          token = await getToken();
+        } catch {
+          token = null;
+        }
         if (token) request.headers.set("Authorization", `Bearer ${token}`);
         return request;
       },

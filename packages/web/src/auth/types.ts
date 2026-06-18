@@ -27,6 +27,18 @@ export interface ServerAuth {
   getToken: GetToken;
 }
 
+/**
+ * Outcome of resolving the server-side API bearer token (`serverAuthToken`).
+ *
+ * `signedOut` is `true` when the request's session is gone (logout race / stale
+ * cookie / no token) so the caller redirects to `/sign-in` instead of crashing.
+ * In community there is no sign-in wall, so it is always `false`.
+ */
+export interface ServerTokenResult {
+  signedOut: boolean;
+  token: string | null;
+}
+
 /** The current user's profile shape the settings page reads. */
 export interface CurrentUser {
   primaryEmailAddress?: { emailAddress?: string | null } | null;
