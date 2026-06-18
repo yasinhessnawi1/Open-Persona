@@ -253,7 +253,7 @@ function VoiceRow({
 /** A small muted chip for a voice's gender / language tag. */
 function VoiceTag({ children }: { children: string }): React.JSX.Element {
   return (
-    <span className="rounded bg-muted px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+    <span className="type-caption rounded bg-muted px-1.5 py-px font-medium text-muted-foreground">
       {children}
     </span>
   );

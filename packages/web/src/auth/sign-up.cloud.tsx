@@ -210,6 +210,10 @@ export function SignUp() {
               disabled={busy}
             />
           </Field>
+          {/* Clerk Smart CAPTCHA mounts here for the custom sign-up flow (bot
+              protection). Without this element Clerk warns and silently falls
+              back to Invisible CAPTCHA. */}
+          <div id="clerk-captcha" />
           <div className={s.actions}>
             <button
               className={`${s.btn} ${s.btnPrimary}`}
