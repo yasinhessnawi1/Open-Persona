@@ -121,6 +121,34 @@ class TestChooseVoice:
         )
         assert choice is None
 
+    def test_gender_mismatch_is_corrected_to_inferred_gender(self) -> None:
+        # The model inferred feminine but picked a masculine voice — snap to a
+        # feminine voice (the catalogue gender is the source of truth).
+        backend = _FakeBackend("GENDER: feminine\nVOICE: v2")
+        options = [
+            _option("v1", "masculine"),
+            _option("v2", "masculine"),
+            _option("v3", "feminine"),
+        ]
+        choice = asyncio.run(vas.choose_voice(persona=_persona(), backend=backend, options=options))
+        assert choice == "v3"
+
+    def test_gender_match_keeps_the_models_pick(self) -> None:
+        backend = _FakeBackend("GENDER: masculine\nVOICE: v2")
+        options = [
+            _option("v1", "feminine"),
+            _option("v2", "masculine"),
+            _option("v3", "masculine"),
+        ]
+        choice = asyncio.run(vas.choose_voice(persona=_persona(), backend=backend, options=options))
+        assert choice == "v2"  # already masculine → not overridden
+
+    def test_unknown_gender_leaves_the_pick_unconstrained(self) -> None:
+        backend = _FakeBackend("GENDER: unknown\nVOICE: v1")
+        options = [_option("v1", "feminine"), _option("v2", "masculine")]
+        choice = asyncio.run(vas.choose_voice(persona=_persona(), backend=backend, options=options))
+        assert choice == "v1"
+
 
 # ----- _fetch_catalogue ----------------------------------------------------
 

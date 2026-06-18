@@ -63,18 +63,32 @@ class _VoiceOption:
     description: str
 
 
+#: Persona gender presentations the picker reasons about. ``feminine`` /
+#: ``masculine`` are the values we hard-constrain the voice gender to; the rest
+#: leave the choice to character fit.
+_GENDERED = frozenset({"feminine", "masculine"})
+
+
 def _pick_messages(persona: Persona, options: list[_VoiceOption]) -> list[ConversationMessage]:
-    """Build the voice-pick prompt: persona identity + the compact catalogue."""
+    """Build the voice-pick prompt: persona identity + the compact catalogue.
+
+    Asks the model to FIRST commit to the persona's gender presentation, then
+    pick a voice — both are returned so the caller can hard-enforce the gender
+    match (the model occasionally picks a good-character voice of the wrong
+    gender; the catalogue's per-voice ``gender`` lets us correct that).
+    """
     catalogue = "\n".join(
         f"- {o.voice_id} | {o.gender} | {o.name}: {o.description}".rstrip(": ") for o in options
     )
     system = (
         "You assign a text-to-speech voice to an AI persona. You are given the "
-        "persona's identity and a catalogue of available voices, each line as "
-        "'voice_id | gender | name: description'. Choose the ONE voice whose "
-        "gender and character best match the persona — match the persona's "
-        "likely gender to the voice's gender above all else. Reply with ONLY the "
-        "chosen voice_id, exactly as written, and nothing else."
+        "persona's identity and a catalogue of voices, each line as "
+        "'voice_id | gender | name: description'. FIRST decide the persona's most "
+        "likely gender presentation, THEN choose the voice whose gender MATCHES "
+        "that and whose character best fits. Reply with EXACTLY two lines and "
+        "nothing else:\n"
+        "GENDER: <one of: feminine | masculine | neutral | unknown>\n"
+        "VOICE: <the chosen voice_id, exactly as written>"
     )
     user = (
         f"Persona name: {persona.identity.name}\n"
@@ -82,13 +96,34 @@ def _pick_messages(persona: Persona, options: list[_VoiceOption]) -> list[Conver
         f"Background: {persona.identity.background}\n"
         f"Language: {persona.identity.language_default}\n\n"
         f"Available voices:\n{catalogue}\n\n"
-        "Chosen voice_id:"
+        "Your answer:"
     )
     now = datetime.now(UTC)
     return [
         ConversationMessage(role="system", content=system, created_at=now),
         ConversationMessage(role="user", content=user, created_at=now),
     ]
+
+
+def _parse_pick(text: str) -> tuple[str | None, str]:
+    """Split the model reply into ``(inferred_gender, voice_text)``.
+
+    Tolerant of a model that ignores the format: a missing ``GENDER:``/``VOICE:``
+    line yields ``None`` / the whole reply, so the caller falls back to scanning
+    the full text for a voice id (the historical single-line behaviour).
+    """
+    gender: str | None = None
+    voice_text = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("gender:"):
+            value = lowered.split(":", 1)[1].strip()
+            if value in {"feminine", "masculine", "neutral", "unknown"}:
+                gender = value
+        elif lowered.startswith("voice:"):
+            voice_text = stripped.split(":", 1)[1].strip()
+    return gender, voice_text
 
 
 def _extract_choice(text: str, valid_ids: list[str]) -> str | None:
@@ -124,7 +159,22 @@ async def choose_voice(
     response = await backend.chat(
         _pick_messages(persona, catalogue), temperature=0.0, max_tokens=_PICK_MAX_TOKENS
     )
-    return _extract_choice(response.content, [o.voice_id for o in catalogue])
+    gender, voice_text = _parse_pick(response.content)
+    # The voice id from the VOICE: line, else scanned from the whole reply.
+    voice_id = _extract_choice(voice_text or response.content, [o.voice_id for o in catalogue])
+
+    # Hard-enforce the gender match: when the persona reads clearly feminine or
+    # masculine, the picked voice MUST share that gender. The model's per-voice
+    # gender is right far more often than its final pick, so if it chose a
+    # mismatched (or no) voice, snap to a voice of the inferred gender.
+    if gender in _GENDERED:
+        by_id = {o.voice_id: o for o in catalogue}
+        chosen = by_id.get(voice_id) if voice_id is not None else None
+        if chosen is None or chosen.gender != gender:
+            corrected = next((o for o in catalogue if o.gender == gender), None)
+            if corrected is not None:
+                return corrected.voice_id
+    return voice_id
 
 
 async def _fetch_catalogue(

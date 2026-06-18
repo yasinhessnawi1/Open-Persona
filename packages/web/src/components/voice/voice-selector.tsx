@@ -152,6 +152,8 @@ export function VoiceSelector({
             selected={value === voice.voice_id}
             label={voiceDisplayName(voice)}
             description={voice.description ?? undefined}
+            gender={voice.gender}
+            language={voice.language}
             onSelect={() => onChange({ provider, voice_id: voice.voice_id })}
             selectedLabel={t("voiceSelected")}
             preview={
@@ -179,6 +181,10 @@ interface VoiceRowProps {
   selected: boolean;
   label: string;
   description?: string;
+  /** Provider gender tag (e.g. `feminine`) — shown as a chip when meaningful. */
+  gender?: string;
+  /** Provider language tag (e.g. `ar`) — shown as a chip when present. */
+  language?: string | null;
   selectedLabel: string;
   onSelect: () => void;
   preview?: {
@@ -193,10 +199,13 @@ function VoiceRow({
   selected,
   label,
   description,
+  gender,
+  language,
   selectedLabel,
   onSelect,
   preview,
 }: VoiceRowProps): React.JSX.Element {
+  const showGender = gender && gender !== "unspecified";
   return (
     <div
       className={cn(
@@ -211,6 +220,12 @@ function VoiceRow({
         className="flex-1 text-left"
       >
         <span className="text-sm font-medium">{label}</span>
+        {showGender || language ? (
+          <span className="mt-0.5 flex flex-wrap items-center gap-1">
+            {showGender ? <VoiceTag>{gender}</VoiceTag> : null}
+            {language ? <VoiceTag>{language}</VoiceTag> : null}
+          </span>
+        ) : null}
         {description ? (
           <span className="block text-xs text-muted-foreground">
             {description}
@@ -232,5 +247,14 @@ function VoiceRow({
         </Button>
       ) : null}
     </div>
+  );
+}
+
+/** A small muted chip for a voice's gender / language tag. */
+function VoiceTag({ children }: { children: string }): React.JSX.Element {
+  return (
+    <span className="rounded bg-muted px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      {children}
+    </span>
   );
 }
