@@ -395,16 +395,26 @@ class OpenAICompatibleBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> ChatResponse:
-        """Single-shot chat. See ``ChatBackend.chat`` for contract."""
+        """Single-shot chat. See ``ChatBackend.chat`` for contract.
+
+        ``top_p`` is forwarded to both the Anthropic and OpenAI SDKs when set.
+        ``top_k`` is Anthropic-only: it is forwarded on the Anthropic path and
+        is a documented NO-OP on the OpenAI path (the OpenAI Chat Completions
+        API has no ``top_k`` parameter).
+        """
         started = time.perf_counter()
         try:
             if self._provider == "anthropic":
                 response = await self._chat_anthropic(
-                    messages, tools, temperature, max_tokens, stop
+                    messages, tools, temperature, max_tokens, stop, top_p, top_k
                 )
             else:
-                response = await self._chat_openai(messages, tools, temperature, max_tokens, stop)
+                response = await self._chat_openai(
+                    messages, tools, temperature, max_tokens, stop, top_p
+                )
         except Exception as exc:
             self._reraise(exc)
 
@@ -419,17 +429,23 @@ class OpenAICompatibleBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Streaming chat. See ``ChatBackend.chat_stream`` for contract."""
+        """Streaming chat. See ``ChatBackend.chat_stream`` for contract.
+
+        ``top_p`` / ``top_k`` follow the same provider-support rules as
+        :meth:`chat` (``top_k`` is a NO-OP on the OpenAI path).
+        """
         try:
             if self._provider == "anthropic":
                 async for chunk in self._stream_anthropic(
-                    messages, tools, temperature, max_tokens, stop
+                    messages, tools, temperature, max_tokens, stop, top_p, top_k
                 ):
                     yield chunk
             else:
                 async for chunk in self._stream_openai(
-                    messages, tools, temperature, max_tokens, stop
+                    messages, tools, temperature, max_tokens, stop, top_p
                 ):
                     yield chunk
         except Exception as exc:
@@ -446,6 +462,8 @@ class OpenAICompatibleBackend:
         temperature: float,
         max_tokens: int,
         stop: list[str] | None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> ChatResponse:
         assert self._anthropic is not None
         use_native = self._supports_native_tools and bool(tools)
@@ -474,6 +492,11 @@ class OpenAICompatibleBackend:
             kwargs["system"] = system_text
         if stop:
             kwargs["stop_sequences"] = stop
+        # Anthropic supports both nucleus (top_p) and top_k sampling.
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if top_k is not None:
+            kwargs["top_k"] = top_k
         if use_native and tools:
             kwargs["tools"] = [_tool_spec_to_anthropic(t) for t in tools]
 
@@ -487,6 +510,8 @@ class OpenAICompatibleBackend:
         temperature: float,
         max_tokens: int,
         stop: list[str] | None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         assert self._anthropic is not None
         use_native = self._supports_native_tools and bool(tools)
@@ -517,6 +542,11 @@ class OpenAICompatibleBackend:
             kwargs["system"] = system_text
         if stop:
             kwargs["stop_sequences"] = stop
+        # Anthropic supports both nucleus (top_p) and top_k sampling.
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if top_k is not None:
+            kwargs["top_k"] = top_k
         if use_native and tools:
             kwargs["tools"] = [_tool_spec_to_anthropic(t) for t in tools]
 
@@ -618,7 +648,11 @@ class OpenAICompatibleBackend:
         temperature: float,
         max_tokens: int,
         stop: list[str] | None,
+        top_p: float | None = None,
     ) -> ChatResponse:
+        # NB: ``top_k`` is intentionally NOT a parameter here — the OpenAI Chat
+        # Completions API has no ``top_k`` knob. The public ``chat`` entrypoint
+        # drops it on this path (documented NO-OP); only ``top_p`` is forwarded.
         assert self._openai is not None
         use_native = self._supports_native_tools and bool(tools)
         msgs = [
@@ -650,6 +684,8 @@ class OpenAICompatibleBackend:
         }
         if stop:
             kwargs["stop"] = stop
+        if top_p is not None:
+            kwargs["top_p"] = top_p
         if use_native and tools:
             kwargs["tools"] = [_tool_spec_to_openai(t) for t in tools]
         # D-20-3: opaque pass-through to the vendor SDK's ``extra_body``.
@@ -666,7 +702,9 @@ class OpenAICompatibleBackend:
         temperature: float,
         max_tokens: int,
         stop: list[str] | None,
+        top_p: float | None = None,
     ) -> AsyncIterator[StreamChunk]:
+        # ``top_k`` is NOT accepted here (no OpenAI parameter); see _chat_openai.
         assert self._openai is not None
         use_native = self._supports_native_tools and bool(tools)
         msgs = [
@@ -697,6 +735,8 @@ class OpenAICompatibleBackend:
         }
         if stop:
             kwargs["stop"] = stop
+        if top_p is not None:
+            kwargs["top_p"] = top_p
         if use_native and tools:
             kwargs["tools"] = [_tool_spec_to_openai(t) for t in tools]
         # D-20-3: opaque pass-through to the vendor SDK's ``extra_body``.

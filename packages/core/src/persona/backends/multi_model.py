@@ -235,8 +235,13 @@ class MultiModelChatBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> ChatResponse:
         """Walk backends per D-20-9 / D-20-10 / D-20-12; return first success.
+
+        ``top_p`` / ``top_k`` are forwarded verbatim to each wrapped backend
+        (each backend applies its own provider-support rules).
 
         Raises:
             AllModelsFailedError: every backend exhausted its per-bucket path.
@@ -254,6 +259,8 @@ class MultiModelChatBackend:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
+                top_p=top_p,
+                top_k=top_k,
                 attempts=attempts,
             )
             if outcome is not None:
@@ -272,8 +279,12 @@ class MultiModelChatBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Walk backends per D-20-9 / D-20-10 / D-20-12; relay chunks.
+
+        ``top_p`` / ``top_k`` are forwarded verbatim to each wrapped backend.
 
         Two-phase semantics: once a backend's stream emits its FIRST chunk
         the wrapper is committed to that backend — partial output cannot
@@ -287,6 +298,8 @@ class MultiModelChatBackend:
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
+            top_p=top_p,
+            top_k=top_k,
         )
 
     async def _chat_stream_walk(
@@ -297,6 +310,8 @@ class MultiModelChatBackend:
         temperature: float,
         max_tokens: int,
         stop: list[str] | None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         # T19 — reset per-call ledger (see chat() for rationale).
         self._last_attempts = []
@@ -313,6 +328,8 @@ class MultiModelChatBackend:
                         temperature=temperature,
                         max_tokens=max_tokens,
                         stop=stop,
+                        top_p=top_p,
+                        top_k=top_k,
                     ):
                         first_chunk_seen = True
                         yield chunk
@@ -351,6 +368,8 @@ class MultiModelChatBackend:
         max_tokens: int,
         stop: list[str] | None,
         attempts: list[AttemptRecord],
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> ChatResponse | None:
         """Try a single backend with D-20-10 bounded same-model retry.
 
@@ -372,6 +391,8 @@ class MultiModelChatBackend:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stop=stop,
+                    top_p=top_p,
+                    top_k=top_k,
                 )
             except Exception as exc:  # noqa: BLE001 — classifier branches below
                 action = self._classify(exc)

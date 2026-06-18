@@ -83,6 +83,8 @@ class _ScriptedBackend:
         self._supports_vision = supports_vision
         self.call_count = 0
         self.stream_call_count = 0
+        #: Sampling kwargs seen on the most recent chat / chat_stream call.
+        self.last_sampling: dict[str, object] = {}
 
     @property
     def provider_name(self) -> str:
@@ -108,8 +110,11 @@ class _ScriptedBackend:
         temperature: float = 0.0,  # noqa: ARG002
         max_tokens: int = 4096,  # noqa: ARG002
         stop: list[str] | None = None,  # noqa: ARG002
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> ChatResponse:
         self.call_count += 1
+        self.last_sampling = {"temperature": temperature, "top_p": top_p, "top_k": top_k}
         outcome = self._script.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -124,8 +129,11 @@ class _ScriptedBackend:
         temperature: float = 0.0,  # noqa: ARG002
         max_tokens: int = 4096,  # noqa: ARG002
         stop: list[str] | None = None,  # noqa: ARG002
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.stream_call_count += 1
+        self.last_sampling = {"temperature": temperature, "top_p": top_p, "top_k": top_k}
         outcome = self._script.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -636,3 +644,29 @@ class TestStreaming:
             chunks.append(c)
         assert [c.delta for c in chunks] == ["a", "b", ""]
         assert chunks[-1].is_final is True
+
+
+class TestSamplingPassThrough:
+    """The wrapper forwards top_p / top_k verbatim to the active backend."""
+
+    @pytest.mark.asyncio
+    async def test_chat_forwards_top_p_and_top_k(self) -> None:
+        backend = _ScriptedBackend("anthropic", "claude", [_ok_response("anthropic", "claude")])
+        wrapper = MultiModelChatBackend([backend])
+        await wrapper.chat([_user_msg()], temperature=0.9, top_p=0.95, top_k=60)
+        assert backend.last_sampling == {"temperature": 0.9, "top_p": 0.95, "top_k": 60}
+
+    @pytest.mark.asyncio
+    async def test_chat_defaults_leave_sampling_unset(self) -> None:
+        backend = _ScriptedBackend("anthropic", "claude", [_ok_response("anthropic", "claude")])
+        wrapper = MultiModelChatBackend([backend])
+        await wrapper.chat([_user_msg()])
+        assert backend.last_sampling == {"temperature": 0.0, "top_p": None, "top_k": None}
+
+    @pytest.mark.asyncio
+    async def test_stream_forwards_top_p_and_top_k(self) -> None:
+        backend = _ScriptedBackend("ollama", "llama", [[_chunk("a"), _chunk("", is_final=True)]])
+        wrapper = MultiModelChatBackend([backend])
+        async for _ in wrapper.chat_stream([_user_msg()], temperature=0.9, top_p=0.9, top_k=40):
+            pass
+        assert backend.last_sampling == {"temperature": 0.9, "top_p": 0.9, "top_k": 40}

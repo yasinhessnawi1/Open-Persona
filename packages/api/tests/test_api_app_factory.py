@@ -47,6 +47,24 @@ def test_config_ignores_unknown_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.rate_limit_default == 60
 
 
+def test_authoring_sampling_defaults() -> None:
+    # Drafter creativity: temperature defaults hot (0.9); top_p/top_k unset.
+    cfg = APIConfig()
+    assert cfg.authoring_temperature == 0.9
+    assert cfg.authoring_top_p is None
+    assert cfg.authoring_top_k is None
+
+
+def test_authoring_sampling_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PERSONA_API_AUTHORING_TEMPERATURE", "1.1")
+    monkeypatch.setenv("PERSONA_API_AUTHORING_TOP_P", "0.9")
+    monkeypatch.setenv("PERSONA_API_AUTHORING_TOP_K", "40")
+    cfg = APIConfig()
+    assert cfg.authoring_temperature == 1.1
+    assert cfg.authoring_top_p == 0.9
+    assert cfg.authoring_top_k == 40
+
+
 def test_effective_app_url_prefers_app_dsn_and_coerces_async() -> None:
     cfg = APIConfig(
         database_url="postgresql+asyncpg://owner@h/db",

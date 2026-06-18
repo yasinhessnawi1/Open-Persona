@@ -410,3 +410,34 @@ class TestLifecycle:
         client.get = AsyncMock(return_value=success)
         backend._client = client
         assert await backend.ping() is True
+
+
+class TestSamplingOptions:
+    """top_p / top_k land in Ollama's ``options`` block (both supported)."""
+
+    @pytest.mark.asyncio
+    async def test_chat_puts_top_p_and_top_k_in_options(self) -> None:
+        backend = OllamaBackend(_config())
+        client = MagicMock()
+        client.post = AsyncMock(
+            return_value=_mock_response(json_body={"message": {"content": "ok"}, "done": True})
+        )
+        backend._client = client  # type: ignore[assignment]
+        await backend.chat([_user("hi")], temperature=0.9, top_p=0.9, top_k=40)
+        body = client.post.call_args.kwargs["json"]
+        assert body["options"]["temperature"] == 0.9
+        assert body["options"]["top_p"] == 0.9
+        assert body["options"]["top_k"] == 40
+
+    @pytest.mark.asyncio
+    async def test_chat_omits_sampling_options_when_none(self) -> None:
+        backend = OllamaBackend(_config())
+        client = MagicMock()
+        client.post = AsyncMock(
+            return_value=_mock_response(json_body={"message": {"content": "ok"}, "done": True})
+        )
+        backend._client = client  # type: ignore[assignment]
+        await backend.chat([_user("hi")])
+        options = client.post.call_args.kwargs["json"]["options"]
+        assert "top_p" not in options
+        assert "top_k" not in options

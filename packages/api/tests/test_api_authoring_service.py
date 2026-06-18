@@ -14,6 +14,7 @@ from persona.backends.types import ChatResponse, TokenUsage
 from persona.schema.persona import Persona
 from persona_api.services.authoring_prompt import AUTHORING_PROMPT_VERSION
 from persona_api.services.authoring_service import (
+    AuthoringSampling,
     generate_authoring_draft,
     refine_authoring_draft,
 )
@@ -41,9 +42,18 @@ class _ScriptedBackend:
     def __init__(self, *contents: str) -> None:
         self._contents = list(contents)
         self.calls: list[list] = []
+        #: Sampling kwargs captured per chat() call (temperature/top_p/top_k).
+        self.sampling: list[dict[str, object]] = []
 
-    async def chat(self, messages: list, **_kwargs: object) -> ChatResponse:
+    async def chat(self, messages: list, **kwargs: object) -> ChatResponse:
         self.calls.append(list(messages))
+        self.sampling.append(
+            {
+                "temperature": kwargs.get("temperature"),
+                "top_p": kwargs.get("top_p"),
+                "top_k": kwargs.get("top_k"),
+            }
+        )
         content = self._contents[len(self.calls) - 1]
         return ChatResponse(
             content=content,
@@ -129,3 +139,67 @@ async def test_refine_threads_question_and_answer() -> None:
     # the refinement prompt carries the question + the user's answer
     assert any("Which legal area?" in m.content for m in sent)
     assert any(m.content == "Tenancy law." for m in sent)
+
+
+# -- creative-draft vs deterministic-retry sampling split (D-10-3) -----------
+
+
+@pytest.mark.asyncio
+async def test_first_attempt_samples_at_creative_sampling() -> None:
+    backend = _ScriptedBackend(GOOD_YAML)
+    sampling = AuthoringSampling(temperature=0.9, top_p=0.95, top_k=60)
+    await generate_authoring_draft(backend, "lawyer", [], [], sampling=sampling)  # type: ignore[arg-type]
+    # the single creative attempt carries the configured sampling
+    assert backend.sampling[0] == {"temperature": 0.9, "top_p": 0.95, "top_k": 60}
+
+
+@pytest.mark.asyncio
+async def test_default_sampling_is_creative() -> None:
+    # No explicit sampling -> the AuthoringSampling default (creative temp 0.9).
+    backend = _ScriptedBackend(GOOD_YAML)
+    await generate_authoring_draft(backend, "lawyer", [], [])  # type: ignore[arg-type]
+    assert backend.sampling[0]["temperature"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_retry_is_always_deterministic_even_when_first_is_creative() -> None:
+    # THE D-10-3 split: first attempt samples hot, the validation-repair retry
+    # is greedy (temperature 0.0, no top_p/top_k) so it reliably fixes schema.
+    backend = _ScriptedBackend(BAD_YAML, GOOD_YAML)
+    sampling = AuthoringSampling(temperature=0.9, top_p=0.95, top_k=60)
+    draft = await generate_authoring_draft(
+        backend,  # type: ignore[arg-type]
+        "lawyer",
+        [],
+        [],
+        sampling=sampling,
+    )
+    assert len(backend.sampling) == 2
+    assert backend.sampling[0] == {"temperature": 0.9, "top_p": 0.95, "top_k": 60}
+    assert backend.sampling[1] == {"temperature": 0.0, "top_p": None, "top_k": None}
+    assert draft.errors is None
+
+
+@pytest.mark.asyncio
+async def test_refine_retry_is_deterministic() -> None:
+    backend = _ScriptedBackend(BAD_YAML, GOOD_YAML)
+    sampling = AuthoringSampling(temperature=0.8, top_p=None, top_k=None)
+    await refine_authoring_draft(
+        backend,  # type: ignore[arg-type]
+        current_yaml=GOOD_YAML,
+        question="Which legal area?",
+        answer="Tenancy law.",
+        available_tools=[],
+        available_skills=[],
+        sampling=sampling,
+    )
+    assert backend.sampling[0]["temperature"] == 0.8
+    assert backend.sampling[1] == {"temperature": 0.0, "top_p": None, "top_k": None}
+
+
+def test_authoring_sampling_is_frozen_and_strict() -> None:
+    s = AuthoringSampling()
+    with pytest.raises(Exception):  # noqa: B017,PT011 — frozen mutation rejected
+        s.temperature = 0.1  # type: ignore[misc]
+    with pytest.raises(Exception):  # noqa: B017,PT011 — extra="forbid"
+        AuthoringSampling(bogus=1)  # type: ignore[call-arg]

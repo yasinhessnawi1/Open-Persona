@@ -28,6 +28,27 @@ def test_prompt_version_is_set() -> None:
     assert AUTHORING_PROMPT_VERSION
 
 
+def test_prompt_version_is_v4() -> None:
+    # Bumped v3 -> v4 on merge-back: the combined prompt now carries BOTH the
+    # sharpened NAMING instruction (drafter creativity) and the spoken-language
+    # inference + fallback reminder (authoring-prompt language work).
+    assert AUTHORING_PROMPT_VERSION == "v4"
+
+
+def test_naming_instruction_forbids_few_shot_and_placeholder_names() -> None:
+    system = build_authoring_prompt("a cooking assistant", _TOOLS, _SKILLS)[0].content
+    # the prompt counters the few-shot anchoring directly
+    assert "NAMING" in system
+    # the few-shot names are named as banned, not just shown as examples
+    assert "Sage" in system
+    assert "Astrid" in system
+    # a sample of the banned generic AI placeholders is explicitly listed
+    for placeholder in ("Alex", "Aria", "Nova", "Luna"):
+        assert placeholder in system
+    # the language-fit instruction is present
+    assert "language_default" in system
+
+
 def test_build_authoring_prompt_injects_tools_and_skills() -> None:
     msgs = build_authoring_prompt("a cooking assistant", _TOOLS, _SKILLS)
     assert [m.role for m in msgs] == ["system", "user"]

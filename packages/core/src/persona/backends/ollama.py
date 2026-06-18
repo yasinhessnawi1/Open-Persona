@@ -195,10 +195,14 @@ class OllamaBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> ChatResponse:
         """Single-shot chat. See ``ChatBackend.chat`` for contract."""
         self._guard_vision(messages)
-        body = self._build_body(messages, tools, temperature, max_tokens, stop, stream=False)
+        body = self._build_body(
+            messages, tools, temperature, max_tokens, stop, stream=False, top_p=top_p, top_k=top_k
+        )
         started = time.perf_counter()
         try:
             response = await self._ensure_client().post("/api/chat", json=body)
@@ -217,10 +221,14 @@ class OllamaBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Streaming chat. See ``ChatBackend.chat_stream`` for contract."""
         self._guard_vision(messages)
-        body = self._build_body(messages, tools, temperature, max_tokens, stop, stream=True)
+        body = self._build_body(
+            messages, tools, temperature, max_tokens, stop, stream=True, top_p=top_p, top_k=top_k
+        )
         shim_state: ShimState | None = (
             ShimState() if (tools and not self._use_native_tools) else None
         )
@@ -251,6 +259,8 @@ class OllamaBackend:
         stop: list[str] | None,
         *,
         stream: bool,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> dict[str, Any]:
         ollama_messages = [self._convert_message(m) for m in messages]
         # In the vision-enabled path the list-form user messages already
@@ -282,6 +292,11 @@ class OllamaBackend:
         }
         if stop:
             body["options"]["stop"] = stop
+        # Ollama's ``options`` block accepts both nucleus + top_k sampling.
+        if top_p is not None:
+            body["options"]["top_p"] = top_p
+        if top_k is not None:
+            body["options"]["top_k"] = top_k
         if use_native and tools:
             body["tools"] = [_tool_spec_to_ollama(t) for t in tools]
         return body

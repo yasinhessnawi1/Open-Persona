@@ -1221,3 +1221,69 @@ class TestDeepseekReasoningStripInvariant:
         ]
         out = _strip_reasoning_for_provider(messages, "deepseek")
         assert out == messages
+
+
+class TestSamplingParams:
+    """top_p / top_k threading (drafter creativity).
+
+    Anthropic supports BOTH; OpenAI supports top_p only (top_k is a documented
+    NO-OP on that path). ``None`` leaves the provider default untouched.
+    """
+
+    @pytest.mark.asyncio
+    async def test_anthropic_forwards_top_p_and_top_k(self) -> None:
+        backend = OpenAICompatibleBackend(_config("anthropic"))
+        create_mock = AsyncMock(return_value=_mock_anthropic_message_response())
+        with patch.object(
+            backend._anthropic.messages,  # type: ignore[union-attr]
+            "create",
+            new=create_mock,
+        ):
+            await backend.chat([_user("hi")], temperature=0.9, top_p=0.95, top_k=60)
+        kwargs = create_mock.call_args.kwargs
+        assert kwargs["top_p"] == 0.95
+        assert kwargs["top_k"] == 60
+        assert kwargs["temperature"] == 0.9
+
+    @pytest.mark.asyncio
+    async def test_anthropic_omits_sampling_when_none(self) -> None:
+        backend = OpenAICompatibleBackend(_config("anthropic"))
+        create_mock = AsyncMock(return_value=_mock_anthropic_message_response())
+        with patch.object(
+            backend._anthropic.messages,  # type: ignore[union-attr]
+            "create",
+            new=create_mock,
+        ):
+            await backend.chat([_user("hi")])
+        kwargs = create_mock.call_args.kwargs
+        assert "top_p" not in kwargs
+        assert "top_k" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_openai_forwards_top_p_but_drops_top_k(self) -> None:
+        backend = OpenAICompatibleBackend(_config("openai"))
+        create_mock = AsyncMock(return_value=_mock_openai_chat_completion())
+        with patch.object(
+            backend._openai.chat.completions,  # type: ignore[union-attr]
+            "create",
+            new=create_mock,
+        ):
+            # top_k is supplied but MUST NOT reach the OpenAI SDK (no such param).
+            await backend.chat([_user("hi")], temperature=0.9, top_p=0.95, top_k=60)
+        kwargs = create_mock.call_args.kwargs
+        assert kwargs["top_p"] == 0.95
+        assert "top_k" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_openai_omits_top_p_when_none(self) -> None:
+        backend = OpenAICompatibleBackend(_config("openai"))
+        create_mock = AsyncMock(return_value=_mock_openai_chat_completion())
+        with patch.object(
+            backend._openai.chat.completions,  # type: ignore[union-attr]
+            "create",
+            new=create_mock,
+        ):
+            await backend.chat([_user("hi")])
+        kwargs = create_mock.call_args.kwargs
+        assert "top_p" not in kwargs
+        assert "top_k" not in kwargs

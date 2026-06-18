@@ -29,7 +29,7 @@ from persona.tools.mcp.catalog import (
     mcp_server_entry,
     recommender_provider_tag,
 )
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from persona_api.schemas.responses import AuthoringDraft, ToolRecommendation
 from persona_api.services.authoring_parse import split_response
@@ -47,11 +47,35 @@ if TYPE_CHECKING:
 
 __all__ = [
     "RECOMMENDER_PROMPT_VERSION",
+    "AuthoringSampling",
     "generate_authoring_draft",
     "recommend_capabilities_for_persona",
     "recommend_tools_for_persona",
     "refine_authoring_draft",
 ]
+
+
+class AuthoringSampling(BaseModel):
+    """Sampling knobs for the CREATIVE draft / refinement generation (D-10-3).
+
+    Only the FIRST generation attempt samples at these values — the
+    validation-repair retry always runs deterministically (temperature 0.0,
+    no top_p/top_k) so raising creativity never weakens the schema-compliance
+    contract. ``top_p`` / ``top_k`` of ``None`` leave the provider default
+    untouched; ``top_k`` is a no-op on the OpenAI path (see the backends).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    temperature: float = Field(default=0.9, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=1)
+
+
+#: Deterministic sampling used by the validation-repair retry (D-10-3). The
+#: retry must reliably FIX schema errors, so it is always greedy regardless of
+#: how creative the first attempt was.
+_DETERMINISTIC = AuthoringSampling(temperature=0.0, top_p=None, top_k=None)
 
 #: MCP-reference prefix on a unified capability name (``mcp:<server>``).
 _MCP_PREFIX = "mcp:"
@@ -102,14 +126,26 @@ def _retry_feedback(errors: list[str]) -> str:
     )
 
 
-async def _generate(backend: ChatBackend, messages: list[ConversationMessage]) -> AuthoringDraft:
+async def _generate(
+    backend: ChatBackend,
+    messages: list[ConversationMessage],
+    sampling: AuthoringSampling,
+) -> AuthoringDraft:
     """Run the chat → parse → validate → retry-once loop; return a draft envelope.
 
-    On first-attempt validity, returns immediately. On failure, feeds the errors
-    back and re-asks once (§3.3). If the retry also fails, returns the best-effort
-    YAML with the errors attached (the structured form fixes them) — never raises.
+    The FIRST attempt samples at ``sampling`` (creative — distinctive names +
+    personality). On first-attempt validity, returns immediately. On failure,
+    the validation-repair retry runs DETERMINISTICALLY (temperature 0.0) so it
+    reliably fixes schema errors regardless of how creative the first attempt
+    was (§3.3 / D-10-3). If the retry also fails, returns the best-effort YAML
+    with the errors attached (the structured form fixes them) — never raises.
     """
-    response = await backend.chat(messages, temperature=0.0)
+    response = await backend.chat(
+        messages,
+        temperature=sampling.temperature,
+        top_p=sampling.top_p,
+        top_k=sampling.top_k,
+    )
     yaml_text, questions = split_response(response.content)
     errors = _validate_yaml(yaml_text)
     if not errors:
@@ -123,7 +159,13 @@ async def _generate(backend: ChatBackend, messages: list[ConversationMessage]) -
         ConversationMessage(role="assistant", content=response.content, created_at=now),
         ConversationMessage(role="user", content=_retry_feedback(errors), created_at=now),
     ]
-    retry = await backend.chat(retry_messages, temperature=0.0)
+    # The repair pass is GREEDY (D-10-3): high temp to invent, low temp to fix.
+    retry = await backend.chat(
+        retry_messages,
+        temperature=_DETERMINISTIC.temperature,
+        top_p=_DETERMINISTIC.top_p,
+        top_k=_DETERMINISTIC.top_k,
+    )
     yaml_text2, questions2 = split_response(retry.content)
     errors2 = _validate_yaml(yaml_text2)
     if not errors2:
@@ -145,6 +187,8 @@ async def generate_authoring_draft(
     description: str,
     available_tools: list[str],
     available_skills: list[str],
+    *,
+    sampling: AuthoringSampling | None = None,
 ) -> AuthoringDraft:
     """Generate a draft persona from a description (no row created; D-10-2).
 
@@ -153,13 +197,16 @@ async def generate_authoring_draft(
         description: The user's natural-language persona description.
         available_tools: Tool names to inject so the model only suggests real tools (S10-3).
         available_skills: Skill names to inject.
+        sampling: Creative-generation sampling for the FIRST attempt. ``None``
+            uses the :class:`AuthoringSampling` default (temperature 0.9). The
+            validation-repair retry is always deterministic regardless (D-10-3).
 
     Returns:
         An :class:`AuthoringDraft` (validated YAML + 2-4 questions + prompt version,
         or best-effort YAML + errors if the retry was exhausted).
     """
     messages = build_authoring_prompt(description, available_tools, available_skills)
-    return await _generate(backend, messages)
+    return await _generate(backend, messages, sampling or AuthoringSampling())
 
 
 async def refine_authoring_draft(
@@ -169,6 +216,8 @@ async def refine_authoring_draft(
     answer: str,
     available_tools: list[str],
     available_skills: list[str],
+    *,
+    sampling: AuthoringSampling | None = None,
 ) -> AuthoringDraft:
     """Refine a draft by applying the user's answer to a clarifying question (§4).
 
@@ -181,6 +230,9 @@ async def refine_authoring_draft(
         answer: The user's answer.
         available_tools: Tool names to inject.
         available_skills: Skill names to inject.
+        sampling: Creative-generation sampling for the FIRST attempt. ``None``
+            uses the :class:`AuthoringSampling` default. The repair retry stays
+            deterministic (D-10-3).
 
     Returns:
         An updated :class:`AuthoringDraft`.
@@ -188,7 +240,7 @@ async def refine_authoring_draft(
     messages = build_refinement_prompt(
         current_yaml, question, answer, available_tools, available_skills
     )
-    return await _generate(backend, messages)
+    return await _generate(backend, messages, sampling or AuthoringSampling())
 
 
 # -- tool recommender (spec 26 T09) -----------------------------------------

@@ -51,6 +51,22 @@ if TYPE_CHECKING:
 # the backstop. `round` is the count of refinements already applied.
 _MAX_REFINE_ROUNDS = 3
 
+
+def _authoring_sampling(request: Request) -> authoring_service.AuthoringSampling:
+    """Build the creative-draft sampling from env-configured API settings.
+
+    Temperature is the primary creativity lever; ``top_p`` / ``top_k`` are
+    optional (``None`` ⇒ provider default). The repair retry stays deterministic
+    inside the service regardless (D-10-3).
+    """
+    config = request.app.state.config
+    return authoring_service.AuthoringSampling(
+        temperature=config.authoring_temperature,
+        top_p=config.authoring_top_p,
+        top_k=config.authoring_top_k,
+    )
+
+
 #: Fallback avatar-gen wall-clock bound if app.state didn't thread the config
 #: value (e.g. a test that builds the app without the Spec-29 lifespan line).
 #: The authoritative value is ``APIConfig.avatar_gen_timeout_s`` (D-29-3).
@@ -289,6 +305,7 @@ async def author_persona(
         body.description,
         [name for name, _ in catalog_service.list_tools()],
         [name for name, _ in catalog_service.list_skills()],
+        sampling=_authoring_sampling(request),
     )
     _deduct_and_audit(
         request, user, "persona.author", draft.prompt_version, reason="persona_authoring"
@@ -327,6 +344,7 @@ async def refine_persona(
         body.answer,
         [name for name, _ in catalog_service.list_tools()],
         [name for name, _ in catalog_service.list_skills()],
+        sampling=_authoring_sampling(request),
     )
     _deduct_and_audit(
         request,

@@ -218,13 +218,15 @@ class HFLocalBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,  # noqa: ARG002 — accepted for protocol parity
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> ChatResponse:
         self._guard_vision(messages)
         await self._ensure_loaded()
         started = time.perf_counter()
         prompt, prompt_tokens = await asyncio.to_thread(self._render_prompt, messages, tools)
         text, completion_tokens = await asyncio.to_thread(
-            self._generate_blocking, prompt, temperature, max_tokens
+            self._generate_blocking, prompt, temperature, max_tokens, top_p, top_k
         )
         latency_ms = (time.perf_counter() - started) * 1000.0
         # Always shim — strip and parse any tool blocks.
@@ -243,19 +245,26 @@ class HFLocalBackend:
         )
 
     def _generate_blocking(
-        self, prompt: str, temperature: float, max_tokens: int
+        self,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> tuple[str, int]:
         assert self._model is not None
         assert self._tokenizer is not None
         torch = importlib.import_module("torch")
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._model.device)
         do_sample = temperature > 0.0
+        gen_kwargs = _sampling_kwargs(do_sample=do_sample, top_p=top_p, top_k=top_k)
         with torch.no_grad():
             output = self._model.generate(
                 **inputs,
                 max_new_tokens=max_tokens,
                 do_sample=do_sample,
                 temperature=max(temperature, 1e-5) if do_sample else 1.0,
+                **gen_kwargs,
             )
         # Strip prompt tokens from the output to leave only the completion.
         completion_ids = output[0][inputs["input_ids"].shape[1] :]
@@ -274,6 +283,8 @@ class HFLocalBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,  # noqa: ARG002 — accepted for protocol parity
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self._guard_vision(messages)
         await self._ensure_loaded()
@@ -285,7 +296,7 @@ class HFLocalBackend:
         cancel_event = threading.Event()
         thread = threading.Thread(
             target=self._stream_blocking,
-            args=(prompt, streamer, temperature, max_tokens, cancel_event),
+            args=(prompt, streamer, temperature, max_tokens, cancel_event, top_p, top_k),
             daemon=True,
         )
         thread.start()
@@ -323,6 +334,8 @@ class HFLocalBackend:
         temperature: float,
         max_tokens: int,
         cancel_event: threading.Event,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> None:
         """Producer thread for streaming. Sets the streamer's end on error."""
         try:
@@ -335,6 +348,7 @@ class HFLocalBackend:
                 [_CancellableStoppingCriteria(cancel_event)]
             )
             do_sample = temperature > 0.0
+            gen_kwargs = _sampling_kwargs(do_sample=do_sample, top_p=top_p, top_k=top_k)
             with torch.no_grad():
                 self._model.generate(
                     **inputs,
@@ -343,6 +357,7 @@ class HFLocalBackend:
                     do_sample=do_sample,
                     temperature=max(temperature, 1e-5) if do_sample else 1.0,
                     stopping_criteria=stopping,
+                    **gen_kwargs,
                 )
         except Exception:  # noqa: BLE001 — log + ensure consumer terminates
             _LOG.exception("hf_generate_failed")
@@ -423,6 +438,26 @@ class HFLocalBackend:
             head["content"] = f"{head['content']}\n\n{block}"
             return [head, *msgs[1:]]
         return [{"role": "system", "content": block}, *msgs]
+
+
+def _sampling_kwargs(
+    *, do_sample: bool, top_p: float | None, top_k: int | None
+) -> dict[str, float | int]:
+    """Build the optional ``top_p`` / ``top_k`` kwargs for ``model.generate``.
+
+    Both knobs only affect sampling, so they are emitted only when
+    ``do_sample`` is on (temperature > 0). When ``do_sample`` is off, or a knob
+    is ``None``, it is omitted entirely — preserving today's greedy-decode
+    behaviour byte-for-byte.
+    """
+    if not do_sample:
+        return {}
+    kwargs: dict[str, float | int] = {}
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if top_k is not None:
+        kwargs["top_k"] = top_k
+    return kwargs
 
 
 def _build_quantization_config(transformers: Any, torch: Any, *, mode: str) -> Any:

@@ -140,6 +140,22 @@ class APIConfig(BaseSettings):
     # LLM-assisted authoring (§6.3): the model tier the authoring endpoint uses.
     authoring_tier: str = "frontier"
 
+    # Authoring sampling knobs (drafter creativity). The FIRST draft / refinement
+    # generation samples at these values so persona NAMES + personality come out
+    # distinctive and varied instead of bland-greedy. The validation-repair RETRY
+    # stays deterministic (temperature 0.0) regardless of these — high temp to
+    # invent, low temp to reliably fix schema errors (D-10-3 contract preserved).
+    # Tunable without a redeploy via the env vars below.
+    #   PERSONA_API_AUTHORING_TEMPERATURE — default 0.9 (creative but coherent).
+    #   PERSONA_API_AUTHORING_TOP_P / _TOP_K — None ⇒ leave the provider default
+    #   untouched. top_p is honoured by OpenAI + Anthropic; top_k only by
+    #   providers that support it (Anthropic, hf_local, ollama) — it is a no-op on
+    #   the OpenAI path. The production authoring tier is Anthropic, so top_k DOES
+    #   reach the model.
+    authoring_temperature: float = Field(default=0.9, ge=0.0, le=2.0)
+    authoring_top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    authoring_top_k: int | None = Field(default=None, ge=1)
+
     # Issue 1 — build-time voice auto-assignment. The persona-voice service base
     # URL the create flow calls (``GET /v1/voices``, forwarding the caller's
     # bearer token) to pick a fitting voice from the language-filtered catalogue,

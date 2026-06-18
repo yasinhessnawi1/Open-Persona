@@ -91,6 +91,8 @@ class ChatBackend(Protocol):
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> ChatResponse:
         """Single-shot chat. Returns when the model is done.
 
@@ -102,6 +104,15 @@ class ChatBackend(Protocol):
             temperature: Sampling temperature; 0.0 = deterministic.
             max_tokens: Cap on the response. Provider-side max applies.
             stop: Optional stop sequences. None / empty means no override.
+            top_p: Optional nucleus-sampling cutoff. ``None`` leaves the
+                provider default untouched (reproduces today's behaviour).
+                Supported by OpenAI and Anthropic; forwarded only to providers
+                that accept it.
+            top_k: Optional top-k sampling cutoff. ``None`` leaves the
+                provider default untouched. NOT an OpenAI parameter — it is a
+                documented NO-OP on the OpenAI path and is forwarded only to
+                providers that support it (Anthropic, local HuggingFace,
+                Ollama).
 
         Returns:
             :class:`ChatResponse` with content, parsed ``tool_calls``,
@@ -123,6 +134,8 @@ class ChatBackend(Protocol):
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Streaming chat. Yields chunks until ``is_final=True``.
 
