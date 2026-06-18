@@ -514,6 +514,35 @@
   text-underline-offset: 2px;
 }
 
+/* visually hidden but kept in the DOM + accessibility tree — used for the
+   password step's username/email field so password managers + screen readers
+   see a complete credential form (clears the "password forms should have a
+   username field" warning). */
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* readiness loading state (shown while the Clerk client (re)initialises,
+   e.g. during the post-logout reset window) — keeps the brand shell, never a
+   blank canvas. */
+.ready {
+  margin-top: 26px;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 140px;
+  color: var(--muted-foreground);
+}
+
 /* spinner */
 .spinner {
   width: 17px;

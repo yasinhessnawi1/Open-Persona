@@ -27,6 +27,7 @@ import { useState } from "react";
 import {
   ErrorAlert,
   Field,
+  HiddenUsernameField,
   OAuthRow,
   PasswordInput,
 } from "./auth-fields.cloud";
@@ -36,6 +37,7 @@ import {
   dedupeFieldError,
 } from "./auth-flow.cloud";
 import { ArrowIcon } from "./auth-icons.cloud";
+import { AuthLoading, isAuthSignalReady } from "./auth-ready.cloud";
 import { AuthShell, authStyles as s } from "./auth-shell.cloud";
 
 const SIGN_IN_BRAND = {
@@ -56,6 +58,15 @@ export function SignIn() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Guard the post-logout reset window: the typed-non-null `signIn` / `errors`
+  // can both be absent while the Clerk client re-initialises. Reading
+  // `errors.fields` (or `signIn.*`) before then throws in render and — without
+  // an error boundary — blanks the whole screen. Show the calm loading state
+  // inside the brand shell instead until the signal is safe to read.
+  if (!isAuthSignalReady({ resource: signIn, errors })) {
+    return <AuthLoading brand={SIGN_IN_BRAND} />;
+  }
 
   const busy = fetchStatus === "fetching";
   const fieldErrors = errors.fields;
@@ -200,6 +211,11 @@ export function SignIn() {
           noValidate
         >
           <ErrorAlert message={formError} />
+          {/* Off-screen-but-in-DOM email so this password step is a complete
+              credential form: password managers can associate the saved login
+              and the "password forms should have a username field" a11y warning
+              clears. Bound to the identifier captured in step 1. */}
+          <HiddenUsernameField value={signIn.identifier ?? email} />
           <div className={s.idchip}>
             <span className={s.who}>{signIn.identifier ?? email}</span>
             <button

@@ -29,6 +29,7 @@ import { useState } from "react";
 import {
   ErrorAlert,
   Field,
+  HiddenUsernameField,
   OtpInput,
   PasswordInput,
   useResendCooldown,
@@ -40,6 +41,7 @@ import {
   formatCooldown,
 } from "./auth-flow.cloud";
 import { ArrowIcon } from "./auth-icons.cloud";
+import { AuthLoading, isAuthSignalReady } from "./auth-ready.cloud";
 import { AuthShell, authStyles as s } from "./auth-shell.cloud";
 
 const RESET_BRAND = {
@@ -62,6 +64,15 @@ export function ResetPassword() {
   const [password, setPassword] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const cooldown = useResendCooldown();
+
+  // Guard the post-logout reset window: `signIn` / `errors` can both be absent
+  // while the Clerk client re-initialises (despite the typed non-null shape).
+  // Reading `errors.fields` (or `signIn.*`) before then throws in render and —
+  // without an error boundary — blanks the whole screen. Show the calm loading
+  // state inside the brand shell until the signal is safe to read.
+  if (!isAuthSignalReady({ resource: signIn, errors })) {
+    return <AuthLoading brand={RESET_BRAND} />;
+  }
 
   const busy = fetchStatus === "fetching";
   const fieldErrors = errors.fields;
@@ -295,6 +306,10 @@ export function ResetPassword() {
             noValidate
           >
             <ErrorAlert message={formError} />
+            {/* Off-screen-but-in-DOM email so this new-password step is a
+                complete credential form (password-manager association + clears
+                the "password forms should have a username field" warning). */}
+            <HiddenUsernameField value={signIn.identifier ?? email} />
             <Field
               id="rp-pw"
               label="New password"

@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ErrorAlert,
   Field,
+  HiddenUsernameField,
   OAuthRow,
   OtpInput,
   useResendCooldown,
@@ -80,6 +81,21 @@ describe("ErrorAlert", () => {
     render(<ErrorAlert message="That password is incorrect." />);
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("That password is incorrect.");
+  });
+});
+
+describe("HiddenUsernameField", () => {
+  it("renders a read-only autoComplete=username email field in the DOM", () => {
+    render(<HiddenUsernameField value="user@example.com" />);
+    // Queried by its accessible label — it stays in the a11y tree (not
+    // display:none / aria-hidden) so password managers + screen readers see a
+    // complete credential form, clearing the "missing username field" warning.
+    const field = screen.getByLabelText("Email") as HTMLInputElement;
+    expect(field).toHaveAttribute("autocomplete", "username");
+    expect(field).toHaveAttribute("type", "email");
+    expect(field).toHaveAttribute("name", "username");
+    expect(field.readOnly).toBe(true);
+    expect(field.value).toBe("user@example.com");
   });
 });
 

@@ -41,6 +41,7 @@ import {
   formatCooldown,
 } from "./auth-flow.cloud";
 import { ArrowIcon, MailIcon } from "./auth-icons.cloud";
+import { AuthLoading, isAuthSignalReady } from "./auth-ready.cloud";
 import { AuthShell, authStyles as s } from "./auth-shell.cloud";
 
 const SIGN_UP_BRAND = {
@@ -70,6 +71,15 @@ export function SignUp() {
   const [code, setCode] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const cooldown = useResendCooldown();
+
+  // Guard the post-logout reset window: `signUp` / `errors` can both be absent
+  // while the Clerk client re-initialises (despite the typed non-null shape).
+  // Reading `errors.fields` (or `signUp.*`) before then throws in render and —
+  // without an error boundary — blanks the whole screen. Show the calm loading
+  // state inside the brand shell until the signal is safe to read.
+  if (!isAuthSignalReady({ resource: signUp, errors })) {
+    return <AuthLoading brand={SIGN_UP_BRAND} />;
+  }
 
   const busy = fetchStatus === "fetching";
   const fieldErrors = errors.fields;

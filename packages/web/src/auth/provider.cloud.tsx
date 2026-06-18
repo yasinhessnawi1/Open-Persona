@@ -11,7 +11,14 @@ import type { ReactNode } from "react";
 import "@clerk/ui/themes/shadcn.css";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  // `afterSignOutUrl` pins the post-logout landing to the branded `/sign-in`
+  // (Clerk's default is `/`). The branded sign-in now renders a calm loading
+  // state through the client-reset window and is wrapped by the `(auth)` error
+  // boundary, so logout always lands on a screen that renders cleanly — never a
+  // black screen.
   return (
-    <ClerkProvider appearance={{ theme: shadcn }}>{children}</ClerkProvider>
+    <ClerkProvider appearance={{ theme: shadcn }} afterSignOutUrl="/sign-in">
+      {children}
+    </ClerkProvider>
   );
 }

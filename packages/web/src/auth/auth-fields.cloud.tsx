@@ -101,6 +101,31 @@ export function OAuthRow({
   );
 }
 
+/**
+ * A visually-hidden-but-in-DOM username/email field for the password step.
+ *
+ * A standalone password input is an incomplete credential form: browsers warn
+ * "Password forms should have (optionally hidden) username fields for
+ * accessibility", and password managers can't associate the saved login. This
+ * carries the email from the identifier step as a read-only `autoComplete=
+ * "username"` field so both concerns clear. It stays in the accessibility tree
+ * (not `display:none` / not `aria-hidden`) but is removed from the visual flow.
+ */
+export function HiddenUsernameField({ value }: { value: string }) {
+  return (
+    <input
+      className={s.visuallyHidden}
+      type="email"
+      name="username"
+      autoComplete="username"
+      tabIndex={-1}
+      aria-label="Email"
+      value={value}
+      readOnly
+    />
+  );
+}
+
 /** Inline themed error banner (ARIA alert). Renders nothing when `message` is empty. */
 export function ErrorAlert({ message }: { message: string | null }) {
   if (!message) return null;
