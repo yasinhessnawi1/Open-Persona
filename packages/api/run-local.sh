@@ -21,6 +21,14 @@ if [ -f ../../.env ]; then set -a; . ../../.env; set +a; fi
 # host-dev equivalent.)
 export SSL_CERT_FILE="${SSL_CERT_FILE:-$(uv run python -m certifi 2>/dev/null)}"
 
+# Spec 33 open-core editions: this script wires the full COMMERCIAL stack
+# (Postgres + RLS + Clerk auth + credits), so it must run as the `cloud` edition.
+# Without this the API defaults to `community` (file-based SQLite + Chroma) while
+# the voice agent still loads personas from Postgres → a persona created by the
+# API can't be found by voice ("persona not found"), and avatars/memory land in
+# the wrong store. Both api + voice read PERSONA_EDITION (no prefix).
+export PERSONA_EDITION="cloud"
+
 export DATABASE_URL="postgresql+psycopg://persona:persona@localhost:5436/persona"
 export APP_DATABASE_URL="postgresql+psycopg://persona_app:persona_app@localhost:5436/persona"
 
