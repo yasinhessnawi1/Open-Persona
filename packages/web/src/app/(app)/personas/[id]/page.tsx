@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { Grid, PageBody, Section, Stack } from "@/components/layout";
 import { PersonaDetailManageMenu } from "@/components/persona/persona-detail-manage-menu";
-import { PersonaIdentityHeader } from "@/components/persona/persona-identity-header";
+import { PersonaIdentityHeaderLive } from "@/components/persona/persona-identity-header-live";
 import { StartRunForm } from "@/components/personas/start-run-form";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -80,7 +80,7 @@ export default async function PersonaDetailPage({
         className="mb-8 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between"
         data-slot="persona-detail-header"
       >
-        <PersonaIdentityHeader persona={headerPersona} size="lg" />
+        <PersonaIdentityHeaderLive persona={headerPersona} size="lg" />
         <div className="flex shrink-0 flex-wrap items-center gap-3">
           <Badge
             variant="secondary"

@@ -12,15 +12,17 @@ import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 from persona.imagegen import ContentRejectedError, ImageGenError, craft_avatar_prompt
 from persona.logging import get_logger
 from persona.tools.audit import JSONLToolAuditLogger, ToolAuditEvent
 
 from persona_api.auth import AuthenticatedUser, get_current_user
+from persona_api.config import Edition
 from persona_api.errors import RefinementLimitError
 from persona_api.imagegen import service as imagegen_service
 from persona_api.middleware.rate_limit import rate_limit
+from persona_api.middleware.rls_context import current_user_id
 from persona_api.schemas import (
     AuthoringDraft,
     AuthorPersonaRequest,
@@ -236,17 +238,88 @@ async def _maybe_generate_avatar(
     )
 
 
+async def _enrich_persona_after_create(
+    request: Request,
+    *,
+    owner_id: str,
+    persona_id: str,
+    yaml_str: str,
+    generate_avatar: bool,
+) -> None:
+    """Background side-effects of create: voice auto-pick THEN avatar gen (fail-soft).
+
+    Runs as a FastAPI ``BackgroundTasks`` job — **after** the create response is
+    sent — so the request no longer blocks on the small-model voice pick and the
+    up-to-``avatar_gen_timeout_s`` (25s) avatar generation. The create handler
+    returns immediately with ``avatar_url=null`` (F1's default renders) and the
+    voice unset (the global default voices it); this task fills both in, and the
+    web detail surface bounded-polls ``GET /v1/personas/{id}`` until they appear.
+
+    Order is voice-THEN-avatar, preserved from the synchronous path: the avatar
+    hook can block for the full wall-clock budget, and the voice pick forwards
+    the caller's short-lived bearer token to the voice service, so it must fire
+    first while that token is still fresh. ``generate_avatar`` mirrors the old
+    ``if body.avatar_url is None`` guard — a user-supplied avatar skips the
+    avatar hook entirely (criterion 6) but the voice pick still runs.
+
+    **RLS re-establishment (load-bearing).** A background task runs OUTSIDE the
+    request's RLS scope: the auth dependency's ``current_user_id`` contextvar is
+    reset at request teardown, and the pool checkout listener (which sets
+    ``app.current_user_id`` from that contextvar — middleware/rls_context.py)
+    would otherwise see an empty value → fail-closed → the avatar/voice writes
+    would silently touch zero rows. So we re-bind the contextvar to the
+    request-time ``owner_id`` here, around the writes, exactly as the request
+    path does. **Gated to the CLOUD edition** (Spec 33's edition seam): community
+    runs a listener-less single-owner SQLite engine with no RLS, so it needs no
+    GUC — the same writes simply run unscoped there. Both editions work; only
+    cloud sets the scope.
+
+    Every existing fail-soft contract is preserved verbatim: both hooks swallow
+    their own errors (avatar → ``avatar_url=null`` + audit; voice → keep the
+    default) and never raise, so a background-task failure can never surface to
+    the (already-sent) create response.
+    """
+    edition = getattr(getattr(request.app.state, "config", None), "edition", None)
+    reset_token = None
+    if edition is Edition.cloud:
+        # Re-bind the RLS scope so the pool checkout listener runs
+        # set_config('app.current_user_id', owner_id) on every connection these
+        # writes touch (set_voice / set_avatar_url open their own engine.begin()).
+        reset_token = current_user_id.set(owner_id)
+    try:
+        await voice_assignment_service.maybe_assign_voice(
+            request, owner_id=owner_id, persona_id=persona_id, yaml_str=yaml_str
+        )
+        if generate_avatar:
+            await _maybe_generate_avatar(
+                request, owner_id=owner_id, persona_id=persona_id, yaml_str=yaml_str
+            )
+    finally:
+        if reset_token is not None:
+            current_user_id.reset(reset_token)
+
+
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=PersonaDetail)
 async def create_persona(
     body: CreatePersonaRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> PersonaDetail:
-    """Create a persona from YAML; populate memory stores; auto-generate an avatar.
+    """Create a persona from YAML; populate memory stores; return immediately.
 
-    The avatar is generated only when the builder supplied none (D-29-3); the
-    generation is fail-soft so create never fails on an imagegen problem
-    (D-29-X-fail-soft). A user-supplied ``avatar_url`` always wins (criterion 6).
+    The row + memory chunks are written synchronously (so the persona exists the
+    moment this returns), then the response is sent with ``avatar_url=null`` (F1's
+    default renders) and any auto-voice unset (the global default voices it). The
+    voice auto-pick and the avatar auto-generation — which together added ~30s to
+    the critical path — run in a ``BackgroundTasks`` job AFTER the response
+    (:func:`_enrich_persona_after_create`), which re-establishes the owner's RLS
+    scope before its writes (cloud) and fills in voice + avatar. The web detail
+    surface bounded-polls ``GET /v1/personas/{id}`` until they appear.
+
+    Auto-generation only runs when the builder supplied no avatar (D-29-3); a
+    user-supplied ``avatar_url`` always wins (criterion 6) and short-circuits the
+    background avatar hook. Everything stays fail-soft (D-29-X-fail-soft).
     """
     persona_id = persona_service.create_persona(
         rls_engine=request.app.state.rls_engine,
@@ -262,20 +335,19 @@ async def create_persona(
         action="persona.create",
         target=persona_id,
     )
-    # Issue 1: auto-assign a gender/character-fitting voice when the builder
-    # supplied none — so a persona isn't stuck with the global English-male
-    # default. Fail-soft (never breaks create); a no-op when TTS is unconfigured.
-    # Runs BEFORE avatar generation: that hook can block up to avatar_gen_timeout_s
-    # (25s), and the voice pick forwards the caller's short-lived bearer token to
-    # the voice service — so it must fire while that token is still fresh.
-    await voice_assignment_service.maybe_assign_voice(
-        request, owner_id=user.id, persona_id=persona_id, yaml_str=body.yaml
+    # Defer voice auto-pick + avatar generation OFF the create critical path:
+    # they run after this response is sent (BackgroundTasks). The voice pick is
+    # always considered (it no-ops when the persona already declares a voice);
+    # the avatar hook runs only when the builder supplied none (criterion 6),
+    # passed through as ``generate_avatar`` to mirror the old guard.
+    background_tasks.add_task(
+        _enrich_persona_after_create,
+        request,
+        owner_id=user.id,
+        persona_id=persona_id,
+        yaml_str=body.yaml,
+        generate_avatar=body.avatar_url is None,
     )
-    # Spec 29: auto-generate an avatar when the builder supplied none. Fail-soft.
-    if body.avatar_url is None:
-        await _maybe_generate_avatar(
-            request, owner_id=user.id, persona_id=persona_id, yaml_str=body.yaml
-        )
     row = persona_service.get_persona(
         rls_engine=request.app.state.rls_engine, persona_id=persona_id
     )
