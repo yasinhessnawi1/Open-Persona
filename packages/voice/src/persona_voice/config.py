@@ -58,11 +58,15 @@ class VoiceConfig(BaseSettings):
     livekit_url: str = Field(default="ws://localhost:7880")
     livekit_api_key: SecretStr = Field(default=SecretStr(""))
     livekit_api_secret: SecretStr = Field(default=SecretStr(""))
-    # Default access-token TTL (10 min) — long enough for the client to
-    # complete signaling + the call's first few minutes, short enough that a
-    # leaked token expires quickly. The LiveKit Server re-checks expiry on
-    # every connection event.
-    livekit_token_ttl_s: int = Field(default=600)
+    # Access-token TTL. The LiveKit Server re-checks expiry on every connection
+    # event — including a reconnect/resume after a network blip — so the token
+    # must outlive the WHOLE call, not just the join. 10 min was too short: a
+    # call that ran (or a tab that resumed) past it failed to reconnect with
+    # "token is expired". Default to 1h to cover a real conversation while
+    # staying room-scoped + bounded; a deployment can raise/lower it via
+    # ``PERSONA_VOICE_LIVEKIT_TOKEN_TTL_S``. (For arbitrarily long calls the full
+    # fix is client-side token refresh; this default covers realistic lengths.)
+    livekit_token_ttl_s: int = Field(default=3600)
 
     # --- JWT verification (matches the JwtVerifierConfig Protocol shape) ---
     # Identical surface to `APIConfig`'s JWT fields so the same
