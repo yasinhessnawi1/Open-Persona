@@ -164,6 +164,29 @@ class TestUploadSmallDoc:
         assert len(refs) == 1
         assert refs[0].format == "txt"
 
+    def test_upload_registers_conversation_artifact(
+        self, sandbox_root: Path, document_store: DocumentStore
+    ) -> None:
+        # Spec 35: the upload ALSO writes an F5 artifact sidecar (source=
+        # "upload", scoped to the conversation) so it surfaces in the unified
+        # Files viewer alongside persona-generated artifacts.
+        from persona_api.services.artifact_metadata import read_artifact_sidecar
+
+        ref = upload(
+            sandbox_root=sandbox_root,
+            persona_id="astrid",
+            conversation_id="conv1",
+            file_bytes=b"hi",
+            filename="memo.txt",
+            document_store=document_store,
+        )
+        meta = read_artifact_sidecar(sandbox_root / ref.workspace_path)
+        assert meta is not None
+        assert meta.source == "upload"
+        assert meta.conversation_id == "conv1"
+        assert meta.original_name == "memo.txt"
+        assert meta.producing_spec == "14"
+
     def test_doc_ref_is_url_safe_and_no_delimiter(
         self, sandbox_root: Path, document_store: DocumentStore
     ) -> None:

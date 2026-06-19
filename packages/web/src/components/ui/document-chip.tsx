@@ -75,7 +75,13 @@ export function DocumentChip({
   return (
     <Card
       size="sm"
-      className={cn("flex max-w-xs items-center gap-2 px-3 py-2", className)}
+      // `flex-row` overrides the Card base's `flex-col` — without it the chip
+      // stacks vertically and the remove X lands below the name instead of
+      // inline at the end.
+      className={cn(
+        "flex w-fit max-w-xs flex-row items-center gap-2 px-3 py-2",
+        className,
+      )}
       data-slot="document-chip"
       data-format={format}
       data-strategy={strategy}

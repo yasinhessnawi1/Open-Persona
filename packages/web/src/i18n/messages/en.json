@@ -439,6 +439,16 @@
     "remembers": "remembers {count, plural, one {# conversation} other {# conversations}}",
     "hintMemory": "Shared memory with voice · constraints enforced",
     "hintKeys": "Enter to send · Shift+Enter for newline",
+    "files": {
+      "button": "Files",
+      "title": "Files in this conversation",
+      "uploaded": "Shared by you",
+      "generated": "Made by {name}",
+      "empty": "No files yet",
+      "emptyHint": "Files you upload and files {name} creates appear here.",
+      "downloadShort": "Download",
+      "selectPrompt": "Select a file to preview"
+    },
     "toolRunning": "{name} is using {tool}…",
     "toolUsing": "Used {tool}",
     "toolUsingNow": "Using {tool}…",
@@ -487,6 +497,7 @@
         "failed": "Download failed: {reason}"
       },
       "resultBlock": {
+        "output": "Output",
         "showCode": "Show code",
         "hideCode": "Hide code",
         "showFull": "Show {count, plural, one {# more line} other {# more lines}}",

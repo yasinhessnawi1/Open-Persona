@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { ChatPresenceOrb } from "@/components/chat/chat-presence-orb";
 import { ChatWindow } from "@/components/chat/chat-window";
+import { ConversationFiles } from "@/components/chat/conversation-files";
 import type { ChatMessageView } from "@/components/chat/message-element";
 import { buttonVariants } from "@/components/ui/button";
 import { unwrap } from "@/lib/api";
@@ -106,6 +107,13 @@ export default async function ChatPage({
             </div>
           </div>
         </Link>
+        {/* Spec 35 — conversation Files viewer (next to Call, per the v1 design):
+            the unified uploads + generated-artifact index with inline preview. */}
+        <ConversationFiles
+          personaId={conv.persona_id}
+          conversationId={conversationId}
+          personaName={name}
+        />
         {/* V6 D-V6-4 — "Talk to {persona}" entry; binds this conversation. */}
         <Link
           href={`/chat/${conversationId}/voice`}

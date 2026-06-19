@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { ApiError } from "@/lib/api/client";
 import { removeDocument } from "@/lib/document-actions";
 import { useChat } from "@/lib/hooks/use-chat";
+import { notifyConversationFilesChanged } from "@/lib/hooks/use-conversation-artifacts";
 import { useConversationDocuments } from "@/lib/hooks/use-conversation-documents";
 import { cn } from "@/lib/utils";
 import { CHAT_STREAMING_EVENT } from "./chat-presence-orb";
@@ -31,6 +32,11 @@ import { FileRendererPanel } from "./file-renderer-panel";
 import { type ChatMessageView, MessageElement } from "./message-element";
 
 const TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE;
+
+// Spec 35 — "stick to bottom" follow logic. The reader counts as pinned to the
+// latest when within this many px of the bottom; beyond it, streaming chunks
+// stop auto-scrolling so they can read earlier turns undisturbed.
+const PIN_THRESHOLD_PX = 80;
 
 /**
  * F3 (T19) — strangler-fig composer wiring.
@@ -84,9 +90,12 @@ export function ChatWindow({
   );
   const [input, setInput] = useState("");
   const [sendError, setSendError] = useState<ApiError | null>(null);
-  const endRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // True while the reader is near the bottom and should follow new content.
+  // Flipped false the moment they scroll up; re-armed when they return or send.
+  const pinnedRef = useRef(true);
 
   // Conversation-scoped document state (separate slice from message-scoped
   // image attachments — D-F3-X-cap-attached-state-on-conversation-switch
@@ -104,6 +113,8 @@ export function ChatWindow({
     personaId: persona.id,
     onDocumentAttached: (ref) => {
       documents.addOptimistic(ref);
+      // Keep the header Files viewer's list + count in sync with the upload.
+      notifyConversationFilesChanged();
       toast.success(
         t("composer.attach.feedback.documentAttached", {
           filename: ref.filename,
@@ -160,9 +171,23 @@ export function ChatWindow({
     },
   });
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on new messages
+  // Track whether the reader is pinned to the bottom. Cheap, ref-only (no
+  // re-render on scroll); read by the follow effect below.
+  const handleScroll = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    pinnedRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < PIN_THRESHOLD_PX;
+  }, []);
+
+  // Follow the newest content ONLY while pinned — so streaming doesn't drag the
+  // reader down while they scroll up to re-read (instant, not smooth, to avoid
+  // self-fighting animations across rapid chunk updates).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: follow newest, pinned-only
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!pinnedRef.current) return;
+    const el = scrollerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   // Spec 35 D-35-7: broadcast the live/composing state so the chat-header
@@ -199,6 +224,8 @@ export function ChatWindow({
 
     setInput("");
     setSendError(null);
+    // The reader's own send always returns them to the latest turn.
+    pinnedRef.current = true;
     try {
       await send(value, refs);
       // Successful send → clear attached images (message-scoped lifecycle).
@@ -239,7 +266,11 @@ export function ChatWindow({
       <div className="flex min-h-0 flex-1 flex-col" ref={dropZoneRef}>
         {/* Spec 28 — conversation-scoped right-panel renderer (D-28-6). */}
         <FileRendererPanel personaId={persona.id} />
-        <div className="flex-1 overflow-y-auto">
+        <div
+          ref={scrollerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto"
+        >
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 py-6">
             {messages.length === 0 ? (
               <p className="py-10 text-center text-sm text-muted-foreground">
@@ -258,7 +289,6 @@ export function ChatWindow({
             {error ? (
               <p className="text-sm text-destructive">{t("error")}</p>
             ) : null}
-            <div ref={endRef} />
           </div>
         </div>
 

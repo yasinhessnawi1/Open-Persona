@@ -127,7 +127,7 @@ export function FileCard({
 
   return (
     <div
-      className={cn("flex max-w-md flex-col gap-1.5", className)}
+      className={cn("flex w-fit max-w-sm flex-col gap-1.5", className)}
       data-slot="file-card-wrap"
     >
       {showImageThumb && (
@@ -166,8 +166,11 @@ export function FileCard({
       {/* biome-ignore lint/a11y/useSemanticElements: interactive styled container; cannot be a real <button> because it nests the download <button> — keyboard + role + aria-label provide the a11y contract */}
       <Card
         size="sm"
+        // `flex-row` is REQUIRED: the Card base is `flex flex-col`, so without it
+        // the row collapses to a tall, centered vertical stack (the "big card"
+        // bug). This is the compact .v-file-style row: icon · name/meta · download.
         className={cn(
-          "flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-muted/50",
+          "flex flex-row cursor-pointer items-center gap-2 px-3 py-2 hover:bg-muted/50",
         )}
         data-slot="file-card"
         data-media-type={mediaType}

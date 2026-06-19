@@ -163,8 +163,10 @@ export function DownloadChip({
   return (
     <Card
       size="sm"
+      // `flex-row` overrides the Card base's `flex-col` — otherwise this chip
+      // collapses into a tall, centered stack instead of a compact row.
       className={cn(
-        "flex max-w-md items-center gap-2 px-3 py-2",
+        "flex w-fit max-w-sm flex-row items-center gap-2 px-3 py-2",
         error !== null && "ring-2 ring-destructive",
         className,
       )}

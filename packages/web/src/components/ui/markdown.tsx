@@ -68,6 +68,28 @@ const COMPONENTS: Components = {
     </blockquote>
   ),
   hr: () => <hr className="my-4 border-border" />,
+  // GFM tables: remark-gfm parses them, but without explicit element mappings
+  // they fall back to unstyled, cramped browser defaults. Render an editorial
+  // table — bordered, header-emphasised — inside a horizontal scroll wrapper so
+  // a wide table never blows out the message column.
+  table: ({ children }) => (
+    <div className="my-3 w-full overflow-x-auto rounded-md border border-border">
+      <table className="w-full border-collapse text-sm">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => (
+    <thead className="border-b border-border bg-muted/50">{children}</thead>
+  ),
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => (
+    <tr className="border-b border-border last:border-0">{children}</tr>
+  ),
+  th: ({ children }) => (
+    <th className="px-3 py-2 text-left align-top font-semibold">{children}</th>
+  ),
+  td: ({ children }) => (
+    <td className="px-3 py-2 align-top text-muted-foreground">{children}</td>
+  ),
   img: ({ src, alt }) => {
     // Spec 28 follow-up: a persona reply / markdown file may embed an image as
     // `![alt](src)`. Workspace artifacts (e.g. `uploads/<hash>.png`, or the

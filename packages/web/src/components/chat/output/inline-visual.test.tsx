@@ -221,8 +221,9 @@ describe("<InlineVisual> (T05)", () => {
       );
       const figure = container.querySelector("figure");
       expect(figure).toBeInTheDocument();
-      // Default sizing cap per D-F4-2 (~480px inline, responsive on mobile).
-      expect(figure?.className).toContain("max-w-[480px]");
+      // Spec 35: tightened inline cap — a neat thumbnail (max-w-sm, w-fit),
+      // bounded on both axes, not a column-dominating ~480px block.
+      expect(figure?.className).toContain("max-w-sm");
     });
   });
 

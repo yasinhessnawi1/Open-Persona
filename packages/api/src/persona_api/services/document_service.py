@@ -71,6 +71,12 @@ from persona.schema.content import ImageContent
 from persona.tools._sandbox import resolve_sandbox_path
 from pydantic import BaseModel, ConfigDict, Field
 
+from persona_api.services.artifact_metadata import (
+    WorkspaceArtifactMetadata,
+    utcnow,
+    write_artifact_sidecar,
+)
+
 if TYPE_CHECKING:
     from persona.stores.document_store import DocumentStore
     from persona_runtime.prompt import DocumentContext
@@ -275,6 +281,24 @@ def upload(
 
     sidecar_path = workspace_path.with_suffix(workspace_path.suffix + ".meta.json")
     sidecar_path.write_text(ref.model_dump_json())
+
+    # Spec 35: ALSO register the upload as a conversation ARTIFACT (source=
+    # "upload") so it surfaces in the unified Files viewer alongside persona-
+    # generated artifacts — not only as a conversation-scoped document chip.
+    # The ``.f5.json`` artifact sidecar is distinct from the ``.meta.json``
+    # DocumentRef sidecar above; the F5 artifact walker scans the documents dir
+    # recursively and scopes the listing by ``conversation_id``.
+    write_artifact_sidecar(
+        workspace_path,
+        WorkspaceArtifactMetadata(
+            source="upload",
+            type="doc",
+            producing_spec="14",
+            conversation_id=conversation_id,
+            created_at=utcnow(),
+            original_name=_safe_filename(filename),
+        ),
+    )
 
     _log.info(
         "document uploaded persona={} conv={} ref={} strategy={} tokens={}",

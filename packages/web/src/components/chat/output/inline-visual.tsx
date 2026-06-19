@@ -62,22 +62,23 @@ export function InlineVisual({
   const subtext = intent === "chart" ? prose_context : caption;
 
   // The AuthedImage carries the alt text and the loading/error surface.
-  // We override its baked-in `max-w-xs` (~320px) — F4's rich-output
-  // surface gets the wider ~480px default per D-F4-2; tailwind-merge
-  // resolves the conflict at the boundary.
+  // Spec 35: bound the visual on BOTH axes and frame it so it reads as a neat
+  // inline thumbnail rather than a column-dominating block — `object-contain`
+  // keeps the aspect ratio inside the height cap; the border + radius give it
+  // an intentional card edge (was an unframed, up-to-480px-wide image).
   const visual = (
     <AuthedImage
       personaId={personaId}
       workspacePath={workspacePath}
       mediaType={mediaType}
       alt={alt}
-      className="max-w-full w-auto h-auto"
+      className="h-auto max-h-80 w-auto max-w-full rounded-md border border-border object-contain"
     />
   );
 
   return (
     <figure
-      className={cn("flex w-full max-w-[480px] flex-col gap-1.5", className)}
+      className={cn("flex w-fit max-w-sm flex-col gap-1.5", className)}
       data-slot="inline-visual"
       data-intent={intent}
     >

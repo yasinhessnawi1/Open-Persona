@@ -38,7 +38,7 @@ FORBIDDEN_TEXT='\btext-\[[0-9]+(\.[0-9]+)?(rem|em|px)\]'
 # F2 T03/T11 retokenise edits shifted markdown.tsx :71→:79 and button.tsx :26→:31.
 ALLOWLIST=(
   'src/components/persona/persona-avatar.tsx:67'    # text-[0.6rem] — avatar sm size (F1 closeout #12); :45→:67 via the avatar-render fix (internalWorkspacePath helper + AuthedAvatarImage import above SIZE_CLASSES)
-  'src/components/ui/markdown.tsx:102'              # text-[0.8em] — inline-code relative (F1 closeout #12); :79→:81→:102 via Spec 28 sanitize imports + img-suppression override
+  'src/components/ui/markdown.tsx:124'              # text-[0.8em] — inline-code relative (F1 closeout #12); :79→:81→:102→:124 via Spec 28 sanitize imports + img-suppression override + Spec 35 GFM table mappings
   'src/components/ui/button.tsx:31'                 # text-[0.8rem] — button sm sizing (F2 T01 audit)
   'src/components/chat/output/highlighted-code.tsx:102'  # F4 T07 — github-dark Shiki theme container bg matches the inline pre rendered by codeToHtml
   'src/components/chat/output/highlighted-code.tsx:118'  # F4 T07 — github-dark plain-fallback bg+fg before Shiki tokenises

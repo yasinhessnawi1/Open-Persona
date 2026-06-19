@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Terminal } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { lazy, Suspense, useState } from "react";
 
@@ -70,9 +70,23 @@ export function ResultBlock({
 
   return (
     <div
-      className={cn("overflow-hidden rounded-md border bg-muted/30", className)}
+      className={cn(
+        "overflow-hidden rounded-md border border-border bg-muted/30",
+        className,
+      )}
       data-slot="result-block"
     >
+      {/* Framing header — reads the block as a terminal output panel rather than
+          a bare wall of mono text, matching the chat's instrument voice. */}
+      <div
+        className="flex items-center gap-1.5 border-b border-border px-3 py-1.5"
+        data-slot="result-block-header"
+      >
+        <Terminal className="size-3.5 text-muted-foreground" aria-hidden />
+        <span className="type-caption font-mono text-muted-foreground">
+          {t("output")}
+        </span>
+      </div>
       {hasCode ? (
         <div className="border-b" data-slot="result-block-code-section">
           <button
