@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from persona.skills.document_generation.protocol import FormatHandler
 
-#: PDF report via ``reportlab`` (flowable model) in the sandbox.
+#: PDF report via the pre-installed ``matplotlib`` PdfPages backend. The sandbox
+#: has egress disabled (no ``pip install``), and ``reportlab`` is NOT in the
+#: default template, so the SKILL.md teaches matplotlib's PdfPages for offline
+#: PDF (degrade to ``docx`` when rich text/tables exceed it).
 PDF = FormatHandler(
     format_key="pdf",
     output_extension=".pdf",
-    library="reportlab==4.2.5",
+    library="matplotlib",
     supplement_topics=("flowables", "pagination", "images"),
 )
 

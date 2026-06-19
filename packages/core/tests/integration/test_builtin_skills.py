@@ -384,3 +384,57 @@ class TestUnifiedDocumentGenerationSkill:
         # plus the two new common formats (md/txt) are all supported by the
         # unified skill's registry — "all six formats work" at the new entry.
         assert set(supported_formats()) == {"docx", "pdf", "pptx", "xlsx", "md", "txt"}
+
+    def test_skill_md_does_not_instruct_a_network_install(
+        self,
+        document_generation_spec,  # noqa: ANN001
+    ) -> None:
+        # The production sandbox runs with internet egress DISABLED by design
+        # (``NetworkPolicy()`` default = egress off; hosted enforces
+        # ``allow_internet_access=False``, D-12-4). A ``pip install`` therefore
+        # ALWAYS fails (DNS error / setup-timeout). The SKILL.md MUST teach
+        # pre-installed libraries only and must NOT instruct any runtime
+        # install. Verified offline against real E2B: docx/xlsx/md/txt/pdf
+        # (matplotlib PdfPages) produce valid files; pptx degrades honestly.
+        body = document_generation_spec.content.lower()
+        forbidden = [
+            "pip install",
+            "pip3 install",
+            "uv pip install",
+            "-m pip",
+            "subprocess.run([sys.executable",
+            "find_spec",
+            "importlib.util",
+            "apt-get install",
+            "apt install",
+        ]
+        offenders = [needle for needle in forbidden if needle in body]
+        assert not offenders, (
+            "document_generation/SKILL.md instructs a runtime install "
+            f"({offenders}); the sandbox has egress disabled (D-12-4) so any "
+            "install hangs until the setup-timeout. Route every format to a "
+            "pre-installed library or degrade honestly."
+        )
+
+    def test_skill_md_routes_pdf_and_pptx_to_offline_safe_strategies(
+        self,
+        document_generation_spec,  # noqa: ANN001
+    ) -> None:
+        # reportlab + python-pptx are ABSENT from the default sandbox template
+        # and unobtainable offline. The SKILL.md must route pdf to matplotlib
+        # (PdfPages, pre-installed) and degrade pptx honestly — never name the
+        # absent libraries as the route to take.
+        body = document_generation_spec.content
+        assert "PdfPages" in body, (
+            "SKILL.md must teach matplotlib's PdfPages for offline PDF "
+            "(reportlab is absent from the sandbox and cannot be installed)."
+        )
+        # pptx must be flagged as unavailable / degraded, not produced via
+        # an absent library import.
+        assert "python-pptx" in body, (
+            "SKILL.md must name python-pptx in the pptx degrade guidance."
+        )
+        assert "NOT installed" in body, (
+            "SKILL.md must state python-pptx is NOT installed and degrade the "
+            "pptx format honestly (offer docx/md instead)."
+        )

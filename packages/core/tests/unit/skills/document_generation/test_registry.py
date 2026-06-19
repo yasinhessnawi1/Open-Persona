@@ -35,9 +35,14 @@ def test_every_handler_satisfies_the_document_handler_protocol() -> None:
 @pytest.mark.parametrize(
     ("fmt", "ext", "lib"),
     [
+        # ``library`` records the SANDBOX route the SKILL.md teaches. The
+        # sandbox has egress disabled (no ``pip install``), so every route must
+        # be a pre-installed library. pdf uses matplotlib's PdfPages (reportlab
+        # is absent offline); pptx is degraded honestly (python-pptx is absent
+        # and cannot be installed) until a custom template ships it.
         ("docx", ".docx", "python-docx==1.1.2"),
-        ("pdf", ".pdf", "reportlab==4.2.5"),
-        ("pptx", ".pptx", "python-pptx==1.0.2"),
+        ("pdf", ".pdf", "matplotlib"),
+        ("pptx", ".pptx", "unavailable-offline"),
         ("xlsx", ".xlsx", "openpyxl==3.1.5"),
         ("md", ".md", "stdlib"),
         ("txt", ".txt", "stdlib"),

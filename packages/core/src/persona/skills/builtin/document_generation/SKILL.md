@@ -52,27 +52,20 @@ improvising an unsupported one.
 
 ## Shared conventions (every format)
 
-- **Install the library first.** The sandbox does NOT preinstall every format's
-  library — `reportlab` (pdf) and `python-pptx` (pptx) are absent by default and
-  importing them raises `ModuleNotFoundError`. Begin your generated code with an
-  idempotent install of the exact pinned library for your `format` BEFORE any
-  import, then import. `md`/`txt` need no library. The runtime grants a longer
-  time budget to a turn that installs (it detects the `pip install` line), so
-  this does not cost you the exec cap.
-
-  ```python
-  import importlib.util, subprocess, sys
-  # pin per format: pdf→"reportlab==4.2.5", pptx→"python-pptx==1.0.2",
-  # docx→"python-docx==1.1.2", xlsx→"openpyxl==3.1.5" (docx/xlsx are usually
-  # preinstalled, but installing is a safe no-op when already present).
-  for _pkg, _mod in [("reportlab==4.2.5", "reportlab")]:  # ← swap for your format
-      if importlib.util.find_spec(_mod) is None:
-          subprocess.run([sys.executable, "-m", "pip", "install", "-q", _pkg], check=True)
-  ```
+- **The sandbox has NO internet — use ONLY pre-installed libraries.** Egress is
+  disabled by design, so any runtime package install ALWAYS fails (it hangs
+  until the setup timeout). NEVER shell out to a package manager, probe-then-
+  install a module, or make any network call from your code. Pre-installed and
+  ready to `import`: `python-docx`, `openpyxl`, `matplotlib` (with
+  `PIL`/Pillow), plus `pandas`/`numpy`. NOT installed and unobtainable offline:
+  `reportlab`, `python-pptx`, `pdfkit`, `fpdf`, `weasyprint`. Route each format
+  below to a pre-installed library; when none fits, **degrade honestly**
+  (produce the content in a format that works and say so) — never attempt a
+  doomed install.
 - **Output path.** Write to `/workspace/out/<descriptive-name><ext>` from
-  inside the sandbox — lowercase, hyphenated filename. The runtime surfaces the
-  produced file. Same-session persistence only; do not promise cross-session
-  re-open.
+  inside the sandbox — lowercase, hyphenated filename. The runtime pre-creates
+  `/workspace/out` and surfaces the produced file. Same-session persistence
+  only; do not promise cross-session re-open.
 - **Visual style.** If `persona.identity.visual_style` is set, prefer those
   aesthetic hints (palette, font, register) over generic defaults.
 - **Compose, don't round-trip.** For prose-then-format, the bridge is your own
@@ -91,7 +84,7 @@ improvising an unsupported one.
 
 ## Formats
 
-### `docx` — Word (`python-docx==1.1.2`)
+### `docx` — Word (`python-docx`, pre-installed)
 
 Named styles, not ad-hoc bold. Set `Normal` font + size before content; apply
 `Heading 1/2/3` as named styles; page numbers in the footer; a TOC field shell
@@ -108,42 +101,7 @@ doc.add_paragraph("Lead sentence.")
 doc.save("/workspace/out/example.docx")
 ```
 
-### `pdf` — report (`reportlab==4.2.5`)
-
-Flowable model: build a `story` list (`Paragraph`/`Spacer`/`LongTable`/`Image`/
-`PageBreak`); body font ≥10pt explicit; `LongTable(repeatRows=1)` for tables
-that span pages; page numbers via `onLaterPages`. Supplements: `pdf-flowables`,
-`pdf-pagination`, `pdf-images`.
-
-```python
-import importlib.util, subprocess, sys
-if importlib.util.find_spec("reportlab") is None:  # not preinstalled — install first
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "reportlab==4.2.5"], check=True)
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Paragraph
-s = getSampleStyleSheet()
-doc = SimpleDocTemplate("/workspace/out/report.pdf", pagesize=A4, title="Report")
-doc.build([Paragraph("Title", s["Heading1"]), Paragraph("Body.", s["Normal"])])
-```
-
-### `pptx` — slides (`python-pptx==1.0.2`)
-
-Use slide layouts, not free-floating text boxes; one idea per slide; readable
-font sizes. Supplements: `pptx-layouts`, `pptx-charts`, `pptx-theme`.
-
-```python
-import importlib.util, subprocess, sys
-if importlib.util.find_spec("pptx") is None:  # not preinstalled — install first
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "python-pptx==1.0.2"], check=True)
-from pptx import Presentation
-prs = Presentation()
-slide = prs.slides.add_slide(prs.slide_layouts[0])
-slide.shapes.title.text = "Title"; slide.placeholders[1].text = "Subtitle"
-prs.save("/workspace/out/deck.pptx")
-```
-
-### `xlsx` — workbook (`openpyxl==3.1.5`)
+### `xlsx` — workbook (`openpyxl`, pre-installed)
 
 Header row + typed cells; column widths; formulas as strings (`"=SUM(B2:B9)"`);
 number formats for currency/percent. Supplements: `xlsx-formulas`,
@@ -155,6 +113,43 @@ wb = Workbook(); ws = wb.active; ws.append(["Item", "Qty"]); ws.append(["A", 3])
 ws["B4"] = "=SUM(B2:B3)"
 wb.save("/workspace/out/sheet.xlsx")
 ```
+
+### `pdf` — report (`matplotlib.backends.backend_pdf.PdfPages`, pre-installed)
+
+There is NO `reportlab` offline. Render the PDF with matplotlib's `PdfPages`:
+one `figure` per page, `fig.text(...)` for headings/body (wrap long lines with
+`textwrap.wrap`), and real `Axes` for charts. Good for simple/short documents.
+For heavy rich-text/tables where matplotlib is too poor, **degrade honestly**:
+produce the same content as `docx` (best fidelity offline) and tell the user a
+high-fidelity native PDF needs the custom sandbox template (pending). Use a
+headless backend. Supplements: `pdf-flowables`, `pdf-pagination`, `pdf-images`.
+
+```python
+import matplotlib; matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+from textwrap import wrap
+with PdfPages("/workspace/out/report.pdf") as pdf:
+    fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
+    fig.text(0.08, 0.95, "Title", fontsize=18, weight="bold", va="top")
+    y = 0.88
+    for line in wrap("Lead paragraph of the report body.", 90):
+        fig.text(0.08, y, line, fontsize=11, va="top"); y -= 0.025
+    plt.axis("off"); pdf.savefig(fig); plt.close(fig)
+    fig2, ax = plt.subplots(figsize=(8.27, 11.69))  # a chart page
+    ax.plot(["Jan", "Feb", "Mar"], [42, 47, 51], marker="o"); ax.set_title("Trend")
+    pdf.savefig(fig2); plt.close(fig2)
+```
+
+### `pptx` — slides (NOT available offline — degrade honestly)
+
+`python-pptx` is NOT installed and cannot be installed offline. Do NOT attempt
+any install (it will hang and fail). Instead tell the user that `.pptx`
+generation needs the custom sandbox template (pending), and offer a working
+alternative now: a slide-structured `docx` (one heading per slide) or a `md`
+outline. Pick whichever the user prefers and produce that via the format above.
+Supplements: `pptx-layouts`, `pptx-charts`, `pptx-theme` (read for slide
+structure you can mirror into the docx/md fallback).
 
 ### `md` — Markdown (stdlib)
 
@@ -178,11 +173,14 @@ Path("/workspace/out/notes.txt").write_text("Title\n\nLead paragraph.\n")
 
 When `code_execution` returns successfully, tell the user: the filename you
 wrote, anything to refresh on open (e.g. a Word TOC needs F9), and any
-limitation you hit. A partial PASS is honest; a silent PASS on a broken file is
-not.
+limitation you hit (e.g. PDF rendered via matplotlib; PPTX degraded to docx). A
+partial PASS is honest; a silent PASS on a broken file is not.
 
 ## If `code_execution` raises
 
 A Python traceback comes back as a tool error. Read it, fix the code, run again
 — the loop's tool-error recovery handles the round-trip. Do not catch the error
-inside your generated code. Typical fixes live in the format's supplements.
+inside your generated code. A `ModuleNotFoundError` for a missing library means
+that library is NOT in the sandbox — switch to the pre-installed route above (or
+degrade), never try to install it. Typical fixes live in the format's
+supplements.
