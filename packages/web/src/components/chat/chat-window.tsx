@@ -7,12 +7,14 @@ import { useAuth } from "@/auth";
 import { useToast } from "@/components/patterns/toast";
 import type { AvatarPersona } from "@/components/persona/persona-avatar";
 import { buttonVariants } from "@/components/ui/button";
+import { DocumentChip } from "@/components/ui/document-chip";
 import { Textarea } from "@/components/ui/textarea";
 import type { ApiError } from "@/lib/api/client";
 import { removeDocument } from "@/lib/document-actions";
 import { useChat } from "@/lib/hooks/use-chat";
 import { notifyConversationFilesChanged } from "@/lib/hooks/use-conversation-artifacts";
 import { useConversationDocuments } from "@/lib/hooks/use-conversation-documents";
+import type { DocumentRef } from "@/lib/upload";
 import { cn } from "@/lib/utils";
 import { CHAT_STREAMING_EVENT } from "./chat-presence-orb";
 import { ComposerAttachControl } from "./composer/attach-control";
@@ -21,8 +23,7 @@ import {
   type ValidationReason,
   validateBeforeUpload,
 } from "./composer/attach-state";
-import { ConversationDocumentList } from "./composer/conversation-document-list";
-import { ComposerImagePreview } from "./composer/image-preview";
+import { ComposerImageChip } from "./composer/image-preview";
 import { NoVisionErrorBanner } from "./composer/no-vision-error-banner";
 import { useDragTarget, usePasteImage } from "./composer/use-attach-non-click";
 import { useComposerAttachments } from "./composer/use-composer-attachments";
@@ -90,6 +91,14 @@ export function ChatWindow({
   );
   const [input, setInput] = useState("");
   const [sendError, setSendError] = useState<ApiError | null>(null);
+  // Spec 35: documents attached for the NEXT message (so they ride that turn's
+  // bubble as chips). Distinct from `documents` (the conversation's full doc
+  // context the persona reads). Reset on conversation switch.
+  const [pendingDocs, setPendingDocs] = useState<DocumentRef[]>([]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on conversation switch only
+  useEffect(() => {
+    setPendingDocs([]);
+  }, [conversationId]);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -113,7 +122,10 @@ export function ChatWindow({
     personaId: persona.id,
     onDocumentAttached: (ref) => {
       documents.addOptimistic(ref);
-      // Keep the header Files viewer's list + count in sync with the upload.
+      // Carry it on the next message's bubble + keep the Files viewer in sync.
+      setPendingDocs((prev) =>
+        prev.some((d) => d.doc_ref === ref.doc_ref) ? prev : [...prev, ref],
+      );
       notifyConversationFilesChanged();
       toast.success(
         t("composer.attach.feedback.documentAttached", {
@@ -227,9 +239,25 @@ export function ChatWindow({
     // The reader's own send always returns them to the latest turn.
     pinnedRef.current = true;
     try {
-      await send(value, refs);
-      // Successful send → clear attached images (message-scoped lifecycle).
+      await send(
+        value,
+        refs,
+        pendingDocs.map((d) => ({
+          doc_ref: d.doc_ref,
+          filename: d.filename,
+          format: d.format,
+          size_bytes: d.size_bytes ?? null,
+          strategy: d.strategy as
+            | "whole_inject"
+            | "retrieval"
+            | "vision_handoff"
+            | undefined,
+        })),
+      );
+      // Successful send → clear the per-message attachments (the files persist
+      // as conversation context + in the Files viewer; the message keeps its chips).
       attach.clearImages();
+      setPendingDocs([]);
     } catch (e) {
       // useChat already surfaces error state via its own setError; catch
       // ApiError specifically so the NoVision banner can pattern-match.
@@ -245,6 +273,7 @@ export function ChatWindow({
   const onDocumentRemove = useCallback(
     async (docRef: string) => {
       documents.removeOptimistic(docRef);
+      setPendingDocs((prev) => prev.filter((d) => d.doc_ref !== docRef));
       try {
         await removeDocument(
           conversationId,
@@ -301,13 +330,6 @@ export function ChatWindow({
           }}
         />
 
-        {/* F3: conversation-scoped document panel. */}
-        <ConversationDocumentList
-          documents={documents.documents}
-          onRemove={(docRef) => void onDocumentRemove(docRef)}
-          className="mx-auto w-full max-w-2xl px-4"
-        />
-
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -316,17 +338,35 @@ export function ChatWindow({
           className="border-t bg-background/80 backdrop-blur"
         >
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 py-3">
-            {/* F3: composer image preview tray (T09). */}
-            {attach.attachedImages.length > 0 ? (
+            {/* Spec 35: one compact plain-chip row for the message's pending
+                attachments — images + documents alike (no big preview tray).
+                The files also persist in the header Files viewer. */}
+            {attach.attachedImages.length > 0 || pendingDocs.length > 0 ? (
               <div
                 className="flex flex-wrap gap-2"
-                data-slot="composer-image-tray"
+                data-slot="composer-attachments"
               >
                 {attach.attachedImages.map((a) => (
-                  <ComposerImagePreview
+                  <ComposerImageChip
                     key={a.id}
                     attachment={a}
                     onRemove={attach.removeImage}
+                  />
+                ))}
+                {pendingDocs.map((d) => (
+                  <DocumentChip
+                    key={d.doc_ref}
+                    docRef={d.doc_ref}
+                    filename={d.filename}
+                    format={d.format}
+                    sizeBytes={d.size_bytes ?? null}
+                    strategy={
+                      d.strategy as
+                        | "whole_inject"
+                        | "retrieval"
+                        | "vision_handoff"
+                    }
+                    onRemove={(docRef) => void onDocumentRemove(docRef)}
                   />
                 ))}
               </div>

@@ -46,6 +46,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import type { AvatarPersona } from "@/components/persona/persona-avatar";
 import { PersonaAvatar } from "@/components/persona/persona-avatar";
 import { AskUserPrompt } from "@/components/runs/ask-user-prompt";
+import { DocumentChip } from "@/components/ui/document-chip";
 import { Markdown } from "@/components/ui/markdown";
 import type { OutputContent } from "@/lib/api/output-content";
 import { operationFor, projectToolResult } from "@/lib/normalisers/_classify";
@@ -129,6 +130,18 @@ export interface MessageElementView {
   streaming?: boolean;
   /** F3 (T06): workspace references to attached images on this message. */
   images?: { workspace_path: string; media_type: string }[];
+  /**
+   * Spec 35: documents attached to THIS turn — rendered as plain chips in the
+   * user bubble (images render inline; files don't preview). Carried optimistically
+   * at send so the file is visible in the chat, not only in the Files viewer.
+   */
+  documents?: {
+    doc_ref: string;
+    filename: string;
+    format: string;
+    size_bytes: number | null;
+    strategy?: "whole_inject" | "retrieval" | "vision_handoff";
+  }[];
   /**
    * Spec 30 (D-30-2): an in-chat proactive question (the chat rail). Present on
    * an assistant turn that ended with a tool-gap / MCP-gap consent offer (or a
@@ -218,6 +231,7 @@ function UserMessage({
   // via AuthedImage (Bearer-fetched blob URLs per D-F3-X-image-serve-auth).
   // Empty/absent `images` → text-only path renders byte-for-byte unchanged.
   const hasImages = message.images && message.images.length > 0;
+  const hasDocuments = message.documents && message.documents.length > 0;
 
   return (
     <div
@@ -239,6 +253,26 @@ function UserMessage({
                 workspacePath={img.workspace_path}
                 mediaType={img.media_type}
                 alt={img.workspace_path.split("/").pop() ?? "attached image"}
+              />
+            ))}
+          </div>
+        ) : null}
+        {/* Spec 35: attached documents render as read-only plain chips (no
+            preview) so the user sees the file they sent in the thread. */}
+        {hasDocuments ? (
+          <div
+            className="flex flex-wrap gap-2"
+            data-slot="message-documents"
+            data-count={message.documents?.length}
+          >
+            {message.documents?.map((d) => (
+              <DocumentChip
+                key={d.doc_ref}
+                docRef={d.doc_ref}
+                filename={d.filename}
+                format={d.format}
+                sizeBytes={d.size_bytes}
+                strategy={d.strategy}
               />
             ))}
           </div>

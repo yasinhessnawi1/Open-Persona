@@ -1,11 +1,69 @@
 "use client";
 
-import { X } from "lucide-react";
+import { FileImage, Loader2, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { Card } from "@/components/ui/card";
 import { useObjectURL } from "@/lib/hooks/use-object-url";
 import { cn } from "@/lib/utils";
 import type { ImageAttachment } from "./attach-state";
+
+/**
+ * Spec 35 — a PLAIN chip for a pending image attachment (replaces the big
+ * thumbnail preview). Mirrors `<DocumentChip>`: icon + filename + remove, with
+ * an upload spinner / error ring. The actual image preview lives in the Files
+ * viewer + the sent message bubble — the composer just shows a compact chip.
+ */
+export function ComposerImageChip({
+  attachment,
+  onRemove,
+}: ComposerImagePreviewProps) {
+  const t = useTranslations("chat.composer");
+  const isError = attachment.state === "error";
+  const isBusy =
+    attachment.state === "uploading" || attachment.state === "pending";
+
+  return (
+    <Card
+      size="sm"
+      className={cn(
+        "flex w-fit max-w-xs flex-row items-center gap-2 px-3 py-2",
+        isError && "ring-2 ring-destructive",
+      )}
+      data-slot="composer-image-chip"
+    >
+      <span className="text-muted-foreground">
+        {isBusy ? (
+          <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+        ) : (
+          <FileImage className="size-4 shrink-0" aria-hidden />
+        )}
+      </span>
+      <span
+        className="type-ui truncate text-foreground"
+        title={attachment.file.name}
+      >
+        {attachment.file.name}
+      </span>
+      {isError ? (
+        <span className="type-caption text-destructive" role="alert">
+          {attachment.detail}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => onRemove(attachment.id)}
+        aria-label={t("attach.remove")}
+        className={cn(
+          "grid size-6 shrink-0 place-items-center rounded-full",
+          "text-muted-foreground hover:bg-muted hover:text-foreground",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+        )}
+      >
+        <X className="size-3" aria-hidden />
+      </button>
+    </Card>
+  );
+}
 
 /**
  * F3 — composer image preview thumbnail (T09).

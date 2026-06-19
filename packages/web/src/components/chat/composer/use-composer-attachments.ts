@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/auth";
 import { ApiError, type TokenGetter } from "@/lib/api/client";
+import { notifyConversationFilesChanged } from "@/lib/hooks/use-conversation-artifacts";
 import { type DocumentRef, uploadDocument, uploadImage } from "@/lib/upload";
 import type { ImageAttachment } from "./attach-state";
 
@@ -114,6 +115,9 @@ export function useComposerAttachments(
           workspacePath: response.workspace_path,
           mediaType: response.media_type,
         }));
+        // Spec 35: a freshly-uploaded image is a conversation artifact — keep
+        // the header Files viewer's list + badge in sync (mirrors documents).
+        notifyConversationFilesChanged();
       } catch (e) {
         // ApiError carries the structured server detail; surface its
         // `context.reason` (Spec 13 returns oversize / magic_bytes_mismatch /

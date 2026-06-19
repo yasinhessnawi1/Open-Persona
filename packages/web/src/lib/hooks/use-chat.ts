@@ -21,6 +21,19 @@ const TEMPLATE = process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE;
 export type ImageRef = components["schemas"]["ImageRef"];
 
 /**
+ * Spec 35 — a document attached to a turn, carried on the optimistic user
+ * message so the file is visible in the thread. Display-only (the backend reads
+ * the document from conversation context; it isn't re-sent in the request body).
+ */
+export type AttachedDoc = {
+  doc_ref: string;
+  filename: string;
+  format: string;
+  size_bytes: number | null;
+  strategy?: "whole_inject" | "retrieval" | "vision_handoff";
+};
+
+/**
  * Chat state + SSE streaming (spec §4.2). On send: optimistically append the
  * user turn + a streaming assistant turn, then consume the SSE stream
  * (`chunk` → accumulate, `tool_calling`/`tool_result` → cards, `done` → tier).
@@ -64,7 +77,11 @@ export function useChat(
   }, [conversationId, token]);
 
   const send = useCallback(
-    async (content: string, attachedImages: ImageRef[] = []) => {
+    async (
+      content: string,
+      attachedImages: ImageRef[] = [],
+      attachedDocs: AttachedDoc[] = [],
+    ) => {
       if (!content.trim() || streaming) return;
       setError(false);
       lastUserMessage.current = content;
@@ -76,11 +93,15 @@ export function useChat(
         // can render the just-attached image inline before the server echoes
         // it back on history reload. Empty array means text-only — message
         // element renders the existing text-only path byte-for-byte.
+        // Spec 35: `documents` ride the same optimistic turn so the attached
+        // file is visible in the thread (the backend reads them as conversation
+        // context; they're display-only on the request side).
         {
           id: userId,
           role: "user",
           content,
           images: attachedImages.length > 0 ? attachedImages : undefined,
+          documents: attachedDocs.length > 0 ? attachedDocs : undefined,
         },
         {
           id: asstId,
