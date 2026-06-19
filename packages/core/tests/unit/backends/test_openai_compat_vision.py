@@ -759,3 +759,137 @@ class TestOpenAISerialiser:
                 {"type": "text", "text": "second"},
             ],
         }
+
+
+# -----------------------------------------------------------------------------
+# Inline-bytes cascade — live image-workspace path (no workspace_root needed)
+# -----------------------------------------------------------------------------
+
+
+class TestInlineBytesCascade:
+    """``ImageContent.inline_bytes`` bypasses workspace_root resolution.
+
+    The live chat tier backend is app-scoped/cached and never receives a
+    per-request ``workspace_root``. Uploaded image bytes therefore ride on the
+    block itself (``inline_bytes``), so the serialiser base64-encodes them
+    directly with NO filesystem read and NO ``workspace_root``. This is the
+    end-to-end proof that an uploaded image actually reaches the model.
+    """
+
+    def test_anthropic_inline_bytes_serialise_without_workspace_root(self) -> None:
+        raw = b"\x89PNG-inline-anthropic"
+        msg = ConversationMessage(
+            role="user",
+            content=[
+                TextContent(text="what is this?"),
+                ImageContent(
+                    workspace_path="uploads/abc.png",
+                    media_type="image/png",
+                    inline_bytes=raw,
+                ),
+            ],
+            created_at=_now(),
+        )
+        out = _message_to_anthropic(
+            msg,
+            workspace_root=None,  # cached backend has none — must still serialise
+            supports_vision=True,
+            backend="anthropic",
+            model="claude-3-5-sonnet",
+        )
+        blocks = out["content"]
+        assert blocks[0] == {"type": "text", "text": "what is this?"}
+        assert blocks[1]["type"] == "image"
+        assert blocks[1]["source"]["type"] == "base64"
+        assert blocks[1]["source"]["media_type"] == "image/png"
+        assert blocks[1]["source"]["data"] == base64.standard_b64encode(raw).decode("ascii")
+
+    def test_openai_inline_bytes_serialise_without_workspace_root(self) -> None:
+        raw = b"\x89PNG-inline-openai"
+        msg = ConversationMessage(
+            role="user",
+            content=[
+                TextContent(text="describe"),
+                ImageContent(
+                    workspace_path="uploads/xyz.jpg",
+                    media_type="image/jpeg",
+                    inline_bytes=raw,
+                ),
+            ],
+            created_at=_now(),
+        )
+        out = _message_to_openai(
+            msg,
+            workspace_root=None,
+            supports_vision=True,
+            backend="openai",
+            model="gpt-4o",
+        )
+        parts = out["content"]
+        assert parts[0] == {"type": "text", "text": "describe"}
+        assert parts[1]["type"] == "image_url"
+        expected_b64 = base64.standard_b64encode(raw).decode("ascii")
+        assert parts[1]["image_url"]["url"] == f"data:image/jpeg;base64,{expected_b64}"
+
+    def test_inline_bytes_skip_disk_even_when_workspace_root_present(
+        self, workspace_with_image: tuple[Path, str, bytes]
+    ) -> None:
+        """Inline bytes win over on-disk bytes (no stale-disk read)."""
+        workspace_root, rel_path, on_disk = workspace_with_image
+        inline = b"DIFFERENT-inline-payload"
+        assert inline != on_disk
+        msg = ConversationMessage(
+            role="user",
+            content=[
+                ImageContent(
+                    workspace_path=rel_path,
+                    media_type="image/png",
+                    inline_bytes=inline,
+                ),
+            ],
+            created_at=_now(),
+        )
+        out = _message_to_anthropic(
+            msg,
+            workspace_root=workspace_root,
+            supports_vision=True,
+            backend="anthropic",
+            model="claude-3-5-sonnet",
+        )
+        assert out["content"][0]["source"]["data"] == base64.standard_b64encode(inline).decode(
+            "ascii"
+        )
+
+    def test_no_inline_no_root_still_raises(self) -> None:
+        """A reference-only image with no workspace_root still fails loud."""
+        msg = ConversationMessage(
+            role="user",
+            content=[
+                ImageContent(workspace_path="uploads/abc.png", media_type="image/png"),
+            ],
+            created_at=_now(),
+        )
+        with pytest.raises(BackendVisionNotSupportedError) as exc:
+            _message_to_openai(
+                msg,
+                workspace_root=None,
+                supports_vision=True,
+                backend="openai",
+                model="gpt-4o",
+            )
+        assert exc.value.context.get("reason") == "missing_workspace_root"
+
+    def test_inline_bytes_not_persisted_via_model_dump(self) -> None:
+        """``inline_bytes`` is excluded from model_dump (store invariant guard)."""
+        block = ImageContent(
+            workspace_path="uploads/abc.png",
+            media_type="image/png",
+            inline_bytes=b"secret-bytes",
+        )
+        dumped = block.model_dump()
+        assert "inline_bytes" not in dumped
+        assert dumped == {
+            "type": "image",
+            "workspace_path": "uploads/abc.png",
+            "media_type": "image/png",
+        }

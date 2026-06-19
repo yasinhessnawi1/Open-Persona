@@ -24,7 +24,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
-from persona.errors import PersonaNotFoundError
+from persona.errors import PersonaError, PersonaNotFoundError
 from persona.logging import get_logger
 from persona.schema.conversation import Conversation, ConversationMessage
 from sqlalchemy import delete, func, insert, over, select, update
@@ -38,12 +38,16 @@ from persona_api.sandbox import (
     reset_sandbox_request_context,
     set_sandbox_request_context,
 )
+from persona_api.services import document_service, image_service
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
+    from pathlib import Path
 
     from persona.backends import StreamChunk
+    from persona.sandbox.result import SandboxFile
     from persona_runtime.agentic.events import RunEvent
+    from persona_runtime.images import TurnImage
     from persona_runtime.loop import ConversationLoop
     from persona_runtime.prompt import DocumentContext
     from sqlalchemy import Connection, Engine
@@ -81,6 +85,13 @@ _MAX_TITLE_LEN = 120
 # the sidebar never has to ship/trim a full message body. Longer messages are
 # truncated and get a trailing ellipsis (see _truncate_preview).
 LAST_MESSAGE_PREVIEW_MAX_LEN = 120
+
+# Defensive per-file cap on a document staged into the sandbox input mount
+# (document-workspace cascade). Documents are already size-validated at upload,
+# but this bounds the bytes we copy into a single turn's sandbox input set so a
+# pathological doc can't blow up the input payload. Mirrors the image
+# MAX_UPLOAD_BYTES (20 MiB).
+MAX_STAGED_DOCUMENT_BYTES = 20 * 1024 * 1024
 
 
 def create_conversation(*, rls_engine: Engine, owner_id: str, persona_id: str, title: str) -> str:
@@ -290,6 +301,7 @@ async def stream_chat(
     images: list[ImageRefSchema] | None = None,
     turn_has_image: bool = False,
     document_context: DocumentContext | None = None,
+    workspace_root: Path | None = None,
 ) -> AsyncIterator[bytes]:
     """Drive ConversationLoop.turn and stream SSE; persist after the final yield.
 
@@ -329,6 +341,30 @@ async def stream_chat(
     try:
         loop = await loop_builder(persona_id)
 
+        # Image-workspace cascade (Part 1): resolve the inbound image refs to
+        # runtime-layer TurnImage carriers (workspace_path + media_type + bytes)
+        # so loop.turn can route them to BOTH the model (multimodal user
+        # message) and the sandbox (deferred input files). Bytes come from the
+        # existing upload-storage resolver under the per-(owner, persona)
+        # workspace. ``images`` still flows separately to ``_persist_turn`` for
+        # the messages.images JSONB column (unchanged).
+        turn_images = _resolve_turn_images(
+            workspace_root=workspace_root,
+            owner_id=owner_id,
+            persona_id=persona_id,
+            images=images,
+        )
+
+        # Document-workspace cascade: stage the conversation's attached documents'
+        # ORIGINAL bytes into the sandbox input mount so file_read /
+        # code_execution can read the ACTUAL uploaded document (not just the
+        # document_context synopsis, and not a stale file from another context).
+        turn_documents = _resolve_turn_documents(
+            workspace_root=workspace_root,
+            persona_id=persona_id,
+            conversation_id=conversation_id,
+        )
+
         # The loop fires on_event synchronously between chunk yields; buffer the
         # events and flush them (in order) before the next chunk's frame, so the SSE
         # stream preserves the true interleaving. `tier` is captured for `done`.
@@ -364,6 +400,8 @@ async def stream_chat(
             user_message,
             _on_event,
             turn_has_image=turn_has_image,
+            images=turn_images or None,
+            documents=turn_documents or None,
             document_context=document_context,
         ):
             last_chunk = chunk
@@ -415,6 +453,150 @@ async def stream_chat(
         yield _sse("done", done)
     finally:
         reset_sandbox_request_context(_sandbox_ctx_token)
+
+
+def _resolve_turn_images(
+    *,
+    workspace_root: Path | None,
+    owner_id: str,
+    persona_id: str,
+    images: list[ImageRefSchema] | None,
+) -> list[TurnImage]:
+    """Resolve inbound image refs to runtime :class:`TurnImage` carriers.
+
+    Reads each uploaded image's bytes from the persona workspace via the
+    existing :func:`persona_api.services.image_service.fetch` resolver (the same
+    path that backs ``GET /uploads/{ref}``), so the loop can route them to both
+    the model and the sandbox. The bytes live exactly once under
+    ``workspace_root/owner_id/persona_id`` (Spec 13 D-13-X-now option c); this
+    is read-only resolution, never a second persisted copy.
+
+    Returns an empty list when there are no images or no ``workspace_root`` is
+    configured (CLI / test paths) — the text-only path is unaffected. A
+    ref that cannot be resolved (deleted/cross-tenant) is skipped with a
+    WARNING rather than failing the whole turn: the persisted ``images`` JSONB
+    is still written by :func:`_persist_turn`, and a partial-vision turn beats a
+    hard 500 mid-stream.
+
+    Args:
+        workspace_root: The per-deployment workspace root (``app.state``).
+        owner_id: Authenticated tenant id (RLS scope).
+        persona_id: Persona owning the conversation + the uploads.
+        images: Inbound image refs from the chat body (may be ``None``).
+
+    Returns:
+        Resolved :class:`TurnImage` carriers in caller order (possibly empty).
+    """
+    if not images or workspace_root is None:
+        return []
+    # Local import: keeps the api-runtime import graph free of the runtime
+    # package at module load + mirrors the lazy-import discipline elsewhere.
+    from persona_runtime.images import TurnImage
+
+    resolved: list[TurnImage] = []
+    for ref in images:
+        try:
+            file_bytes, _media = image_service.fetch(
+                workspace_root=workspace_root,
+                owner_id=owner_id,
+                persona_id=persona_id,
+                ref=ref.workspace_path,
+            )
+        except PersonaError as exc:
+            _log.warning(
+                "uploaded image could not be resolved for the turn; skipping",
+                workspace_path=ref.workspace_path,
+                reason=str(exc),
+            )
+            continue
+        resolved.append(
+            TurnImage(
+                workspace_path=ref.workspace_path,
+                media_type=ref.media_type,
+                content_bytes=file_bytes,
+            )
+        )
+    return resolved
+
+
+def _resolve_turn_documents(
+    *,
+    workspace_root: Path | None,
+    persona_id: str,
+    conversation_id: str,
+) -> list[SandboxFile]:
+    """Resolve the conversation's attached documents to sandbox input files.
+
+    Document-workspace cascade: uploaded NON-image documents reached the model
+    only as a ``document_context`` synopsis; the sandbox ``file_read`` /
+    ``code_execution`` tools never saw the actual file (so ``file_read`` could
+    surface a stale, unrelated file). This stages each attached document's
+    ORIGINAL bytes as a :class:`SandboxFile` under the sandbox input mount at
+    ``uploads/<filename>`` so the runtime loop appends it to
+    ``deferred_input_files`` and the tools can read THIS file.
+
+    Bytes are read via the existing document-store resolver
+    (:func:`document_service.read_document_bytes`) — no new storage. A document
+    that cannot be read (missing/oversize) is skipped with a WARNING rather than
+    failing the turn; the model still has the synopsis via ``document_context``.
+
+    Args:
+        workspace_root: The per-deployment workspace root (``app.state``).
+        persona_id: Persona owning the conversation + the documents.
+        conversation_id: Conversation scope (documents are conversation-scoped).
+
+    Returns:
+        Resolved :class:`SandboxFile` carriers in workspace order (possibly
+        empty — no documents, or no ``workspace_root`` on the CLI/test path).
+    """
+    if workspace_root is None:
+        return []
+    # Local import: keep the api module-load import graph free of the runtime/
+    # core sandbox types (mirrors the lazy-import discipline above).
+    from persona.sandbox.result import SandboxFile, guess_media_type  # noqa: PLC0415
+
+    refs = document_service.list_for_conversation(
+        sandbox_root=workspace_root,
+        persona_id=persona_id,
+        conversation_id=conversation_id,
+    )
+    if not refs:
+        return []
+
+    resolved: list[SandboxFile] = []
+    for ref in refs:
+        file_bytes = document_service.read_document_bytes(
+            sandbox_root=workspace_root,
+            persona_id=persona_id,
+            conversation_id=conversation_id,
+            doc_ref=ref.doc_ref,
+        )
+        if file_bytes is None:
+            _log.warning(
+                "uploaded document could not be resolved for the turn; skipping",
+                doc_ref=ref.doc_ref,
+                filename=ref.filename,
+            )
+            continue
+        if len(file_bytes) > MAX_STAGED_DOCUMENT_BYTES:
+            _log.warning(
+                "uploaded document exceeds the sandbox staging cap; skipping",
+                doc_ref=ref.doc_ref,
+                size_bytes=len(file_bytes),
+                max_bytes=MAX_STAGED_DOCUMENT_BYTES,
+            )
+            continue
+        # Stage at a predictable, model-readable ``uploads/<filename>`` path so a
+        # sandbox ``file_read("uploads/<filename>")`` finds THIS document.
+        resolved.append(
+            SandboxFile(
+                path=f"uploads/{ref.filename}",
+                content_bytes=file_bytes,
+                size_bytes=len(file_bytes),
+                media_type=guess_media_type(ref.filename),
+            )
+        )
+    return resolved
 
 
 def _persist_turn(

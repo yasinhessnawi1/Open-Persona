@@ -78,6 +78,7 @@ if TYPE_CHECKING:
     from persona.backends import ChatBackend, StreamChunk, TokenUsage
     from persona.history import ConversationHistoryManager
     from persona.sandbox.result import SandboxFile
+    from persona.schema.content import MessageContent
     from persona.schema.conversation import Conversation
     from persona.schema.persona import Persona
     from persona.schema.skills import SkillSpec
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
     from persona.stores.protocol import MemoryStore
     from persona.tools import Toolbox
 
+    from persona_runtime.images import TurnImage
     from persona_runtime.logging import TurnLogWriter
     from persona_runtime.prompt import DocumentContext, PromptBuilder, RetrievedContext
     from persona_runtime.question_author import QuestionAuthor
@@ -157,6 +159,66 @@ def _final_chunk(usage: TokenUsage | None) -> StreamChunk:
     from persona.backends import StreamChunk
 
     return StreamChunk(delta="", is_final=True, usage=usage)
+
+
+def _build_multimodal_user_message(
+    user_message: str, images: list[TurnImage]
+) -> list[MessageContent]:
+    """Compose the current turn's multimodal user content (image-workspace cascade).
+
+    Returns ``[TextContent(user_message), ImageContent(...), ...]`` — the text
+    first, then one :class:`ImageContent` per uploaded image in caller order.
+    The text block is always present (even for an empty message) so the
+    resulting list is never the degenerate single-TextContent shape
+    :class:`ConversationMessage` forbids, and the image blocks flow straight
+    into the backend vision serialisers.
+
+    Each block carries the already-resolved bytes inline (``inline_bytes``):
+    the chat tier backend is app-scoped/cached and never receives a per-request
+    ``workspace_root``, so the serialiser would otherwise have no way to read
+    the upload — the image would silently never reach the model. The caller
+    (``chat_service``) has already resolved the bytes from the upload store into
+    each :class:`TurnImage`, so we pass them through here. ``inline_bytes`` is
+    in-memory only and is dropped at the API persistence boundary (content is
+    collapsed to its text blocks), so the Spec 13 store-by-reference invariant
+    (D-13-X-now option c) is unaffected — the ``messages`` table still grows
+    with reference count, not image bytes.
+    """
+    from persona.schema.content import ImageContent, TextContent
+
+    blocks: list[MessageContent] = [TextContent(text=user_message)]
+    blocks.extend(
+        ImageContent(
+            workspace_path=img.workspace_path,
+            media_type=img.media_type,
+            inline_bytes=img.content_bytes,
+        )
+        for img in images
+    )
+    return blocks
+
+
+def _stage_images_as_input_files(images: list[TurnImage]) -> list[SandboxFile]:
+    """Stage uploaded images as sandbox input files (image-workspace cascade Part 4).
+
+    Each image becomes a :class:`SandboxFile` carrying its bytes inline at the
+    same ``workspace_path`` it is referenced by, so ``code_execution`` finds it
+    under the sandbox input mount (``/workspace/in/<workspace_path>``). The
+    files are appended to the loop's ``deferred_input_files`` and drained by the
+    composition root's input-files provider on the next ``code_execution``
+    dispatch.
+    """
+    from persona.sandbox.result import SandboxFile
+
+    return [
+        SandboxFile(
+            path=img.workspace_path,
+            content_bytes=img.content_bytes,
+            size_bytes=len(img.content_bytes),
+            media_type=img.media_type,
+        )
+        for img in images
+    ]
 
 
 @dataclass
@@ -328,6 +390,8 @@ class ConversationLoop:
         on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
         *,
         turn_has_image: bool = False,
+        images: list[TurnImage] | None = None,
+        documents: list[SandboxFile] | None = None,
         document_context: DocumentContext | None = None,
         consent_granted_tools: list[str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
@@ -359,6 +423,26 @@ class ConversationLoop:
                 Caller computes this from the raw user message before
                 normalising to ``str``. Defaults to ``False`` for the legacy
                 text-only call sites.
+            images: The uploaded images attached to this turn (image-workspace
+                cascade). When present they are routed to BOTH destinations:
+                (a) the model — folded into the current user message as a
+                multimodal ``[TextContent, ImageContent, ...]`` list so the
+                backend vision serialisers send them, and (b) the sandbox —
+                staged as :class:`SandboxFile` entries on
+                ``deferred_input_files`` so ``code_execution`` can read them as
+                files. ``None``/empty leaves the text-only path unchanged
+                (``content=str``, nothing staged). The caller resolves the
+                image bytes from the upload store before calling.
+            documents: Uploaded NON-image documents (.md/.pdf/.txt/...) attached
+                to this turn (document-workspace cascade). Each is staged onto
+                ``deferred_input_files`` so ``code_execution`` / a sandbox
+                ``file_read`` can read the ACTUAL uploaded file (not just the
+                ``document_context`` synopsis). The caller resolves the bytes
+                from the upload/document store into :class:`SandboxFile`
+                carriers (``path`` = the sandbox-relative ``uploads/<name>``
+                reference). ``None``/empty stages nothing. The model still sees
+                the textual synopsis via ``document_context``; this param is the
+                sandbox leg only.
             consent_granted_tools: Tools the user enabled (via the runtime
                 tool-consent flow, spec 26 T11) immediately before this turn —
                 recorded on the turn's ``TurnLog.tool_consent_granted`` for
@@ -371,6 +455,32 @@ class ConversationLoop:
         persona_id = self._require_persona_id()
         started = time.perf_counter()
         self.deferred_input_files.clear()  # M1a per-turn reset (D-16-2)
+
+        # Image-workspace cascade (Parts 1/2/4): when the turn carries uploaded
+        # images, fold them into BOTH destinations up front.
+        #   (a) Model — ``user_prompt_content`` becomes a multimodal
+        #       ``[TextContent, ImageContent, ...]`` list so the PromptBuilder
+        #       emits a vision-bearing user message (resolved by the backend
+        #       serialisers at send time). It is also the write-back content so
+        #       the persisted turn matches what the model saw.
+        #   (b) Sandbox — each image's bytes are staged onto
+        #       ``deferred_input_files`` under ``in/`` so ``code_execution`` can
+        #       read it as a file (drained by the API's augmented provider).
+        # Retrieval / proactive / routing keep operating on the plain ``str``
+        # ``user_message`` (embeddings + classifiers are text-only).
+        user_prompt_content: str | list[MessageContent] = user_message
+        if images:
+            user_prompt_content = _build_multimodal_user_message(user_message, images)
+            self.deferred_input_files.extend(_stage_images_as_input_files(images))
+
+        # Document-workspace cascade: uploaded NON-image documents are staged
+        # onto the SAME sandbox bucket as images so ``code_execution`` / a
+        # sandbox ``file_read`` reads the ACTUAL uploaded file (not just the
+        # ``document_context`` synopsis). The model leg is ``document_context``
+        # (text synopsis); this is the sandbox leg only. Bytes are resolved by
+        # the caller from the document store into SandboxFile carriers.
+        if documents:
+            self.deferred_input_files.extend(documents)
 
         # Spec 35 (D-35-4/D-35-5): collect a per-store recall trace during
         # retrieval so the chat can name each typed store consulted ("Recalling
@@ -508,7 +618,7 @@ class ConversationLoop:
                     context,
                     history,
                     skill_index,
-                    user_message,
+                    user_prompt_content,
                     max_tokens=max_tokens,
                     matched_skill_content=matched_skill_content,
                     document_context=document_context,
@@ -752,8 +862,11 @@ class ConversationLoop:
             mcp_unavailable_requested=mcp_unavailable_requested,
         )
         now = datetime.now(UTC)
+        # Persist the multimodal content when the turn carried images (so the
+        # stored turn matches what the model saw); the API persistence boundary
+        # collapses the list back to its text body + the images JSONB column.
         conversation.messages.append(
-            ConversationMessage(role="user", content=user_message, created_at=now)
+            ConversationMessage(role="user", content=user_prompt_content, created_at=now)
         )
         conversation.messages.append(
             ConversationMessage(role="assistant", content=assistant_text, created_at=now)

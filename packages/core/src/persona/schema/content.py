@@ -63,6 +63,20 @@ class ImageContent(BaseModel):
         media_type: One of the four supported image MIME types per
             **D-13-3**: ``image/png``, ``image/jpeg``, ``image/webp``,
             ``image/gif``. Any other value is rejected at validation time.
+        inline_bytes: Optional already-resolved raw image bytes. When a caller
+            (e.g. the hosted ``chat_service``, which resolves upload bytes at
+            the API boundary) sets this, the backend vision serialisers
+            base64-encode it DIRECTLY and skip both the ``workspace_root``
+            filesystem read and the ``workspace_root is None`` guard. This is
+            the transport for the live image-workspace cascade: the chat tier
+            backend is app-scoped/cached and never receives a per-request
+            ``workspace_root``, so without inline bytes the image would never
+            reach the model. ``None`` keeps the legacy workspace-path resolution
+            path (used by the persisted-history replay path). This field is
+            NEVER persisted — the API collapses message content to its
+            :class:`TextContent` blocks at the store boundary (D-13-X-now
+            option c keeps the ``messages`` table bounded by reference count,
+            not image bytes), so the store invariant is unaffected.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -70,6 +84,7 @@ class ImageContent(BaseModel):
     type: Literal["image"] = "image"
     workspace_path: str
     media_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif"]
+    inline_bytes: bytes | None = Field(default=None, repr=False, exclude=True)
 
 
 MessageContent = Annotated[TextContent | ImageContent, Field(discriminator="type")]

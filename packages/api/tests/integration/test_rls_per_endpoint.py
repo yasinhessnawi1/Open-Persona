@@ -54,6 +54,8 @@ class _Loop:
         on_event: object = None,  # noqa: ARG002 — accepted to match the loop signature
         *,
         turn_has_image: bool = False,  # noqa: ARG002 — spec-13 T20 compat
+        images: list[object] | None = None,  # noqa: ARG002 — image-cascade compat
+        documents: list[object] | None = None,  # noqa: ARG002 — document-cascade compat
         document_context: DocumentContext | None = None,  # noqa: ARG002 — spec-14 compat
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)

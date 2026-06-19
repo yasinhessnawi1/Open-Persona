@@ -85,6 +85,10 @@ class ScriptedBackend:
         self._chat_script: list[Any] = list(chat_script) if chat_script else []
         self._chat_index = 0
         self.chat_calls = 0
+        #: The messages list seen on the most recent chat_stream() call — lets
+        #: tests assert the prompt builder placed a multimodal user message
+        #: (image-workspace cascade Part 2). ``None`` until the first call.
+        self.last_stream_messages: list[ConversationMessage] | None = None
 
     @property
     def provider_name(self) -> str:
@@ -110,7 +114,9 @@ class ScriptedBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
-        **_kwargs: Any,  # forward-compat: accept sampling knobs (top_p, etc.)
+        top_p: float | None = None,
+        top_k: int | None = None,
+        **_kwargs: Any,  # forward-compat: accept any further sampling knobs
     ) -> Any:
         from persona.backends.types import ChatResponse
 
@@ -148,9 +154,12 @@ class ScriptedBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
-        **_kwargs: Any,  # forward-compat: accept sampling knobs (top_p, etc.)
+        top_p: float | None = None,
+        top_k: int | None = None,
+        **_kwargs: Any,  # forward-compat: accept any further sampling knobs
     ) -> AsyncIterator[StreamChunk]:
         self.chat_stream_calls += 1
+        self.last_stream_messages = list(messages)
         if self._index >= len(self._rounds):
             # No more scripted rounds: yield empty text + final (defensive).
             yield StreamChunk(

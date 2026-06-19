@@ -28,7 +28,9 @@ from persona.backends.errors import (
     AllModelsFailedError,
     AuthenticationError,
     BackendTimeoutError,
+    BackendVisionNotSupportedError,
     ModelNotFoundError,
+    NoVisionCapableModelError,
     ProviderCredentialMissingError,
     ProviderError,
     RateLimitError,
@@ -40,6 +42,7 @@ from persona.backends.multi_model import (
 from persona.backends.protocol import ChatBackend
 from persona.backends.types import ChatResponse, StreamChunk, TokenUsage
 from persona.errors import PersonaError
+from persona.schema.content import ImageContent, TextContent
 from persona.schema.conversation import ConversationMessage
 
 if TYPE_CHECKING:
@@ -157,6 +160,18 @@ def _ok_response(provider: str, model: str, content: str = "ok") -> ChatResponse
 
 def _user_msg() -> ConversationMessage:
     return ConversationMessage(role="user", content="hi", created_at=datetime.now(UTC))
+
+
+def _vision_user_msg() -> ConversationMessage:
+    """A user turn carrying an ImageContent block (a 'vision request')."""
+    return ConversationMessage(
+        role="user",
+        content=[
+            TextContent(text="what is this?"),
+            ImageContent(workspace_path="uploads/a.png", media_type="image/png"),
+        ],
+        created_at=datetime.now(UTC),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -670,3 +685,129 @@ class TestSamplingPassThrough:
         async for _ in wrapper.chat_stream([_user_msg()], temperature=0.9, top_p=0.9, top_k=40):
             pass
         assert backend.last_sampling == {"temperature": 0.9, "top_p": 0.9, "top_k": 40}
+
+
+# --------------------------------------------------------------------------- #
+# Vision-aware in-tier selection + honest failure (image-workspace cascade)
+# --------------------------------------------------------------------------- #
+
+
+class TestVisionAwareSelection:
+    """The wrapper must route an image-bearing request to a vision-capable
+    candidate, fall through a vision-incapable candidate's refusal, and fail
+    loud (never silently text-only) when NO candidate supports vision.
+
+    Regression guard: a text-only request keeps first-candidate fallback
+    semantics byte-for-byte (no vision reordering when no image is present).
+    """
+
+    @pytest.mark.asyncio
+    async def test_image_request_prefers_vision_candidate_chat(self) -> None:
+        """[non-vision, vision] + image → the vision candidate serves the call.
+
+        The non-vision primary must NOT be invoked for an image turn; the
+        wrapper reorders so the vision-capable backend (e.g. Claude) is tried.
+        """
+        non_vision = _ScriptedBackend("deepseek", "deepseek-chat", [], supports_vision=False)
+        vision = _ScriptedBackend(
+            "anthropic",
+            "claude",
+            [_ok_response("anthropic", "claude", "saw the image")],
+            supports_vision=True,
+        )
+        wrapper = MultiModelChatBackend([non_vision, vision])
+        response = await wrapper.chat([_vision_user_msg()])
+        assert response.content == "saw the image"
+        assert non_vision.call_count == 0
+        assert vision.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_image_request_prefers_vision_candidate_stream(self) -> None:
+        non_vision = _ScriptedBackend("deepseek", "deepseek-chat", [], supports_vision=False)
+        vision = _ScriptedBackend(
+            "anthropic",
+            "claude",
+            [[_chunk("looks like a cat"), _chunk("", is_final=True)]],
+            supports_vision=True,
+        )
+        wrapper = MultiModelChatBackend([non_vision, vision])
+        deltas = [c.delta async for c in wrapper.chat_stream([_vision_user_msg()])]
+        assert "looks like a cat" in deltas
+        assert non_vision.stream_call_count == 0
+        assert vision.stream_call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_vision_not_supported_error_falls_through(self) -> None:
+        """A vision-capable-by-flag candidate that still raises
+        BackendVisionNotSupportedError must FALL THROUGH to the next
+        vision-capable candidate (reclassified away from SURFACE)."""
+        first_vision = _ScriptedBackend(
+            "openai",
+            "gpt-x",
+            [
+                BackendVisionNotSupportedError(
+                    "no workspace_root configured for image resolution",
+                    context={"backend": "openai", "model": "gpt-x", "image_count": "1"},
+                )
+            ],
+            supports_vision=True,
+        )
+        second_vision = _ScriptedBackend(
+            "anthropic",
+            "claude",
+            [_ok_response("anthropic", "claude", "recovered")],
+            supports_vision=True,
+        )
+        wrapper = MultiModelChatBackend([first_vision, second_vision])
+        response = await wrapper.chat([_vision_user_msg()])
+        assert response.content == "recovered"
+        assert first_vision.call_count == 1
+        assert second_vision.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_vision_candidate_raises_honest_domain_error_chat(self) -> None:
+        """[non-vision only] + image → NoVisionCapableModelError.
+
+        NOT a silent text-only call (the backend must never be invoked), NOT
+        an opaque AllModelsFailedError/surface — a clear domain error the loop
+        can surface as "no vision-capable model is configured".
+        """
+        non_vision = _ScriptedBackend("deepseek", "deepseek-chat", [], supports_vision=False)
+        wrapper = MultiModelChatBackend([non_vision])
+        with pytest.raises(NoVisionCapableModelError):
+            await wrapper.chat([_vision_user_msg()])
+        # The non-vision backend must NOT have been called text-only.
+        assert non_vision.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_vision_candidate_raises_honest_domain_error_stream(self) -> None:
+        non_vision = _ScriptedBackend("deepseek", "deepseek-chat", [], supports_vision=False)
+        wrapper = MultiModelChatBackend([non_vision])
+        with pytest.raises(NoVisionCapableModelError):
+            async for _ in wrapper.chat_stream([_vision_user_msg()]):
+                pass
+        assert non_vision.stream_call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_vision_capable_model_error_is_persona_error_not_provider(self) -> None:
+        """D-20-16 partition: the honest failure is wrapper-layer (PersonaError),
+        NOT a ProviderError."""
+        assert issubclass(NoVisionCapableModelError, PersonaError)
+        assert not issubclass(NoVisionCapableModelError, ProviderError)
+
+    @pytest.mark.asyncio
+    async def test_text_request_keeps_first_candidate_fallback(self) -> None:
+        """Regression: a no-image turn is unaffected by vision reordering — the
+        FIRST candidate is tried first even if a later one is vision-capable."""
+        primary = _ScriptedBackend(
+            "deepseek",
+            "deepseek-chat",
+            [_ok_response("deepseek", "deepseek-chat", "primary-text")],
+            supports_vision=False,
+        )
+        vision = _ScriptedBackend("anthropic", "claude", [], supports_vision=True)
+        wrapper = MultiModelChatBackend([primary, vision])
+        response = await wrapper.chat([_user_msg()])
+        assert response.content == "primary-text"
+        assert primary.call_count == 1
+        assert vision.call_count == 0

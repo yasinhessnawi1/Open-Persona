@@ -113,8 +113,20 @@ class TestImageContent:
             ImageContent(
                 workspace_path="ref.png",
                 media_type="image/png",
-                inline_bytes=b"...",  # type: ignore[call-arg]
+                not_a_real_field="...",  # type: ignore[call-arg]
             )
+
+    def test_inline_bytes_optional_and_excluded_from_dump(self) -> None:
+        """``inline_bytes`` is accepted (live cascade) but never persisted."""
+        block = ImageContent(
+            workspace_path="ref.png",
+            media_type="image/png",
+            inline_bytes=b"raw",
+        )
+        assert block.inline_bytes == b"raw"
+        assert "inline_bytes" not in block.model_dump()
+        # Reference-only blocks still default to None (persisted-history path).
+        assert ImageContent(workspace_path="ref.png", media_type="image/png").inline_bytes is None
 
     def test_missing_workspace_path_rejected(self) -> None:
         with pytest.raises(ValidationError):

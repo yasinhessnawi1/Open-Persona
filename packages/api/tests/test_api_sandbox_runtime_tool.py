@@ -842,3 +842,124 @@ class TestPersisterPolicyBareRefResolution:
             target
             == workspace_root / "alice" / "persona-A" / "uploads" / "charts_archive" / "old.png"
         )
+
+
+# =================================================== image-workspace cascade (Part 4)
+
+
+@pytest.mark.asyncio
+async def test_uploaded_image_is_staged_into_sandbox_input_files(
+    pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+) -> None:
+    """A turn's uploaded image, staged on the loop's deferred_input_files, reaches
+    the substrate as an ``input_files`` entry so ``code_execution`` can read it.
+
+    End-to-end faked-sandbox proof of the image-workspace cascade Part 4: the
+    loop's ``_stage_images_as_input_files`` output (the production staging shape)
+    is drained by the runtime tool's provider and handed to ``execute()``.
+    """
+    from persona_runtime.images import TurnImage
+    from persona_runtime.loop import _stage_images_as_input_files
+
+    pool, fake = pool_with_fake
+    # The loop stages the uploaded image exactly as it does in turn().
+    holder: list[SandboxFile] = list(
+        _stage_images_as_input_files(
+            [
+                TurnImage(
+                    workspace_path="uploads/cat.png",
+                    media_type="image/png",
+                    content_bytes=b"\x89PNG\r\n\x1a\nFAKE",
+                )
+            ]
+        )
+    )
+
+    def _drain_and_clear() -> list[SandboxFile]:
+        snapshot = list(holder)
+        holder.clear()
+        return snapshot
+
+    token = set_sandbox_request_context(
+        SandboxRequestContext(owner_id="alice", conversation_id="c1")
+    )
+    mock_policy = MagicMock()
+    try:
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=object(),  # type: ignore[arg-type]
+            credits_policy=mock_policy,
+            deferred_input_files_provider=_drain_and_clear,
+        )
+        result = await tool.execute(code="import os; print(os.listdir('in'))")
+        assert not result.is_error
+    finally:
+        reset_sandbox_request_context(token)
+
+    assert len(fake.execute_calls) == 1
+    staged = fake.execute_calls[0]["input_files"]
+    assert isinstance(staged, list)
+    paths = [f.path for f in staged]
+    assert "uploads/cat.png" in paths
+    img = next(f for f in staged if f.path == "uploads/cat.png")
+    assert img.content_bytes == b"\x89PNG\r\n\x1a\nFAKE"
+    assert img.media_type == "image/png"
+
+
+# =============================================== document-workspace cascade (sandbox)
+
+
+@pytest.mark.asyncio
+async def test_uploaded_document_is_staged_into_sandbox_input_files(
+    pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+) -> None:
+    """A turn's uploaded document, staged on the loop's deferred_input_files,
+    reaches the substrate as an ``input_files`` entry so a sandbox
+    ``file_read`` / ``code_execution`` listing finds THAT file (not a stale,
+    unrelated file from another context).
+
+    End-to-end faked-sandbox proof of the document-workspace cascade: a
+    ``SandboxFile`` document (the production staging shape, built by
+    ``chat_service._resolve_turn_documents``) is drained by the runtime tool's
+    provider and handed to ``execute()`` under the ``in/`` mount.
+    """
+    pool, fake = pool_with_fake
+    body = b"# Polly's Layout Test\n\nThe ACTUAL uploaded document.\n"
+    holder: list[SandboxFile] = [
+        SandboxFile(
+            path="uploads/pollys-layout-test.md",
+            content_bytes=body,
+            size_bytes=len(body),
+            media_type="text/markdown",
+        )
+    ]
+
+    def _drain_and_clear() -> list[SandboxFile]:
+        snapshot = list(holder)
+        holder.clear()
+        return snapshot
+
+    token = set_sandbox_request_context(
+        SandboxRequestContext(owner_id="alice", conversation_id="c1")
+    )
+    mock_policy = MagicMock()
+    try:
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=object(),  # type: ignore[arg-type]
+            credits_policy=mock_policy,
+            deferred_input_files_provider=_drain_and_clear,
+        )
+        result = await tool.execute(code="print(open('in/uploads/pollys-layout-test.md').read())")
+        assert not result.is_error
+    finally:
+        reset_sandbox_request_context(token)
+
+    assert len(fake.execute_calls) == 1
+    staged = fake.execute_calls[0]["input_files"]
+    assert isinstance(staged, list)
+    paths = [f.path for f in staged]
+    assert "uploads/pollys-layout-test.md" in paths
+    doc = next(f for f in staged if f.path == "uploads/pollys-layout-test.md")
+    assert doc.content_bytes == body
+    assert doc.media_type == "text/markdown"

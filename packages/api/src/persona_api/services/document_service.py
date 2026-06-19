@@ -72,6 +72,7 @@ from persona.tools._sandbox import resolve_sandbox_path
 from pydantic import BaseModel, ConfigDict, Field
 
 from persona_api.services.artifact_metadata import (
+    SIDECAR_SUFFIX,
     WorkspaceArtifactMetadata,
     utcnow,
     write_artifact_sidecar,
@@ -479,13 +480,69 @@ def get_document_text(
         return ""
     # Find the original file by doc_ref prefix (the extension is preserved).
     for candidate in base.iterdir():
-        if candidate.name.startswith(f"{doc_ref}.") and not candidate.name.endswith(".meta.json"):
+        if _is_original_document(candidate, doc_ref):
             try:
                 return parse_document(candidate).full_text
             except Exception:  # noqa: BLE001 — fail-safe; T14 handles empty
                 _log.warning("get_document_text failed for ref {}", doc_ref)
                 return ""
     return ""
+
+
+def _is_original_document(candidate: Path, doc_ref: str) -> bool:
+    """Whether ``candidate`` is the ORIGINAL uploaded file for ``doc_ref``.
+
+    Matches the ``{doc_ref}.<ext>`` original while excluding BOTH co-located
+    sidecars: the ``.meta.json`` DocumentRef sidecar AND the ``.f5.json``
+    artifact sidecar (Spec 35). Without the ``.f5.json`` exclusion the
+    ``iterdir()`` walk could pick the artifact sidecar (it also starts with
+    ``{doc_ref}.``) and parse JSON metadata as the document body.
+    """
+    name = candidate.name
+    return (
+        name.startswith(f"{doc_ref}.")
+        and not name.endswith(".meta.json")
+        and not name.endswith(SIDECAR_SUFFIX)
+    )
+
+
+def read_document_bytes(
+    *,
+    sandbox_root: Path,
+    persona_id: str,
+    conversation_id: str,
+    doc_ref: str,
+) -> bytes | None:
+    """Read the raw, original bytes for an attached document.
+
+    Returns the ORIGINAL uploaded file's bytes (not the parsed text), so the
+    document-workspace cascade can stage the actual file into the sandbox input
+    mount where ``code_execution`` / a sandbox ``file_read`` can read it. The
+    original is found by ``doc_ref`` prefix under the conversation's documents
+    directory (the upload extension is preserved; the ``.meta.json`` sidecar is
+    skipped).
+
+    Args:
+        sandbox_root: Workspace root.
+        persona_id: Persona scope.
+        conversation_id: Conversation scope (documents are conversation-scoped).
+        doc_ref: Document reference.
+
+    Returns:
+        The raw file bytes, or ``None`` when the document is missing/unreadable
+        (the caller skips it — a partial staging beats a hard turn failure).
+    """
+    base = _conversation_documents_dir(sandbox_root, persona_id, conversation_id)
+    if not base.exists():
+        return None
+    for candidate in base.iterdir():
+        if _is_original_document(candidate, doc_ref):
+            try:
+                return candidate.read_bytes()
+            except OSError:
+                _log.warning("read_document_bytes failed for ref {}", doc_ref)
+                return None
+    return None
 
 
 def remove_document(

@@ -938,6 +938,30 @@ def _coalesce_anthropic_tool_results(messages: list[dict[str, Any]]) -> list[dic
     return coalesced
 
 
+def _resolve_image_bytes(block: ImageContent, workspace_root: Path | None) -> bytes:
+    """Resolve one :class:`ImageContent` block to its raw bytes.
+
+    Prefers already-resolved ``inline_bytes`` (the live image-workspace cascade:
+    the chat tier backend is app-scoped/cached and has no per-request
+    ``workspace_root``, so the bytes ride on the block itself). Falls back to
+    reading ``workspace_root / block.workspace_path`` from disk for the
+    persisted-history replay path. The serialiser guards already guarantee a
+    non-``None`` ``workspace_root`` for any block lacking inline bytes, so the
+    disk read is reached only when it is safe.
+
+    Args:
+        block: The image block to resolve.
+        workspace_root: The configured workspace root, or ``None``.
+
+    Returns:
+        The raw image bytes.
+    """
+    if block.inline_bytes is not None:
+        return block.inline_bytes
+    assert workspace_root is not None  # narrowed by the caller's guard
+    return (workspace_root / block.workspace_path).read_bytes()
+
+
 def _message_to_anthropic(
     msg: ConversationMessage,
     *,
@@ -1009,13 +1033,20 @@ def _message_to_anthropic(
                     "image_count": str(image_count),
                 },
             )
-        if image_count and workspace_root is None:
+        # Only images WITHOUT already-resolved inline bytes need a
+        # ``workspace_root`` to read from disk. Live-cascade images carry their
+        # bytes inline (the app-scoped/cached chat backend has no per-request
+        # ``workspace_root``), so they serialise without one.
+        needs_root = sum(
+            1 for b in msg.content if isinstance(b, ImageContent) and b.inline_bytes is None
+        )
+        if needs_root and workspace_root is None:
             raise BackendVisionNotSupportedError(
                 "no workspace_root configured for image resolution",
                 context={
                     "backend": backend,
                     "model": model,
-                    "image_count": str(image_count),
+                    "image_count": str(needs_root),
                     "reason": "missing_workspace_root",
                 },
             )
@@ -1024,8 +1055,7 @@ def _message_to_anthropic(
             if isinstance(block, TextContent):
                 out_blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ImageContent):
-                assert workspace_root is not None  # narrowed by guard above
-                image_bytes = (workspace_root / block.workspace_path).read_bytes()
+                image_bytes = _resolve_image_bytes(block, workspace_root)
                 data_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
                 out_blocks.append(
                     {
@@ -1089,13 +1119,18 @@ def _message_to_openai(
                     "image_count": str(image_count),
                 },
             )
-        if image_count and workspace_root is None:
+        # Only images WITHOUT already-resolved inline bytes need a
+        # ``workspace_root`` to read from disk (see :func:`_message_to_anthropic`).
+        needs_root = sum(
+            1 for b in msg.content if isinstance(b, ImageContent) and b.inline_bytes is None
+        )
+        if needs_root and workspace_root is None:
             raise BackendVisionNotSupportedError(
                 "no workspace_root configured for image resolution",
                 context={
                     "backend": backend,
                     "model": model,
-                    "image_count": str(image_count),
+                    "image_count": str(needs_root),
                     "reason": "missing_workspace_root",
                 },
             )
@@ -1104,8 +1139,7 @@ def _message_to_openai(
             if isinstance(block, TextContent):
                 out_parts.append({"type": "text", "text": block.text})
             elif isinstance(block, ImageContent):
-                assert workspace_root is not None  # narrowed by guard above
-                image_bytes = (workspace_root / block.workspace_path).read_bytes()
+                image_bytes = _resolve_image_bytes(block, workspace_root)
                 data_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
                 data_url = f"data:{block.media_type};base64,{data_b64}"
                 out_parts.append(

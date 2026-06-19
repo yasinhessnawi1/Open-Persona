@@ -40,6 +40,7 @@ from persona.skills import count_tokens
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
+    from persona.schema.content import MessageContent
     from persona.schema.persona import Persona
 
 __all__ = [
@@ -193,7 +194,7 @@ class PromptBuilder:
         context: RetrievedContext,
         history: list[ConversationMessage],
         skill_index: str,
-        user_message: str,
+        user_message: str | list[MessageContent],
         *,
         max_tokens: int,
         matched_skill_content: str | None = None,
@@ -210,6 +211,11 @@ class PromptBuilder:
                 manager). Does NOT include the current user message.
             skill_index: The rendered "available skills" block (may be empty).
             user_message: The current turn's user message — appended last.
+                Either a plain ``str`` (the text-only path) or a multimodal
+                ``list[MessageContent]`` of :class:`TextContent` /
+                :class:`ImageContent` blocks (the image-workspace cascade), in
+                which case the caller's block order is preserved verbatim and
+                the image blocks flow into the backend vision serialisers.
             max_tokens: The backend's context-window budget. The assembled
                 prompt is reduced (retrieved context dropped, then history
                 truncated) to fit.
@@ -282,7 +288,7 @@ class PromptBuilder:
         context: RetrievedContext,
         history: list[ConversationMessage],
         skill_index: str,
-        user_message: str,
+        user_message: str | list[MessageContent],
         matched_skill_content: str | None,
         document_context: DocumentContext | None = None,
         reply_language: str | None = None,

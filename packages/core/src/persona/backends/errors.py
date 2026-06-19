@@ -67,6 +67,7 @@ __all__ = [
     "LocalProviderInModelsListError",
     "MalformedTierModelsError",
     "ModelNotFoundError",
+    "NoVisionCapableModelError",
     "NoVisionTierConfiguredError",
     "OpenRouterBalanceProbeError",
     "OpenRouterCatalogError",
@@ -198,6 +199,35 @@ class BackendVisionNotSupportedError(PersonaError):
     The runtime layer (T11/T12) consumes this on the way back up and
     re-dispatches to the configured vision tier, so the structured
     context is the API contract.
+    """
+
+
+class NoVisionCapableModelError(PersonaError):
+    """Raised when an image-bearing request hits a tier with no vision model.
+
+    Wrapper-layer failure (slots under :class:`PersonaError`, NOT
+    :class:`ProviderError` — same D-20-16 partition as
+    :class:`AllModelsFailedError`). Fired by
+    :class:`persona.backends.multi_model.MultiModelChatBackend` when the
+    request messages carry at least one
+    :class:`persona.schema.content.ImageContent` block but NONE of the
+    composed candidate backends report ``supports_vision``.
+
+    This is the honest-failure branch of the image-workspace cascade: rather
+    than silently dispatch the turn text-only (dropping the user's image), the
+    wrapper fails loud so the runtime loop can surface a clear "no
+    vision-capable model is configured" notice to the user. Distinct from
+    :class:`RoutingConstraintsUnsatisfiableError` /
+    :class:`NoVisionTierConfiguredError`, which are router-side (Layer 1) tier
+    configuration failures; this is the in-tier candidate-walk failure.
+
+    The structured ``context`` carries:
+
+    * ``tier`` — the configured tier label (may be empty).
+    * ``image_count`` — string-formatted count of ImageContent blocks in the
+      offending request.
+    * ``candidate_count`` — number of composed candidate backends, none of
+      which were vision-capable.
     """
 
 

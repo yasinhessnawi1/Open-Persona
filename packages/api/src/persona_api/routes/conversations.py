@@ -241,6 +241,9 @@ async def post_message(
         images=list(body.images) if body.images else None,
         turn_has_image=turn_has_image,
         document_context=document_context,
+        # Image-workspace cascade: thread the workspace root so stream_chat can
+        # resolve the uploaded image bytes for the model + sandbox.
+        workspace_root=getattr(request.app.state, "workspace_root", None),
     )
     # The rate-limit dependency's headers don't auto-merge into a route-built
     # StreamingResponse (FastAPI limitation) — copy them from the stashed

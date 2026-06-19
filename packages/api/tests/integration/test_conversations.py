@@ -62,6 +62,8 @@ class _ScriptedLoop:
         on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
         *,
         turn_has_image: bool = False,  # noqa: ARG002 — spec-13 T20 compat with real loop kwarg
+        images: list[object] | None = None,  # noqa: ARG002 — image-cascade compat with real loop kwarg
+        documents: list[object] | None = None,  # noqa: ARG002 — document-cascade compat
         document_context: DocumentContext | None = None,  # noqa: ARG002 — spec-14 compat with real loop kwarg
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)
@@ -98,6 +100,8 @@ class _ToolUsingLoop:
         on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
         *,
         turn_has_image: bool = False,  # noqa: ARG002 — spec-13 T20 compat with real loop kwarg
+        images: list[object] | None = None,  # noqa: ARG002 — image-cascade compat with real loop kwarg
+        documents: list[object] | None = None,  # noqa: ARG002 — document-cascade compat
         document_context: DocumentContext | None = None,  # noqa: ARG002 — spec-14 compat with real loop kwarg
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)
@@ -137,6 +141,8 @@ class _RoutingLoop:
         on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
         *,
         turn_has_image: bool = False,  # noqa: ARG002 — real-loop kwarg compat
+        images: list[object] | None = None,  # noqa: ARG002 — real-loop kwarg compat
+        documents: list[object] | None = None,  # noqa: ARG002 — document-cascade compat
         document_context: DocumentContext | None = None,  # noqa: ARG002 — real-loop kwarg compat
     ) -> AsyncIterator[StreamChunk]:
         now = datetime.now(UTC)

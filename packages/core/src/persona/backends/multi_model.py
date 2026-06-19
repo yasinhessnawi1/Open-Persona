@@ -35,13 +35,16 @@ from persona.backends.errors import (
     AllModelsFailedError,
     AuthenticationError,
     BackendTimeoutError,
+    BackendVisionNotSupportedError,
     ModelNotFoundError,
+    NoVisionCapableModelError,
     ProviderCredentialMissingError,
     ProviderError,
     RateLimitError,
 )
 from persona.errors import PersonaError
 from persona.logging import get_logger
+from persona.schema.content import ImageContent
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -251,7 +254,12 @@ class MultiModelChatBackend:
         # this invocation (the ConversationLoop reads it post-call).
         self._last_attempts = []
         attempts: list[AttemptRecord] = self._last_attempts
-        for backend in self._backends:
+        # Image-workspace cascade: when the request carries an ImageContent
+        # block, restrict + order the candidate walk to vision-capable
+        # backends. Raises NoVisionCapableModelError if none qualify (honest
+        # failure — never a silent text-only dispatch).
+        candidates = self._vision_aware_candidates(messages)
+        for backend in candidates:
             outcome = await self._try_backend_chat(
                 backend,
                 messages,
@@ -316,7 +324,10 @@ class MultiModelChatBackend:
         # T19 — reset per-call ledger (see chat() for rationale).
         self._last_attempts = []
         attempts: list[AttemptRecord] = self._last_attempts
-        for backend in self._backends:
+        # Image-workspace cascade — same vision-aware candidate restriction as
+        # chat(); raises NoVisionCapableModelError BEFORE any stream opens.
+        candidates = self._vision_aware_candidates(messages)
+        for backend in candidates:
             retries_left = self._max_retries
             retried = False
             while True:
@@ -410,6 +421,64 @@ class MultiModelChatBackend:
                 return None
 
     # ------------------------------------------------------------------ #
+    # Vision-aware candidate selection (image-workspace cascade).
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _request_has_image(messages: list[ConversationMessage]) -> bool:
+        """Return ``True`` iff any message carries an :class:`ImageContent` block.
+
+        A turn is a "vision request" when at least one message's list-form
+        ``content`` holds an image reference. The text-only path (every
+        message ``content`` is ``str``) returns ``False`` and skips all
+        vision reordering — back-compat by construction.
+        """
+        return any(
+            isinstance(m.content, list) and any(isinstance(b, ImageContent) for b in m.content)
+            for m in messages
+        )
+
+    def _vision_aware_candidates(self, messages: list[ConversationMessage]) -> list[ChatBackend]:
+        """Order the candidate walk for the request's modality.
+
+        Text-only requests keep the configured order verbatim (criterion:
+        first-candidate fallback is unchanged). Image-bearing requests are
+        restricted to vision-capable candidates (in configured order) so an
+        image turn on a ``[non-vision, vision]`` tier dispatches to the
+        vision backend — and never silently lands text-only on a non-vision
+        primary.
+
+        Args:
+            messages: The request messages about to be dispatched.
+
+        Returns:
+            The ordered list of candidate backends to walk.
+
+        Raises:
+            NoVisionCapableModelError: The request carries an image but no
+                composed candidate reports ``supports_vision`` — the honest
+                failure the runtime surfaces to the user.
+        """
+        if not self._request_has_image(messages):
+            return self._backends
+        vision_capable = [b for b in self._backends if bool(getattr(b, "supports_vision", False))]
+        if not vision_capable:
+            image_count = sum(
+                sum(1 for b in m.content if isinstance(b, ImageContent))
+                for m in messages
+                if isinstance(m.content, list)
+            )
+            raise NoVisionCapableModelError(
+                "no vision-capable model is configured in this tier",
+                context={
+                    "tier": self._tier_name or "",
+                    "image_count": str(image_count),
+                    "candidate_count": str(len(self._backends)),
+                },
+            )
+        return vision_capable
+
+    # ------------------------------------------------------------------ #
     # Classifier (D-20-9).
     # ------------------------------------------------------------------ #
 
@@ -427,6 +496,16 @@ class MultiModelChatBackend:
         # Rate limits split by Retry-After cutoff + monetary-reason context.
         if isinstance(exc, RateLimitError):
             return self._classify_rate_limit(exc)
+
+        # Image-workspace cascade: a vision-flagged candidate that still
+        # REFUSES the image (e.g. missing workspace_root, or a model the
+        # matrix marks vision but the provider rejects this image) must FALL
+        # THROUGH to the next vision-capable candidate — never SURFACE as a
+        # hard error that drops the turn. The candidate walk was already
+        # restricted to vision-capable backends (_vision_aware_candidates);
+        # if they all refuse, the wrapper exhausts to AllModelsFailedError.
+        if isinstance(exc, BackendVisionNotSupportedError):
+            return _FALLBACK_NO_RETRY
 
         # Auth / model-missing / runtime cred-missing all FALLBACK-NO-RETRY.
         # (Auth covers D-20-12 cross-provider SKIP-AND-FALLBACK case.)
