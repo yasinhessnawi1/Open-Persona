@@ -764,6 +764,26 @@
         }
       }
     },
+    "/v1/runs": {
+      "get": {
+        "tags": ["runs"],
+        "summary": "List Runs",
+        "description": "List the caller's runs, newest first (RLS-scoped). Backs the Tasks page.",
+        "operationId": "list_runs_v1_runs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/runs/{run_id}": {
       "get": {
         "tags": ["runs"],
@@ -2465,7 +2485,7 @@
         "type": "object",
         "required": ["workspace_path", "media_type"],
         "title": "ImageContent",
-        "description": "An image *reference* block within a multimodal message ``content`` list.\n\nPer Spec 13 D-13-X-now option (c), the message store carries only the\nworkspace reference \u2014 image bytes live exactly once under the persona's\nSpec 03 workspace and are resolved at send time by the backend\nserialisers (Spec 13 T05/T06). This is the structural guard behind\nDominant Concern #2: the ``messages`` table size grows with reference\ncount, not with image bytes. See\n``docs/specs/phase2/spec_13/decisions.md`` (D-13-X-now) and the T13\nstore-by-reference regression test.\n\nAttributes:\n    type: Discriminator tag \u2014 always the literal ``\"image\"`` so the\n        :data:`MessageContent` tagged union can resolve this block by\n        its ``type`` field on deserialisation.\n    workspace_path: The reference into the persona workspace (Spec 03).\n        Resolved to bytes only at backend-send time; the message store\n        never holds the bytes themselves.\n    media_type: One of the four supported image MIME types per\n        **D-13-3**: ``image/png``, ``image/jpeg``, ``image/webp``,\n        ``image/gif``. Any other value is rejected at validation time."
+        "description": "An image *reference* block within a multimodal message ``content`` list.\n\nPer Spec 13 D-13-X-now option (c), the message store carries only the\nworkspace reference \u2014 image bytes live exactly once under the persona's\nSpec 03 workspace and are resolved at send time by the backend\nserialisers (Spec 13 T05/T06). This is the structural guard behind\nDominant Concern #2: the ``messages`` table size grows with reference\ncount, not with image bytes. See\n``docs/specs/phase2/spec_13/decisions.md`` (D-13-X-now) and the T13\nstore-by-reference regression test.\n\nAttributes:\n    type: Discriminator tag \u2014 always the literal ``\"image\"`` so the\n        :data:`MessageContent` tagged union can resolve this block by\n        its ``type`` field on deserialisation.\n    workspace_path: The reference into the persona workspace (Spec 03).\n        Resolved to bytes only at backend-send time; the message store\n        never holds the bytes themselves.\n    media_type: One of the four supported image MIME types per\n        **D-13-3**: ``image/png``, ``image/jpeg``, ``image/webp``,\n        ``image/gif``. Any other value is rejected at validation time.\n    inline_bytes: Optional already-resolved raw image bytes. When a caller\n        (e.g. the hosted ``chat_service``, which resolves upload bytes at\n        the API boundary) sets this, the backend vision serialisers\n        base64-encode it DIRECTLY and skip both the ``workspace_root``\n        filesystem read and the ``workspace_root is None`` guard. This is\n        the transport for the live image-workspace cascade: the chat tier\n        backend is app-scoped/cached and never receives a per-request\n        ``workspace_root``, so without inline bytes the image would never\n        reach the model. ``None`` keeps the legacy workspace-path resolution\n        path (used by the persisted-history replay path). This field is\n        NEVER persisted \u2014 the API collapses message content to its\n        :class:`TextContent` blocks at the store boundary (D-13-X-now\n        option c keeps the ``messages`` table bounded by reference count,\n        not image bytes), so the store invariant is unaffected."
       },
       "ImageGenRequest": {
         "properties": {
@@ -2964,6 +2984,21 @@
         "title": "RespondToRunRequest",
         "description": "Answer an ask-user question raised by a running agentic loop (\u00a75.3)."
       },
+      "RunListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RunListResponse",
+        "description": "The caller's runs, newest first (Spec 35 Tasks page index)."
+      },
       "RunStatusResponse": {
         "properties": {
           "id": {
@@ -3018,6 +3053,48 @@
         "required": ["id", "persona_id", "task", "status"],
         "title": "RunStatusResponse",
         "description": "A run's status + its accumulated steps (JSON-serialised Run/Step)."
+      },
+      "RunSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "persona_id": {
+            "type": "string",
+            "title": "Persona Id"
+          },
+          "task": {
+            "type": "string",
+            "title": "Task"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["id", "persona_id", "task", "status", "started_at"],
+        "title": "RunSummary",
+        "description": "A run in the Tasks index \u2014 a light projection without the steps JSON."
       },
       "SetConsentRequest": {
         "properties": {

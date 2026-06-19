@@ -345,6 +345,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/runs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Runs
+     * @description List the caller's runs, newest first (RLS-scoped). Backs the Tasks page.
+     */
+    get: operations["list_runs_v1_runs_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/runs/{run_id}": {
     parameters: {
       query?: never;
@@ -1218,6 +1238,20 @@ export interface components {
      *         media_type: One of the four supported image MIME types per
      *             **D-13-3**: ``image/png``, ``image/jpeg``, ``image/webp``,
      *             ``image/gif``. Any other value is rejected at validation time.
+     *         inline_bytes: Optional already-resolved raw image bytes. When a caller
+     *             (e.g. the hosted ``chat_service``, which resolves upload bytes at
+     *             the API boundary) sets this, the backend vision serialisers
+     *             base64-encode it DIRECTLY and skip both the ``workspace_root``
+     *             filesystem read and the ``workspace_root is None`` guard. This is
+     *             the transport for the live image-workspace cascade: the chat tier
+     *             backend is app-scoped/cached and never receives a per-request
+     *             ``workspace_root``, so without inline bytes the image would never
+     *             reach the model. ``None`` keeps the legacy workspace-path resolution
+     *             path (used by the persisted-history replay path). This field is
+     *             NEVER persisted — the API collapses message content to its
+     *             :class:`TextContent` blocks at the store boundary (D-13-X-now
+     *             option c keeps the ``messages`` table bounded by reference count,
+     *             not image bytes), so the store invariant is unaffected.
      */
     ImageContent: {
       /**
@@ -1596,6 +1630,14 @@ export interface components {
       answer: string;
     };
     /**
+     * RunListResponse
+     * @description The caller's runs, newest first (Spec 35 Tasks page index).
+     */
+    RunListResponse: {
+      /** Items */
+      items?: components["schemas"]["RunSummary"][];
+    };
+    /**
      * RunStatusResponse
      * @description A run's status + its accumulated steps (JSON-serialised Run/Step).
      */
@@ -1616,6 +1658,27 @@ export interface components {
       output?: string | null;
       /** Error */
       error?: string | null;
+    };
+    /**
+     * RunSummary
+     * @description A run in the Tasks index — a light projection without the steps JSON.
+     */
+    RunSummary: {
+      /** Id */
+      id: string;
+      /** Persona Id */
+      persona_id: string;
+      /** Task */
+      task: string;
+      /** Status */
+      status: string;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      /** Finished At */
+      finished_at?: string | null;
     };
     /**
      * SetConsentRequest
@@ -2321,6 +2384,26 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  list_runs_v1_runs_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RunListResponse"];
         };
       };
     };

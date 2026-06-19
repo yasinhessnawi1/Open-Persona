@@ -86,6 +86,30 @@ def get_run(*, rls_engine: Engine, run_id: str) -> dict[str, object]:
     return dict(row)
 
 
+def list_runs(*, rls_engine: Engine, limit: int = 100) -> list[dict[str, object]]:
+    """Return the caller's runs (RLS-scoped), newest first.
+
+    Spec 35: backs the Tasks page index. The heavy ``steps`` JSON is excluded
+    from the projection — the list only needs task / status / persona / timing;
+    the per-run viewer (:func:`get_run`) loads the full row.
+    """
+    cols = (
+        runs_t.c.id,
+        runs_t.c.persona_id,
+        runs_t.c.task,
+        runs_t.c.status,
+        runs_t.c.started_at,
+        runs_t.c.finished_at,
+    )
+    with rls_engine.begin() as conn:
+        rows = (
+            conn.execute(select(*cols).order_by(runs_t.c.started_at.desc()).limit(limit))
+            .mappings()
+            .all()
+        )
+    return [dict(r) for r in rows]
+
+
 def respond_to_run(*, rls_engine: Engine, registry: RunRegistry, run_id: str, answer: str) -> None:
     """Deliver a user's answer to a run awaiting an ask-user question.
 

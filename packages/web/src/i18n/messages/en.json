@@ -62,6 +62,7 @@
     "home": "Home",
     "personas": "Personas",
     "conversations": "Conversations",
+    "tasks": "Tasks",
     "settings": "Settings",
     "newPersona": "New persona",
     "menu": "Open menu",
@@ -152,6 +153,25 @@
     "loading": "Loading…",
     "endOfList": "End of conversations.",
     "shownOf": "Showing {shown} of {total}"
+  },
+  "tasks": {
+    "kicker": "Agentic runs",
+    "title": "Tasks",
+    "subtitle": "Hand a job to a persona and watch it plan, act, and reflect — step by step.",
+    "newHeading": "New task",
+    "persona": "Persona",
+    "personaPlaceholder": "Choose a persona…",
+    "taskPlaceholder": "Describe the task to hand off…",
+    "dispatch": "Dispatch task",
+    "dispatching": "Dispatching…",
+    "noPersonas": "Create a persona first to dispatch a task.",
+    "dispatchError": "Couldn't start the task. Try again.",
+    "previous": "Previous tasks",
+    "empty": "No tasks yet",
+    "emptyHint": "Dispatch one above and it'll appear here.",
+    "unknownPersona": "Unknown persona",
+    "openRun": "Open run for {task}",
+    "started": "Started {when}"
   },
   "personas": {
     "title": "Personas",

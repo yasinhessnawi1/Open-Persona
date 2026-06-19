@@ -352,6 +352,23 @@ class RunStatusResponse(_Output):
     error: str | None = None
 
 
+class RunSummary(_Output):
+    """A run in the Tasks index — a light projection without the steps JSON."""
+
+    id: str
+    persona_id: str
+    task: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+
+
+class RunListResponse(_Output):
+    """The caller's runs, newest first (Spec 35 Tasks page index)."""
+
+    items: list[RunSummary] = Field(default_factory=list)
+
+
 # -- credits / usage (§5.5) -------------------------------------------------
 
 

@@ -187,6 +187,28 @@ def _poll_run(
     return last
 
 
+def test_list_runs(client: tuple[TestClient, str, str]) -> None:
+    """Spec 35: GET /v1/runs lists the caller's runs (newest first, light)."""
+    c, uid, pid = client
+    r1 = c.post(f"/v1/personas/{pid}/runs", json={"task": "first task"}, headers=_auth(uid))
+    r2 = c.post(f"/v1/personas/{pid}/runs", json={"task": "second task"}, headers=_auth(uid))
+    assert r1.status_code == 202 and r2.status_code == 202
+
+    lst = c.get("/v1/runs", headers=_auth(uid))
+    assert lst.status_code == 200, lst.text
+    items = lst.json()["items"]
+    tasks = [it["task"] for it in items]
+    assert "first task" in tasks
+    assert "second task" in tasks
+    # Newest first (each POST is its own txn → distinct started_at).
+    assert tasks.index("second task") < tasks.index("first task")
+    # Light projection: persona + status + started_at, NO heavy steps JSON.
+    sample = items[tasks.index("second task")]
+    assert sample["persona_id"] == pid
+    assert "started_at" in sample
+    assert "steps" not in sample
+
+
 def test_start_stream_complete(client: tuple[TestClient, str, str]) -> None:
     c, uid, pid = client
     r = c.post(f"/v1/personas/{pid}/runs", json={"task": "do a thing"}, headers=_auth(uid))

@@ -12,7 +12,13 @@ from fastapi.responses import StreamingResponse
 
 from persona_api.auth import AuthenticatedUser, get_current_user
 from persona_api.middleware.rate_limit import rate_limit
-from persona_api.schemas import RespondToRunRequest, RunStatusResponse, StartRunRequest
+from persona_api.schemas import (
+    RespondToRunRequest,
+    RunListResponse,
+    RunStatusResponse,
+    RunSummary,
+    StartRunRequest,
+)
 from persona_api.services import audit_service, run_service
 
 router = APIRouter(prefix="/v1", tags=["runs"])
@@ -51,6 +57,16 @@ async def start_run(
     )
     row = run_service.get_run(rls_engine=request.app.state.rls_engine, run_id=run_id)
     return _run_status(row)
+
+
+@router.get("/runs", response_model=RunListResponse)
+async def list_runs(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),  # noqa: ARG001 — RLS via contextvar
+) -> RunListResponse:
+    """List the caller's runs, newest first (RLS-scoped). Backs the Tasks page."""
+    rows = run_service.list_runs(rls_engine=request.app.state.rls_engine)
+    return RunListResponse(items=[_run_summary(r) for r in rows])
 
 
 @router.get("/runs/{run_id}", response_model=RunStatusResponse)
@@ -114,6 +130,17 @@ async def cancel(
         target=run_id,
     )
     return {"status": "cancelling"}
+
+
+def _run_summary(row: dict[str, object]) -> RunSummary:
+    return RunSummary(
+        id=str(row["id"]),
+        persona_id=str(row["persona_id"]),
+        task=str(row["task"]),
+        status=str(row["status"]),
+        started_at=row["started_at"],  # type: ignore[arg-type]
+        finished_at=row.get("finished_at"),  # type: ignore[arg-type]
+    )
 
 
 def _run_status(row: dict[str, object]) -> RunStatusResponse:

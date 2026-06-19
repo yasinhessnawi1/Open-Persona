@@ -14,7 +14,14 @@
  */
 
 import { Dialog } from "@base-ui/react/dialog";
-import { Home, MessagesSquare, Plus, Search, Sparkles } from "lucide-react";
+import {
+  Home,
+  ListChecks,
+  MessagesSquare,
+  Plus,
+  Search,
+  Sparkles,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import {
@@ -121,6 +128,13 @@ export function CommandPalette({ data }: { data: SidebarData }) {
         label: tn("conversations"),
         href: "/conversations",
         icon: MessagesSquare,
+      },
+      {
+        id: "nav-tasks",
+        group: "groupNavigate",
+        label: tn("tasks"),
+        href: "/runs",
+        icon: ListChecks,
       },
     ];
     const personas: CommandItem[] = data.personas.map((p) => ({

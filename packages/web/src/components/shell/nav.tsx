@@ -1,6 +1,6 @@
 "use client";
 
-import { Home, MessagesSquare, Sparkles } from "lucide-react";
+import { Home, ListChecks, MessagesSquare, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -22,6 +22,7 @@ const ITEMS = [
     icon: MessagesSquare,
     count: "conversations",
   },
+  { href: "/runs", key: "tasks", icon: ListChecks, count: undefined },
 ] as const;
 
 /** Live counts shown on nav rows (Spec 35 D-35-13) — derived from sidebar data. */
