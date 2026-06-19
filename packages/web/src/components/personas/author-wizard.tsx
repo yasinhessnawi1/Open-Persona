@@ -262,37 +262,15 @@ export function AuthorWizard({
           {t("describeByline")}
         </p>
         <h1 className="type-display mt-1" data-slot="author-wizard-title">
-          {t("starterTitle")}
+          {t("gallery.title")}
         </h1>
         <p className="type-body mt-2 max-w-prose text-muted-foreground">
-          {t("starterSubtitle")}
+          {t("gallery.subtitle")}
         </p>
       </header>
 
-      {/* PRIMARY: pick a prebuilt starter → edit in place → create directly. */}
-      <ExampleGallery onSelect={openStarter} />
-
-      <div className="flex justify-center">
-        <button
-          type="button"
-          onClick={openScratch}
-          className={cn(buttonVariants({ variant: "outline" }), "gap-2")}
-          data-slot="author-wizard-scratch"
-        >
-          <Sparkles className="size-4" aria-hidden="true" />
-          {t("gallery.startScratch")}
-        </button>
-      </div>
-
-      {/* SECONDARY: describe your own → the LLM drafter. */}
-      <div className="flex items-center gap-3" aria-hidden="true">
-        <span className="h-px flex-1 bg-border" />
-        <span className="type-caption font-mono text-muted-foreground uppercase">
-          {t("gallery.describeOwnLabel")}
-        </span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-
+      {/* PRIMARY (top): describe your own → the LLM drafter, or start from
+          scratch with an empty editable draft. */}
       <Stack gap={4} data-slot="author-wizard-own">
         <p className="type-body text-muted-foreground">{t("describeHint")}</p>
 
@@ -315,7 +293,16 @@ export function AuthorWizard({
           </p>
         ) : null}
 
-        <div className="flex justify-end">
+        <div className="flex flex-wrap justify-end gap-3">
+          <button
+            type="button"
+            onClick={openScratch}
+            className={cn(buttonVariants({ variant: "outline" }), "gap-2")}
+            data-slot="author-wizard-scratch"
+          >
+            <Sparkles className="size-4" aria-hidden="true" />
+            {t("gallery.startScratch")}
+          </button>
           <button
             type="button"
             onClick={() => void generate()}
@@ -328,6 +315,18 @@ export function AuthorWizard({
           </button>
         </div>
       </Stack>
+
+      {/* SECONDARY (below): or pick a ready-made starter → edit → create
+          directly (no drafter call). */}
+      <div className="flex items-center gap-3" aria-hidden="true">
+        <span className="h-px flex-1 bg-border" />
+        <span className="type-caption font-mono text-muted-foreground uppercase">
+          {t("gallery.ownPathLabel")}
+        </span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+
+      <ExampleGallery onSelect={openStarter} />
     </Stack>
   );
 }

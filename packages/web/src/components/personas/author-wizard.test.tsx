@@ -88,12 +88,15 @@ function isBefore(a: Element, b: Element): boolean {
 const firstStarter = PERSONA_EXAMPLE_CATEGORIES[0].examples[0];
 
 describe("AuthorWizard — describe-phase layout", () => {
-  it("LEADS with the starter gallery, above describe-your-own", () => {
+  it("LEADS with describe + start-from-scratch, above the starter gallery", () => {
     const { container } = renderWizard();
-    const gallery = bySlot(container, "example-gallery");
     const textarea = bySlot(container, "author-wizard-description");
-    // Spec 36: starters are the primary path now — gallery precedes the textarea.
-    expect(isBefore(gallery, textarea)).toBe(true);
+    const scratch = bySlot(container, "author-wizard-scratch");
+    const gallery = bySlot(container, "example-gallery");
+    // Layout: the describe box + scratch button are on top; the starter
+    // suggestions sit underneath.
+    expect(isBefore(textarea, gallery)).toBe(true);
+    expect(isBefore(scratch, gallery)).toBe(true);
   });
 
   it("offers a start-from-scratch path", () => {
