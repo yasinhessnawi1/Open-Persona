@@ -43,6 +43,7 @@ const messages = {
     toolUsing: "Using {tool}",
     toolError: "error",
     thinking: "{name} is thinking…",
+    recalling: "Recalling from {store} memory",
     toolRunning: "{name} is using {tool}…",
   },
 };
@@ -101,6 +102,27 @@ describe("MessageElement", () => {
     // Identity-coloured.
     const expected = derivePersonaIdentityColor(ASTRID).oklch;
     expect(body?.style.borderLeftColor).toBe(expected);
+  });
+
+  it("(Spec 35 D-35-4) shows the store-named recall state while streaming pre-content", () => {
+    const { container } = renderWithIntl(
+      <MessageElement
+        message={personaMsg("", {
+          streaming: true,
+          recall: [
+            { store: "self_facts", count: 2 },
+            { store: "episodic", count: 3 },
+          ],
+        })}
+        persona={ASTRID}
+      />,
+    );
+    const recall = container.querySelector('[data-slot="recall-state"]');
+    expect(recall).not.toBeNull();
+    // Names the CURRENT (latest) store + colours its dot via data-store.
+    expect(recall?.textContent).toContain("Recalling from episodic memory");
+    const dot = container.querySelector(".v-recall-dot");
+    expect(dot?.getAttribute("data-store")).toBe("episodic");
   });
 
   it("(D-F2-7) renders avatar on first persona message (no prevMessage)", () => {

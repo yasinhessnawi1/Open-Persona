@@ -317,13 +317,19 @@ function PersonaMessage({
             onViewLarger={setLightboxPath}
           />
         ) : message.streaming && !message.content ? (
-          // Streaming, no events array, no content yet → thinking.
-          <StreamingTextRenderer
-            text=""
-            streaming
-            thinking
-            thinkingLabel={thinkingLabel}
-          />
+          // Streaming, no content yet. Spec 35 (D-35-4): if the runtime has
+          // named the typed-memory stores it's recalling, show that "thinking /
+          // remembering" state (store-coloured); otherwise the generic thinking.
+          message.recall && message.recall.length > 0 ? (
+            <RecallState recall={message.recall} />
+          ) : (
+            <StreamingTextRenderer
+              text=""
+              streaming
+              thinking
+              thinkingLabel={thinkingLabel}
+            />
+          )
         ) : (
           // Legacy stacked layout: tools above content (back-compat).
           <StackedContent message={message} thinkingLabel={thinkingLabel} />
@@ -375,6 +381,34 @@ function PersonaMessage({
           onClose={() => setLightboxPath(null)}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Spec 35 (D-35-4) — the live "thinking / remembering" state. While the persona
+ * composes, the runtime emits a `memory_recall` frame per typed store consulted
+ * (cluster C); this names the store currently being recalled with its F1
+ * store-colour pulse. The `.v-recall-dot[data-store]` rule colours the dot from
+ * the store token; the line reads "Recalling from <store> memory".
+ */
+function RecallState({
+  recall,
+}: {
+  recall: { store: string; count?: number }[];
+}) {
+  const t = useTranslations("chat");
+  const current = recall[recall.length - 1];
+  return (
+    <div className="v-think__line" data-slot="recall-state">
+      <span
+        className="v-recall-dot"
+        data-store={current.store}
+        aria-hidden="true"
+      />
+      <span className="type-caption font-mono normal-case text-muted-foreground">
+        {t("recalling", { store: current.store })}
+      </span>
     </div>
   );
 }

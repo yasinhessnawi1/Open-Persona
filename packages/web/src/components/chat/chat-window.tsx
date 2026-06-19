@@ -13,6 +13,7 @@ import { removeDocument } from "@/lib/document-actions";
 import { useChat } from "@/lib/hooks/use-chat";
 import { useConversationDocuments } from "@/lib/hooks/use-conversation-documents";
 import { cn } from "@/lib/utils";
+import { CHAT_STREAMING_EVENT } from "./chat-presence-orb";
 import { ComposerAttachControl } from "./composer/attach-control";
 import {
   attachmentsBlockSend,
@@ -163,6 +164,15 @@ export function ChatWindow({
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Spec 35 D-35-7: broadcast the live/composing state so the chat-header
+  // presence orb (rendered above this component, in the page) can pulse while
+  // the persona is live — decoupled, no streaming prop-drilled up to the page.
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent(CHAT_STREAMING_EVENT, { detail: streaming }),
+    );
+  }, [streaming]);
 
   async function submit() {
     const value = input.trim();

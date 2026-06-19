@@ -430,6 +430,7 @@
     "placeholder": "Message {name}…",
     "send": "Send",
     "thinking": "{name} is thinking…",
+    "recalling": "Recalling from {store} memory",
     "toolRunning": "{name} is using {tool}…",
     "toolUsing": "Used {tool}",
     "toolError": "Tool error",

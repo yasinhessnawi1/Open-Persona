@@ -2,13 +2,14 @@ import { Phone } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { ChatPresenceOrb } from "@/components/chat/chat-presence-orb";
 import { ChatWindow } from "@/components/chat/chat-window";
 import type { ChatMessageView } from "@/components/chat/message-element";
-import { PersonaIdentityHeader } from "@/components/persona/persona-identity-header";
 import { buttonVariants } from "@/components/ui/button";
 import { unwrap } from "@/lib/api";
 import { serverApi } from "@/lib/api/server";
 import { parsePersonaYaml } from "@/lib/persona";
+import { personaIdentityStyle } from "@/lib/persona-identity";
 
 /**
  * T26: rebuilt chat screen. Header swaps the scaffold's <Avatar> +
@@ -71,12 +72,23 @@ export default async function ChatPage({
 
   return (
     <div className="flex h-[calc(100svh-3.5rem)] flex-col">
-      <div className="flex items-center justify-between gap-2 border-b px-4 py-2.5">
-        <PersonaIdentityHeader
-          persona={personaForDisplay}
-          size="md"
-          showConstraints
+      {/* Spec 35: chat header on the editorial .v-chat__head, with the
+          identity presence orb (#3) as the avatar — it pulses while live. */}
+      <div
+        className="v-chat__head"
+        style={personaIdentityStyle(personaForDisplay)}
+      >
+        <ChatPresenceOrb
+          persona={{ id: personaForDisplay.id, name }}
+          avatarUrl={personaForDisplay.avatar_url}
+          size={40}
         />
+        <div className="v-chat__head-meta">
+          <div className="v-chat__name">
+            <span className="v-id-underline">{name}</span>
+          </div>
+          {role ? <div className="v-chat__role">{role}</div> : null}
+        </div>
         {/* V6 D-V6-4 — "Talk to {persona}" entry; binds this conversation. */}
         <Link
           href={`/chat/${conversationId}/voice`}
