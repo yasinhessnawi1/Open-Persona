@@ -23,17 +23,54 @@ Returns the resolved absolute ``Path`` (which may not yet exist —
 from __future__ import annotations
 
 import os
-from pathlib import PurePosixPath
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
 
 from persona.errors import SandboxViolationError
 
-if TYPE_CHECKING:
-    from pathlib import Path
+#: A sandbox-root source for the file tools. Either a fixed ``Path`` (CLI /
+#: tests — the unscoped, explicitly-chosen root) or a zero-arg provider that
+#: returns the *current request's* per-(owner, persona) root (the hosted path).
+#: A provider that returns ``None`` means "no request scope is bound" and the
+#: file tools MUST fail closed (deny) rather than fall back to any shared root —
+#: this is the cross-context isolation guarantee. See
+#: :func:`resolve_request_sandbox_root`.
+SandboxRootProvider = Path | Callable[[], Path | None]
 
-__all__ = ["resolve_sandbox_path"]
+__all__ = ["SandboxRootProvider", "resolve_request_sandbox_root", "resolve_sandbox_path"]
 
 _MAX_PATH_LENGTH = 4096
+
+
+def resolve_request_sandbox_root(source: SandboxRootProvider) -> Path:
+    """Resolve the per-call sandbox root from a fixed Path or a request provider.
+
+    Args:
+        source: Either a fixed :class:`~pathlib.Path` (CLI / tests — the
+            explicitly chosen, unscoped root) or a zero-arg callable that
+            returns the current request's per-(owner, persona) root (the hosted
+            path). The callable is invoked at *dispatch time*, so a single
+            cached toolbox stays correctly scoped across concurrent requests.
+
+    Returns:
+        The sandbox root :class:`~pathlib.Path` to resolve tool paths against.
+
+    Raises:
+        SandboxViolationError: When ``source`` is a provider that returns
+            ``None`` — no request scope is bound. The file tools translate this
+            into a structured ``ToolResult(is_error=True, ...)`` and read /
+            write NOTHING. We never fall back to a shared root (fail closed).
+    """
+    if callable(source):
+        root = source()
+        if root is None:
+            raise SandboxViolationError(
+                _violation_message("no request scope bound for file access", "no_scope"),
+                context={"reason": "no_scope"},
+            )
+        return root
+    return source
+
 
 # Consistent recovery hint appended to every SandboxViolationError message
 # (T10 / D-25-5 / spec §2.5). The model that triggered the violation reads the

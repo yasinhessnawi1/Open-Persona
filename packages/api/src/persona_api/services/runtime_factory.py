@@ -288,6 +288,17 @@ class RuntimeFactory:
             if self._workspace_root is not None and persona.persona_id is not None
             else None
         )
+        # SECURITY (cross-context isolation): the built-in ``file_read`` /
+        # ``file_write`` tools must NOT resolve against the flat process-wide
+        # ``tools_sandbox_root`` — that surfaces files any other persona /
+        # conversation left under the shared parent. Inject a per-REQUEST scope
+        # provider that returns ``<workspace_root>/<owner_id>/<persona_id>`` from
+        # the same sandbox request context ``code_execution`` + the workspace
+        # persister already use. The toolbox is cached/built once, so the
+        # provider is resolved at *dispatch* time, not build time. No bound
+        # context ⇒ provider returns ``None`` ⇒ the file tools fail closed
+        # (deny), never falling back to the shared root.
+        file_sandbox_root = self._build_file_sandbox_root_provider(persona.persona_id)
         if scanned_skills:
             extra.append(make_use_skill_tool(scanned_skills))  # type: ignore[arg-type]
         if self._sandbox_pool is not None:
@@ -405,9 +416,49 @@ class RuntimeFactory:
             workspace_persister=workspace_persister,
             extra_mcp_servers=builtin_mcp_servers or None,
             extra_mcp_clients=byo_clients or None,
+            file_sandbox_root=file_sandbox_root,
         )
         self._mcp_clients.extend(mcp_clients)
         return toolbox
+
+    def _build_file_sandbox_root_provider(
+        self, persona_id: str | None
+    ) -> Callable[[], Path | None] | None:
+        """Build the per-request sandbox-root provider for the file tools.
+
+        SECURITY (cross-context isolation): returns a zero-arg callable that the
+        ``file_read`` / ``file_write`` tools invoke at *dispatch* time to resolve
+        ``<workspace_root>/<owner_id>/<persona_id>`` from the bound
+        :class:`SandboxRequestContext` — the same contextvar
+        ``code_execution`` + :class:`WorkspaceDirPersister` rely on. The toolbox
+        is cached/built once; resolving at dispatch keeps each call scoped to the
+        owner/persona of the request that triggered it.
+
+        The callable returns ``None`` when no request context is bound (e.g. a
+        non-request path) so the file tools fail closed — they read / write
+        NOTHING rather than fall back to the flat shared root.
+
+        Returns ``None`` (no provider) when ``workspace_root`` is unconfigured or
+        ``persona_id`` is absent (CLI / test path); ``build_default_toolbox``
+        then falls back to ``config.tools_sandbox_root`` (the single-tenant CLI
+        root, which is NOT reachable from the hosted API).
+        """
+        if self._workspace_root is None or persona_id is None:
+            return None
+
+        # Local import: keep the persona-core import graph free of the api-only
+        # sandbox context (mirrors the lazy-import discipline elsewhere here).
+        from persona_api.sandbox import get_sandbox_request_context
+
+        workspace_root = self._workspace_root
+
+        def _resolve() -> Path | None:
+            ctx = get_sandbox_request_context()
+            if ctx is None:
+                return None
+            return workspace_root / ctx.owner_id / persona_id
+
+        return _resolve
 
     def _build_byo_mcp_clients(self, persona: Persona) -> list[MCPClient]:
         """Build SSRF-pinned MCP clients for the persona's assigned BYO servers (D-30-4/6).

@@ -20,16 +20,16 @@ D-03-21).
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
 
 from persona.errors import SandboxViolationError
 from persona.logging import get_logger
 from persona.schema.tools import ToolResult
-from persona.tools._sandbox import resolve_sandbox_path
+from persona.tools._sandbox import (
+    SandboxRootProvider,
+    resolve_request_sandbox_root,
+    resolve_sandbox_path,
+)
 from persona.tools.protocol import AsyncTool, tool
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 __all__ = ["make_file_read_tool"]
 
@@ -38,12 +38,21 @@ _logger = get_logger("tools.file_read")
 _MAX_BYTES = 1_048_576  # 1 MB (D-03-16)
 
 
-def make_file_read_tool(*, sandbox_root: Path) -> AsyncTool:
+def make_file_read_tool(*, sandbox_root: SandboxRootProvider) -> AsyncTool:
     """Build the ``file_read`` :class:`AsyncTool`.
 
     Args:
-        sandbox_root: Per-persona working directory. The tool's path
-            argument resolves against this root only — no escape possible.
+        sandbox_root: The sandbox root SOURCE. Either a fixed
+            :class:`~pathlib.Path` (CLI / tests — the explicitly chosen,
+            unscoped root) OR a zero-arg provider that returns the *current
+            request's* per-(owner, persona) root (the hosted path; see
+            :func:`persona.tools._sandbox.resolve_request_sandbox_root`). A
+            provider is re-evaluated at every dispatch, so a single cached
+            toolbox stays correctly scoped across concurrent requests. A
+            provider that returns ``None`` (no request scope bound) makes the
+            tool fail closed — it reads NOTHING, rather than falling back to a
+            shared root. The tool's path argument resolves against the resolved
+            root only — no traversal escape possible.
 
     Returns:
         An :class:`AsyncTool` named ``file_read`` that reads UTF-8 text from
@@ -61,7 +70,8 @@ def make_file_read_tool(*, sandbox_root: Path) -> AsyncTool:
     )
     async def file_read(path: str) -> ToolResult:
         try:
-            resolved = resolve_sandbox_path(sandbox_root, path)
+            root = resolve_request_sandbox_root(sandbox_root)
+            resolved = resolve_sandbox_path(root, path)
         except SandboxViolationError as e:
             _logger.warning("file_read sandbox violation", requested=path, reason=str(e))
             return ToolResult(

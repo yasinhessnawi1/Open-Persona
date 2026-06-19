@@ -25,13 +25,15 @@ from typing import TYPE_CHECKING
 from persona.errors import SandboxViolationError
 from persona.logging import get_logger
 from persona.schema.tools import PersistedArtifact, ToolResult
-from persona.tools._sandbox import resolve_sandbox_path
+from persona.tools._sandbox import (
+    SandboxRootProvider,
+    resolve_request_sandbox_root,
+    resolve_sandbox_path,
+)
 from persona.tools.audit import ToolAuditEvent, ToolAuditLogger
 from persona.tools.protocol import AsyncTool, tool
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from persona.tools.workspace_persister import WorkspacePersister
 
 __all__ = ["make_file_write_tool"]
@@ -41,7 +43,7 @@ _logger = get_logger("tools.file_write")
 
 def make_file_write_tool(
     *,
-    sandbox_root: Path,
+    sandbox_root: SandboxRootProvider,
     audit_logger: ToolAuditLogger | None = None,
     persona_id: str | None = None,
     persister: WorkspacePersister | None = None,
@@ -49,8 +51,16 @@ def make_file_write_tool(
     """Build the ``file_write`` :class:`AsyncTool`.
 
     Args:
-        sandbox_root: Per-persona working directory. The tool's path
-            argument resolves against this root only.
+        sandbox_root: The sandbox root SOURCE. Either a fixed
+            :class:`~pathlib.Path` (CLI / tests — the explicitly chosen,
+            unscoped root) OR a zero-arg provider that returns the *current
+            request's* per-(owner, persona) root (the hosted path; see
+            :func:`persona.tools._sandbox.resolve_request_sandbox_root`). A
+            provider is re-evaluated at every dispatch, so a single cached
+            toolbox stays correctly scoped across concurrent requests. A
+            provider that returns ``None`` (no request scope bound) makes the
+            tool fail closed — it writes NOTHING. The tool's path argument
+            resolves against the resolved root only.
         audit_logger: Optional tool-audit sink. If provided, every
             successful write emits one :class:`ToolAuditEvent` with
             ``action="write"`` per D-03-21.
@@ -83,7 +93,8 @@ def make_file_write_tool(
     )
     async def file_write(path: str, content: str) -> ToolResult:
         try:
-            resolved = resolve_sandbox_path(sandbox_root, path)
+            root = resolve_request_sandbox_root(sandbox_root)
+            resolved = resolve_sandbox_path(root, path)
         except SandboxViolationError as e:
             _logger.warning("file_write sandbox violation", requested=path, reason=str(e))
             return ToolResult(

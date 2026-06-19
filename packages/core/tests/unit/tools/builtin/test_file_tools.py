@@ -498,6 +498,96 @@ class _FakePersister:
         )
 
 
+# Section: per-request scope (cross-context isolation — SECURITY)
+#
+# The built-in file tools must resolve their sandbox root from the CURRENT
+# request's owner/persona, NOT from a process-wide flat root. When the tool is
+# built with a *provider* (a ``Callable[[], Path | None]``) it is re-resolved at
+# every dispatch, so a single cached toolbox stays correctly scoped across
+# concurrent requests. ``None`` from the provider means "no request scope" and
+# MUST fail closed (deny) — never fall back to a shared root.
+
+
+class _ScopeProvider:
+    """A swappable per-request root provider (stands in for the ContextVar)."""
+
+    def __init__(self) -> None:
+        self.root: Path | None = None
+
+    def __call__(self) -> Path | None:
+        return self.root
+
+
+class TestFileReadPerRequestScope:
+    @pytest.mark.asyncio
+    async def test_read_resolves_provider_at_call_time(self, tmp_path: Path) -> None:
+        owner_a = tmp_path / "ownerA" / "personaA"
+        owner_a.mkdir(parents=True)
+        (owner_a / "note.txt").write_text("scoped-A", encoding="utf-8")
+
+        provider = _ScopeProvider()
+        provider.root = owner_a
+        tool_inst = make_file_read_tool(sandbox_root=provider)
+        result = await tool_inst.execute(path="note.txt")
+        assert result.is_error is False
+        assert result.content == "scoped-A"
+
+    @pytest.mark.asyncio
+    async def test_read_cannot_see_other_context_file(self, tmp_path: Path) -> None:
+        # Context A and context B share the SAME parent root (the leak vector):
+        # B left a file; A must NOT be able to read it.
+        owner_a = tmp_path / "ownerA" / "personaA"
+        owner_b = tmp_path / "ownerB" / "personaB"
+        owner_a.mkdir(parents=True)
+        owner_b.mkdir(parents=True)
+        (owner_b / "secret.txt").write_text("ownerB-secret", encoding="utf-8")
+
+        provider = _ScopeProvider()
+        provider.root = owner_a
+        tool_inst = make_file_read_tool(sandbox_root=provider)
+
+        # The single cached tool, used under context A, cannot reach B's file by
+        # any relative path (the resolver rejects traversal escapes).
+        for attempt in ("secret.txt", "../personaB/secret.txt", "../../ownerB/personaB/secret.txt"):
+            result = await tool_inst.execute(path=attempt)
+            assert result.is_error is True
+            assert "ownerB-secret" not in result.content
+
+    @pytest.mark.asyncio
+    async def test_read_fails_closed_without_context(self, tmp_path: Path) -> None:
+        # Stray file directly under the flat parent — the OLD bug surfaced it.
+        (tmp_path / "leaked.txt").write_text("leaked", encoding="utf-8")
+        provider = _ScopeProvider()  # root stays None → no request scope
+        tool_inst = make_file_read_tool(sandbox_root=provider)
+        result = await tool_inst.execute(path="leaked.txt")
+        assert result.is_error is True
+        assert "leaked" not in result.content
+
+
+class TestFileWritePerRequestScope:
+    @pytest.mark.asyncio
+    async def test_write_lands_in_scoped_root(self, tmp_path: Path) -> None:
+        owner_a = tmp_path / "ownerA" / "personaA"
+        owner_a.mkdir(parents=True)
+        provider = _ScopeProvider()
+        provider.root = owner_a
+        tool_inst = make_file_write_tool(sandbox_root=provider)
+        result = await tool_inst.execute(path="out/report.md", content="hi")
+        assert result.is_error is False
+        assert (owner_a / "out" / "report.md").read_text() == "hi"
+        # NOT under the flat parent (the leak surface).
+        assert not (tmp_path / "out" / "report.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_write_fails_closed_without_context(self, tmp_path: Path) -> None:
+        provider = _ScopeProvider()  # None → deny
+        tool_inst = make_file_write_tool(sandbox_root=provider)
+        result = await tool_inst.execute(path="out/report.md", content="hi")
+        assert result.is_error is True
+        # Nothing written anywhere under the parent.
+        assert not any(tmp_path.rglob("report.md"))
+
+
 class TestFileWritePersister:
     @pytest.mark.asyncio
     async def test_no_persister_leaves_artifacts_empty(self, tmp_path: Path) -> None:

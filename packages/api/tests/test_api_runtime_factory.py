@@ -73,3 +73,69 @@ def test_factory_exposes_loop_builders() -> None:
     factory = _factory()
     assert callable(factory.build_conversation_loop)
     assert callable(factory.build_agentic_loop)
+
+
+# Section: per-request file-tool sandbox scope (SECURITY — cross-context leak)
+#
+# The provider the factory hands to ``build_default_toolbox`` must resolve the
+# file_read / file_write sandbox root from the CURRENT request's
+# SandboxRequestContext to ``<workspace_root>/<owner_id>/<persona_id>`` — the
+# same scope uploads + code_execution + the workspace persister use. With no
+# bound context it must return None so the file tools fail closed.
+
+
+def _scoped_factory(workspace_root: Path) -> RuntimeFactory:
+    return RuntimeFactory(
+        rls_engine=object(),  # type: ignore[arg-type]
+        embedder=_FakeEmbedder(),  # type: ignore[arg-type]
+        tier_registry=_SpyTierRegistry(),  # type: ignore[arg-type]
+        turn_log_writer=object(),  # type: ignore[arg-type]
+        audit_root=workspace_root / "audit",
+        workspace_root=workspace_root,
+    )
+
+
+def test_file_sandbox_provider_scopes_to_request_owner_and_persona(tmp_path: Path) -> None:
+    from persona_api.sandbox import (
+        SandboxRequestContext,
+        reset_sandbox_request_context,
+        set_sandbox_request_context,
+    )
+
+    factory = _scoped_factory(tmp_path)
+    provider = factory._build_file_sandbox_root_provider("personaA")
+    assert provider is not None
+
+    token = set_sandbox_request_context(
+        SandboxRequestContext(owner_id="ownerA", conversation_id="conv1")
+    )
+    try:
+        assert provider() == tmp_path / "ownerA" / "personaA"
+    finally:
+        reset_sandbox_request_context(token)
+
+    # A DIFFERENT request context resolves to a DIFFERENT root (no cross-context
+    # bleed): the SAME cached provider returns ownerB's path under ownerB's ctx.
+    token2 = set_sandbox_request_context(
+        SandboxRequestContext(owner_id="ownerB", conversation_id="conv2")
+    )
+    try:
+        assert provider() == tmp_path / "ownerB" / "personaA"
+        assert provider() != tmp_path / "ownerA" / "personaA"
+    finally:
+        reset_sandbox_request_context(token2)
+
+
+def test_file_sandbox_provider_returns_none_without_context(tmp_path: Path) -> None:
+    factory = _scoped_factory(tmp_path)
+    provider = factory._build_file_sandbox_root_provider("personaA")
+    assert provider is not None
+    # No bound request context ⇒ None ⇒ file tools fail closed (deny).
+    assert provider() is None
+
+
+def test_file_sandbox_provider_absent_without_workspace_root() -> None:
+    # CLI / test path: no workspace_root ⇒ no provider ⇒ build_default_toolbox
+    # falls back to the (single-tenant) config.tools_sandbox_root.
+    factory = _factory()
+    assert factory._build_file_sandbox_root_provider("personaA") is None

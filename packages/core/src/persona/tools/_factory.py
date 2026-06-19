@@ -30,6 +30,7 @@ from persona.tools.toolbox import Toolbox
 if TYPE_CHECKING:
     from persona.config import PersonaCoreConfig
     from persona.schema.persona import Persona
+    from persona.tools._sandbox import SandboxRootProvider
     from persona.tools.audit import ToolAuditLogger
     from persona.tools.mcp.client import MCPClient
     from persona.tools.protocol import AsyncTool
@@ -49,6 +50,7 @@ async def build_default_toolbox(
     workspace_persister: WorkspacePersister | None = None,
     extra_mcp_servers: dict[str, str] | None = None,
     extra_mcp_clients: list[MCPClient] | None = None,
+    file_sandbox_root: SandboxRootProvider | None = None,
 ) -> tuple[Toolbox, list[MCPClient]]:
     """Compose a Toolbox for the given persona.
 
@@ -75,6 +77,18 @@ async def build_default_toolbox(
             launcher passes the lazily-spawned built-in MCP server URLs here;
             entries override same-named ``config.mcp_servers`` entries. ``None``
             (CLI / test path) ⇒ only the env-configured servers are connected.
+        file_sandbox_root: Optional override for the ``file_read`` / ``file_write``
+            sandbox root SOURCE (SECURITY — cross-context isolation). ``None``
+            (CLI / test path) ⇒ the file tools use the static
+            ``config.tools_sandbox_root`` (process-wide, unscoped — acceptable
+            for the single-tenant CLI). The hosted API passes a per-request
+            *provider* (``Callable[[], Path | None]``) that returns the current
+            request's ``<workspace_root>/<owner_id>/<persona_id>`` root, resolved
+            at dispatch time from the sandbox request context — so a single
+            cached toolbox stays scoped to the calling owner/persona. A provider
+            that returns ``None`` makes the file tools fail closed (deny), never
+            falling back to the shared root. See
+            :func:`persona.tools._sandbox.resolve_request_sandbox_root`.
         extra_mcp_clients: Spec 30 (D-30-4/6) — pre-built bring-your-own MCP
             clients (constructed with ``enforce_ssrf=True`` + any auth headers by
             the API factory, which holds the decryption key). They are connected
@@ -103,9 +117,9 @@ async def build_default_toolbox(
             api_key=api_key,
         ),
         make_web_fetch_tool(),
-        make_file_read_tool(sandbox_root=config.tools_sandbox_root),
+        make_file_read_tool(sandbox_root=file_sandbox_root or config.tools_sandbox_root),
         make_file_write_tool(
-            sandbox_root=config.tools_sandbox_root,
+            sandbox_root=file_sandbox_root or config.tools_sandbox_root,
             audit_logger=tool_audit_logger,
             persona_id=persona.persona_id,
             persister=workspace_persister,
