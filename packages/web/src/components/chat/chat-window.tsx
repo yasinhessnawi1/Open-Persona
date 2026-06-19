@@ -234,30 +234,30 @@ export function ChatWindow({
         };
       });
 
+    const docs = pendingDocs.map((d) => ({
+      doc_ref: d.doc_ref,
+      filename: d.filename,
+      format: d.format,
+      size_bytes: d.size_bytes ?? null,
+      strategy: d.strategy as
+        | "whole_inject"
+        | "retrieval"
+        | "vision_handoff"
+        | undefined,
+    }));
+
     setInput("");
     setSendError(null);
     // The reader's own send always returns them to the latest turn.
     pinnedRef.current = true;
+    // Clear the composer NOW — the attachments are captured and ride the sent
+    // message + persist in the Files viewer. `await send()` only resolves after
+    // the whole reply streams, so clearing there would leave the chips lingering
+    // through the response.
+    attach.clearImages();
+    setPendingDocs([]);
     try {
-      await send(
-        value,
-        refs,
-        pendingDocs.map((d) => ({
-          doc_ref: d.doc_ref,
-          filename: d.filename,
-          format: d.format,
-          size_bytes: d.size_bytes ?? null,
-          strategy: d.strategy as
-            | "whole_inject"
-            | "retrieval"
-            | "vision_handoff"
-            | undefined,
-        })),
-      );
-      // Successful send → clear the per-message attachments (the files persist
-      // as conversation context + in the Files viewer; the message keeps its chips).
-      attach.clearImages();
-      setPendingDocs([]);
+      await send(value, refs, docs);
     } catch (e) {
       // useChat already surfaces error state via its own setError; catch
       // ApiError specifically so the NoVision banner can pattern-match.

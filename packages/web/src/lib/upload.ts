@@ -66,9 +66,17 @@ export async function uploadImage(
   personaId: string,
   file: File,
   options: UploadOptions,
+  /**
+   * Spec 35: the conversation to scope the upload's artifact metadata to, so
+   * the file shows up in the conversation's Files viewer (the route accepts a
+   * `conversation_id` form field; omitting it leaves the artifact persona-scoped
+   * and the conversation-filtered Files list would never surface it).
+   */
+  conversationId?: string,
 ): Promise<ImageUploadResponse> {
   const form = new FormData();
   form.append("file", file);
+  if (conversationId) form.append("conversation_id", conversationId);
   const body = await sendMultipart(
     `${BASE_URL}/v1/personas/${encodeURIComponent(personaId)}/uploads`,
     form,

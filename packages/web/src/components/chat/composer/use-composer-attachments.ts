@@ -99,14 +99,21 @@ export function useComposerAttachments(
         progress: null,
       }));
       try {
-        const response = await uploadImage(personaId, file, {
-          getToken: token,
-          onProgress: (fraction) => {
-            patch(id, (a) =>
-              a.state === "uploading" ? { ...a, progress: fraction } : a,
-            );
+        const response = await uploadImage(
+          personaId,
+          file,
+          {
+            getToken: token,
+            onProgress: (fraction) => {
+              patch(id, (a) =>
+                a.state === "uploading" ? { ...a, progress: fraction } : a,
+              );
+            },
           },
-        });
+          // Spec 35: scope the artifact to this conversation so it shows in the
+          // conversation's Files viewer (not just persona-scoped).
+          conversationId,
+        );
         patch(id, () => ({
           kind: "image",
           id,
