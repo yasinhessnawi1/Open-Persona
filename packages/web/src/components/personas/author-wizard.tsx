@@ -2,7 +2,7 @@
 
 import { Sparkles, Wand2 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Stack } from "@/components/layout";
 import { SkeletonLine } from "@/components/patterns/loading";
 import { buttonVariants } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { ExampleGallery } from "./example-gallery";
 import { PersonaEditor } from "./persona-editor";
 import type { McpCatalogEntry } from "./persona-form";
+import { QuickEditCard } from "./quick-edit-card";
 
 type Phase = "describe" | "loading" | "creating" | "review";
 
@@ -77,25 +78,56 @@ export function AuthorWizard({
   const [refining, setRefining] = useState(false);
   const [editorKey, setEditorKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // The avatar identity-colour seed for the quick-edit card (the starter id, or
+  // "scratch") — kept stable while the name is edited; also the gallery's
+  // selected-card signal.
+  const [seedId, setSeedId] = useState<string | null>(null);
+  const quickEditRef = useRef<HTMLDivElement>(null);
 
-  // Open the editor on a structured draft directly (no drafter call). The safety
-  // constraint is re-asserted up front so the editor shows it pinned from the
-  // start (starters already carry it; scratch does not until now).
-  function openDirect(seedDoc: PersonaDoc) {
+  // Picking a starter / "start from scratch" reveals the QUICK-EDIT card inline
+  // (same screen, below the gallery) — no drafter call. The safety constraint is
+  // re-asserted up front so it shows pinned. The full editor is one click away
+  // (openFullEditor) and inherits this exact doc, so quick edits carry over.
+  function openDirect(seedDoc: PersonaDoc, seed: string) {
     setDraft(null);
     setDoc(ensureSafetyConstraint(seedDoc));
+    setSeedId(seed);
     setError(null);
+  }
+
+  function openStarter(example: PersonaExample) {
+    openDirect(example.structure as unknown as PersonaDoc, example.id);
+  }
+
+  function openScratch() {
+    openDirect(emptyPersonaDoc(), "scratch");
+  }
+
+  // Promote the current quick-edit draft into the full PersonaEditor. The doc
+  // (with every quick edit) becomes the editor's initialDoc, so nothing is lost.
+  function openFullEditor() {
     setEditorKey((k) => k + 1);
     setPhase("review");
   }
 
-  function openStarter(example: PersonaExample) {
-    openDirect(example.structure as unknown as PersonaDoc);
+  // Create directly from the quick-edit draft (skips the full editor).
+  async function createFromQuick() {
+    if (!doc) return;
+    const result = await handleCreate(docToYaml(doc));
+    if (result?.error) setError(result.error);
   }
 
-  function openScratch() {
-    openDirect(emptyPersonaDoc());
-  }
+  // Bring the quick-edit card into view when a starter/scratch is first picked
+  // (it renders below the gallery). Guarded for jsdom (no scrollIntoView).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on reveal only
+  useEffect(() => {
+    if (doc && phase === "describe") {
+      quickEditRef.current?.scrollIntoView?.({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, [seedId, phase]);
 
   function applyDraft(next: AuthoringDraft): boolean {
     try {
@@ -164,6 +196,9 @@ export function AuthorWizard({
     yaml: string,
     _avatarUrl?: string | null,
   ): Promise<{ error: string } | undefined> {
+    // Where to return on a SERVER error: the full editor lives in "review"; the
+    // quick-edit card lives in "describe" (doc set). Capture before the flip.
+    const origin: Phase = phase === "review" ? "review" : "describe";
     let parsed: PersonaDoc;
     try {
       parsed = yamlToDoc(yaml);
@@ -181,7 +216,7 @@ export function AuthorWizard({
     const result = await createPersona(docToYaml(guarded));
     if (result?.error) {
       setError(result.error);
-      setPhase("review");
+      setPhase(origin);
     }
     return result;
   }
@@ -283,7 +318,8 @@ export function AuthorWizard({
           data-slot="author-wizard-description"
         />
 
-        {error ? (
+        {/* Drafter-path errors only; quick-edit errors render in the card. */}
+        {error && !doc ? (
           <p
             className="type-ui text-destructive"
             role="alert"
@@ -326,7 +362,24 @@ export function AuthorWizard({
         <span className="h-px flex-1 bg-border" />
       </div>
 
-      <ExampleGallery onSelect={openStarter} />
+      <ExampleGallery onSelect={openStarter} selectedId={seedId} />
+
+      {/* QUICK-EDIT preview — appears when a starter/scratch is picked. Edit the
+          essentials inline and create directly, or open the full editor (which
+          inherits these exact edits). */}
+      {doc ? (
+        <div ref={quickEditRef}>
+          <QuickEditCard
+            doc={doc}
+            seedId={seedId ?? "scratch"}
+            onChange={setDoc}
+            onCreate={() => void createFromQuick()}
+            onOpenFullEditor={openFullEditor}
+            creating={false}
+            error={error}
+          />
+        </div>
+      ) : null}
     </Stack>
   );
 }

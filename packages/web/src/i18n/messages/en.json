@@ -248,6 +248,13 @@
     "directSubtitle": "Edit any field, then create. No authoring wait — your edits become the persona directly.",
     "safetyConstraintLocked": "Required safety constraint (always kept)",
     "createValidationFailed": "Fix these fields before creating: {fields}",
+    "quickEyebrow": "Editable draft",
+    "editableChip": "editable",
+    "createNamed": "Create {name}",
+    "openFullEditor": "Open full editor",
+    "quickFullEditorHint": "Add tools, skills, voice, and routing in the full editor — your edits carry over.",
+    "quickSummary": "{self} self-facts · {world} worldview",
+    "quickConstraintsCount": "{count} enforced constraints",
     "gallery": {
       "title": "Describe your persona",
       "subtitle": "Write a sentence or two and generate, or start from one of the examples below.",

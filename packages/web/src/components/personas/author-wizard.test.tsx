@@ -105,57 +105,64 @@ describe("AuthorWizard — describe-phase layout", () => {
   });
 });
 
-describe("AuthorWizard — prebuilt starter (direct create)", () => {
-  it("opens the editor directly on the structured starter, NOT the textarea", () => {
-    const { container, getByLabelText } = renderWizard();
-    const label = messages.author.gallery.useNamed.replace(
-      "{name}",
-      firstStarter.name,
-    );
-    fireEvent.click(getByLabelText(label));
+function pickFirstStarter(getByLabelText: (t: string) => HTMLElement): void {
+  fireEvent.click(
+    getByLabelText(
+      messages.author.gallery.useNamed.replace("{name}", firstStarter.name),
+    ),
+  );
+}
 
-    // The editor is shown; the describe textarea is gone (no drafter seeding).
-    expect(bySlot(container, "mock-editor")).toBeTruthy();
-    expect(
-      container.querySelector('[data-slot="author-wizard-description"]'),
-    ).toBeNull();
+describe("AuthorWizard — prebuilt starter → quick-edit", () => {
+  it("reveals the quick-edit card (not the full editor) seeded with the starter", () => {
+    const { container, getByLabelText, getByDisplayValue } = renderWizard();
+    pickFirstStarter(getByLabelText);
 
-    // The editor received the starter's structure, no refinement seam (direct).
-    const doc = captured.props?.initialDoc as {
-      identity: { name: string; constraints: string[] };
-    };
-    expect(doc.identity.name).toBe(firstStarter.name);
-    expect(captured.props?.refinement).toBeUndefined();
-    // The safety constraint is present + first (pinned).
-    expect(doc.identity.constraints[0]).toBe(SAFETY_CONSTRAINT);
+    // Quick-edit card appears; the full editor does NOT (it's behind "Open full
+    // editor"). The starter's name is in the quick-edit name field.
+    expect(bySlot(container, "quick-edit-card")).toBeTruthy();
+    expect(container.querySelector('[data-slot="mock-editor"]')).toBeNull();
+    expect(getByDisplayValue(firstStarter.name)).toBeTruthy();
+    // The safety constraint shows pinned (a read-only line).
+    const safety = getByDisplayValue(SAFETY_CONSTRAINT) as HTMLInputElement;
+    expect(safety.readOnly).toBe(true);
   });
 
-  it("creates directly: onSave assembles guarded YAML and calls createPersona", async () => {
+  it("creates DIRECTLY from quick-edit: guarded YAML → createPersona, no drafter", async () => {
     const { getByLabelText, container } = renderWizard();
-    fireEvent.click(
-      getByLabelText(
-        messages.author.gallery.useNamed.replace("{name}", firstStarter.name),
-      ),
-    );
-    fireEvent.click(bySlot(container, "mock-save"));
+    pickFirstStarter(getByLabelText);
+    fireEvent.click(bySlot(container, "quick-create"));
 
     await waitFor(() => expect(createPersona).toHaveBeenCalledTimes(1));
     const yaml = createPersona.mock.calls[0][0] as string;
     expect(yaml).toContain(SAFETY_CONSTRAINT);
-    // Direct create never invokes the drafter.
+    expect(yaml).toContain(firstStarter.name);
     expect(author).not.toHaveBeenCalled();
+  });
+
+  it("carries quick edits into the full editor (Open full editor)", () => {
+    const { getByLabelText, container } = renderWizard();
+    pickFirstStarter(getByLabelText);
+
+    // Edit the name in the quick-edit card, THEN open the full editor.
+    const nameInput = bySlot(container, "quick-name") as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: "Renamed Persona" } });
+    fireEvent.click(bySlot(container, "quick-open-full"));
+
+    // The full editor mounts with the EDITED doc (carry-over), no refinement.
+    expect(bySlot(container, "mock-editor")).toBeTruthy();
+    const doc = captured.props?.initialDoc as { identity: { name: string } };
+    expect(doc.identity.name).toBe("Renamed Persona");
+    expect(captured.props?.refinement).toBeUndefined();
   });
 });
 
 describe("AuthorWizard — start from scratch", () => {
-  it("opens an empty editable draft with the safety constraint pinned", () => {
-    const { container } = renderWizard();
+  it("reveals an empty quick-edit draft with the safety constraint pinned", () => {
+    const { container, getByDisplayValue } = renderWizard();
     fireEvent.click(bySlot(container, "author-wizard-scratch"));
-    expect(bySlot(container, "mock-editor")).toBeTruthy();
-    const doc = captured.props?.initialDoc as {
-      identity: { constraints: string[] };
-    };
-    expect(doc.identity.constraints[0]).toBe(SAFETY_CONSTRAINT);
+    expect(bySlot(container, "quick-edit-card")).toBeTruthy();
+    expect(getByDisplayValue(SAFETY_CONSTRAINT)).toBeTruthy();
     expect(author).not.toHaveBeenCalled();
   });
 });
