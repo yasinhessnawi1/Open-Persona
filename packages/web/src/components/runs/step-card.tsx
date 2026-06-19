@@ -3,10 +3,8 @@
 import { useTranslations } from "next-intl";
 import { OutputList } from "@/components/chat/output/dispatcher";
 import { ToolCallCard } from "@/components/chat/tool-call-card";
-import { Card } from "@/components/ui/card";
 import { Markdown } from "@/components/ui/markdown";
 import type { RunStep } from "@/lib/run";
-import { cn } from "@/lib/utils";
 import { AskUserPrompt } from "./ask-user-prompt";
 
 /**
@@ -30,11 +28,14 @@ import { AskUserPrompt } from "./ask-user-prompt";
 export function StepCard({
   step,
   awaiting,
+  last,
   onAnswer,
   personaId,
 }: {
   step: RunStep;
   awaiting: boolean;
+  /** Last step in the timeline — suppresses the trailing connector line. */
+  last?: boolean;
   onAnswer: (answer: string) => Promise<void>;
   /**
    * F4 T11: passed through to the OutputList → OutputDispatcher so the
@@ -48,37 +49,25 @@ export function StepCard({
   const t = useTranslations("runs");
   const isFinal = step.final !== undefined;
   const isError = step.error !== undefined;
+  // Spec 35: the .v-run-step rail dot reads the run-progress state — a filled
+  // identity dot for the final step, a pulsing identity ring while awaiting
+  // input, a neutral dot otherwise (error surfaces in the body copy).
+  const dotState = isFinal ? "done" : awaiting ? "running" : undefined;
 
   return (
-    <li className="relative pl-8" data-slot="step-card">
-      {/* Timeline node. Vermilion while this step still awaits input. */}
-      <span
-        aria-hidden="true"
-        className={cn(
-          "absolute top-3 left-[9px] size-2.5 rounded-full ring-4 ring-background",
-          isError
-            ? "bg-destructive"
-            : isFinal
-              ? "bg-tier-small"
-              : awaiting
-                ? "animate-pulse bg-primary"
-                : "bg-muted-foreground/40",
-        )}
-      />
-      <Card
-        className={cn(
-          "gap-2.5 p-4",
-          isFinal && "border-tier-small/30",
-          isError && "border-destructive/30",
-        )}
+    <li className="v-run-step" data-slot="step-card">
+      <div className="v-run-rail">
+        <span className="v-run-dot" data-state={dotState} aria-hidden="true" />
+        {last ? null : <span className="v-run-line" aria-hidden="true" />}
+      </div>
+
+      <div
+        className="v-run-step__body flex min-w-0 flex-col gap-2.5 pb-1"
         data-final={isFinal ? "true" : "false"}
         data-error={isError ? "true" : "false"}
       >
-        <div className="flex items-center justify-between gap-2">
-          <span
-            className="type-caption font-mono text-muted-foreground uppercase"
-            data-slot="step-label"
-          >
+        <div className="v-run-step__head">
+          <span className="v-run-step__type" data-slot="step-label">
             {isFinal ? t("finalLabel") : t("stepLabel", { n: step.step + 1 })}
           </span>
           {step.tier ? (
@@ -87,6 +76,13 @@ export function StepCard({
               data-slot="step-tier"
             >
               {step.tier}
+            </span>
+          ) : null}
+          {awaiting ? (
+            <span className="v-dots" aria-hidden="true">
+              <i />
+              <i />
+              <i />
             </span>
           ) : null}
         </div>
@@ -114,7 +110,7 @@ export function StepCard({
 
         {step.reasoning ? (
           <p
-            className="type-body whitespace-pre-wrap text-muted-foreground"
+            className="v-run-step__detail whitespace-pre-wrap"
             data-slot="step-reasoning"
           >
             {step.reasoning}
@@ -170,7 +166,7 @@ export function StepCard({
             {step.error}
           </p>
         ) : null}
-      </Card>
+      </div>
     </li>
   );
 }

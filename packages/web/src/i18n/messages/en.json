@@ -581,7 +581,9 @@
   },
   "voice": {
     "talk": "Talk to {name}",
-    "callWith": "Call with {name}",
+    "callWith": "Call with <hl>{name}</hl>",
+    "captionsLabel": "Captions",
+    "memoryNote": "one thread · voice & text share this memory",
     "listening": "Listening",
     "thinking": "Thinking…",
     "speaking": "Speaking",

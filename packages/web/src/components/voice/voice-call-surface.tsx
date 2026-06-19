@@ -16,15 +16,24 @@
  * contexts where voice naturally lives (D-V6-5 criteria 7 + 10).
  */
 
-import { ArrowLeft, Phone } from "lucide-react";
+import {
+  ArrowLeft,
+  Captions,
+  Mic,
+  MicOff,
+  Phone,
+  PhoneOff,
+} from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/auth";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { IdentityOrb } from "@/components/voice/identity-orb";
 import { VoiceCaptions } from "@/components/voice/voice-captions";
+import { personaIdentityStyle } from "@/lib/persona-identity";
 import { usePersonaAvatarSrc } from "@/lib/voice/use-persona-avatar-src";
 import { useVoiceCall } from "@/lib/voice/use-voice-call";
 
@@ -43,9 +52,11 @@ export interface VoiceCallSurfaceProps {
 export function VoiceCallSurface({
   persona,
   conversationId,
-}: VoiceCallSurfaceProps): React.JSX.Element {
+}: VoiceCallSurfaceProps): React.JSX.Element | null {
   const t = useTranslations("voice");
+  const router = useRouter();
   const { getToken } = useAuth();
+  const [captionsOn, setCaptionsOn] = useState(true);
   const token = useCallback(
     () => getToken(TEMPLATE ? { template: TEMPLATE } : undefined),
     [getToken],
@@ -78,6 +89,16 @@ export function VoiceCallSurface({
     void start();
   }, [start]);
 
+  // Spec 35: a clean hang-up drops straight back into the conversation — voice
+  // + text are one thread, so a "Call ended" card is dead-end noise. `replace`
+  // keeps the spent voice route out of history. Honest failure phases
+  // (dropped / error) still render their recovery card below.
+  useEffect(() => {
+    if (state.phase === "ended") {
+      router.replace(`/chat/${conversationId}`);
+    }
+  }, [state.phase, conversationId, router]);
+
   const stateLabel =
     state.agentState === "thinking"
       ? t("thinking")
@@ -101,33 +122,48 @@ export function VoiceCallSurface({
           ? t("reconnecting")
           : stateLabel;
 
+  // A clean end is already navigating away (effect above) — render nothing
+  // meanwhile so the "Call ended" card never flashes.
+  if (state.phase === "ended") return null;
+
   // Terminal phases (D-V6-5) — render an honest EmptyState instead of a dead
   // orb. `error` carries a typed kind so the copy + the recovery action are
-  // specific (retry vs sign-in vs nothing); `dropped`/`ended` offer reconnect.
+  // specific (retry vs sign-in vs nothing); `dropped` offers reconnect.
   const terminal = buildTerminal();
 
   return (
-    <div className="relative flex h-full flex-col items-center justify-center gap-6 p-4 sm:gap-8 sm:p-6">
+    <div className="v-voice" style={personaIdentityStyle(persona)}>
+      {/* Identity-tinted backdrop — a soft radial wash in the persona's hue. */}
+      <div
+        className="v-voice__bg"
+        style={{
+          background:
+            "radial-gradient(50% 50% at 50% 42%, oklch(0.62 0.13 var(--identity-h) / 0.14), transparent 70%)",
+        }}
+      />
       <Link
         href={`/chat/${conversationId}`}
         aria-label={t("back")}
-        className="absolute top-4 left-4 inline-flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        className="v-iconbtn absolute top-4 left-4 z-10"
       >
-        <ArrowLeft className="size-5" aria-hidden />
+        <ArrowLeft aria-hidden />
       </Link>
 
-      <header className="text-center">
-        <h1 className="font-serif text-lg sm:text-xl">
-          {t("callWith", { name: persona.name })}
-        </h1>
+      <header className="v-voice__head">
+        <div className="v-voice__title">
+          {t.rich("callWith", {
+            name: persona.name,
+            hl: (chunks) => <span className="v-id-underline">{chunks}</span>,
+          })}
+        </div>
         {persona.role ? (
-          <p className="text-sm text-muted-foreground">{persona.role}</p>
+          <div className="v-voice__role">{persona.role}</div>
         ) : null}
       </header>
 
       {terminal ? (
         <EmptyState
-          className="w-full max-w-md"
+          className="relative z-[1] w-full max-w-md"
           icon={<Phone className="size-6" aria-hidden />}
           title={terminal.title}
           description={terminal.body}
@@ -135,56 +171,79 @@ export function VoiceCallSurface({
         />
       ) : (
         <>
-          <IdentityOrb
-            persona={{ id: persona.id, name: persona.name }}
-            agentState={state.agentState}
-            bargeInSignal={state.bargeInSignal}
-            getMicLevel={getMicLevel}
-            getPersonaLevel={getPersonaLevel}
-            avatarUrl={avatarSrc}
-            label={stateLabel}
-          />
+          <div className="v-orb-wrap">
+            <IdentityOrb
+              persona={{ id: persona.id, name: persona.name }}
+              agentState={state.agentState}
+              bargeInSignal={state.bargeInSignal}
+              getMicLevel={getMicLevel}
+              getPersonaLevel={getPersonaLevel}
+              avatarUrl={avatarSrc}
+              label={stateLabel}
+            />
+          </div>
 
-          <p
-            aria-live="polite"
-            className="min-h-5 text-sm text-muted-foreground"
-          >
+          <div className="v-voice__status" aria-live="polite">
             {statusLine}
-          </p>
+          </div>
 
-          <VoiceCaptions captions={call.captions} personaName={persona.name} />
+          {captionsOn ? (
+            <div className="v-voice__caption">
+              <VoiceCaptions
+                captions={call.captions}
+                personaName={persona.name}
+              />
+            </div>
+          ) : null}
 
           {state.needsAudioGesture ? (
-            <Button variant="secondary" onClick={() => void enableAudio()}>
+            <Button
+              variant="secondary"
+              className="relative z-[1]"
+              onClick={() => void enableAudio()}
+            >
               {t("enableAudio")}
             </Button>
           ) : null}
 
-          <div className="flex flex-wrap items-center justify-center gap-3">
-            {live ? (
-              <>
-                <Button
-                  variant="secondary"
-                  size="lg"
-                  onClick={() => void toggleMute()}
-                >
-                  {state.micActive ? t("mute") : t("unmute")}
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="lg"
-                  onClick={() => void end()}
-                >
-                  {t("end")}
-                </Button>
-              </>
-            ) : null}
+          {live ? (
+            <div className="v-voice__controls">
+              <button
+                type="button"
+                className="v-voice-ctl"
+                onClick={() => void toggleMute()}
+                aria-label={state.micActive ? t("mute") : t("unmute")}
+                title={state.micActive ? t("mute") : t("unmute")}
+                aria-pressed={!state.micActive}
+              >
+                {state.micActive ? <Mic aria-hidden /> : <MicOff aria-hidden />}
+              </button>
+              <button
+                type="button"
+                className="v-voice-ctl v-voice-ctl--end"
+                onClick={() => void end()}
+                aria-label={t("end")}
+                title={t("end")}
+              >
+                <PhoneOff aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="v-voice-ctl"
+                onClick={() => setCaptionsOn((c) => !c)}
+                aria-label={t("captionsLabel")}
+                title={t("captionsLabel")}
+                aria-pressed={captionsOn}
+              >
+                <Captions aria-hidden />
+              </button>
+            </div>
+          ) : null}
 
-            {state.phase === "connecting" ? (
-              <span className="text-sm text-muted-foreground">
-                {t("connecting")}
-              </span>
-            ) : null}
+          {/* The shared-memory note — voice + text are one thread (D-V6-4). */}
+          <div className="relative z-[1] flex items-center gap-2 font-mono text-muted-foreground type-caption normal-case tracking-normal">
+            <span className="v-id-dot" />
+            {t("memoryNote")}
           </div>
         </>
       )}
@@ -237,17 +296,8 @@ export function VoiceCallSurface({
         ),
       };
     }
-    if (state.phase === "ended") {
-      return {
-        title: t("ended"),
-        body: t("endedBody"),
-        action: (
-          <Button size="lg" onClick={() => void start()}>
-            {t("callAgain")}
-          </Button>
-        ),
-      };
-    }
+    // `ended` (a clean hang-up) is intentionally NOT a terminal card — the
+    // effect above navigates back to the conversation instead.
     return null;
   }
 }

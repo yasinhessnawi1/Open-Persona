@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   end: vi.fn(),
   toggleMute: vi.fn(),
   enableAudio: vi.fn(),
+  replace: vi.fn(),
 }));
 
 vi.mock("@clerk/nextjs", () => ({
@@ -42,6 +43,9 @@ vi.mock("next/link", () => ({
       {children}
     </a>
   ),
+}));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: h.replace, push: vi.fn() }),
 }));
 vi.mock("@/lib/voice/use-voice-call", () => ({
   useVoiceCall: () => ({
@@ -76,12 +80,16 @@ const withPhase = (
 describe("VoiceCallSurface (C3) terminal states", () => {
   beforeEach(() => {
     h.start.mockClear();
+    h.replace.mockClear();
   });
 
   it("renders the live orb + end control when connected (not a failure card)", () => {
     renderSurface(withPhase("connected"));
     expect(screen.getByTestId("orb")).toBeInTheDocument();
-    expect(screen.getByText("End call")).toBeInTheDocument();
+    // Spec 35: the end control is now an icon button — query its accessible name.
+    expect(
+      screen.getByRole("button", { name: "End call" }),
+    ).toBeInTheDocument();
   });
 
   it("mic_denied error → kind-specific copy + a retry action, no orb", () => {
@@ -117,9 +125,11 @@ describe("VoiceCallSurface (C3) terminal states", () => {
     expect(screen.getByText("Try again")).toBeInTheDocument();
   });
 
-  it("ended → call-again affordance", () => {
+  it("ended → navigates back to the conversation (no dead-end card)", () => {
+    // Spec 35: a clean hang-up returns to the conversation instead of a
+    // "Call ended" card — voice + text are one thread.
     renderSurface(withPhase("ended"));
-    expect(screen.getByText("Call ended")).toBeInTheDocument();
-    expect(screen.getByText("Call again")).toBeInTheDocument();
+    expect(screen.queryByText("Call ended")).toBeNull();
+    expect(h.replace).toHaveBeenCalledWith("/chat/c1");
   });
 });

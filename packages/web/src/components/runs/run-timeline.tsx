@@ -1,6 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
+import { personaIdentityStyle } from "@/lib/persona-identity";
 import type { RunView } from "@/lib/run";
 import { StepCard } from "./step-card";
 
@@ -39,36 +40,44 @@ export function RunTimeline({
     );
   }
 
+  const tailWorking = running && awaitingStep === undefined;
+
   return (
-    <div className="relative" data-slot="run-timeline">
-      {view.steps.length > 0 ? (
-        <span
-          aria-hidden="true"
-          className="absolute top-3 bottom-3 left-[14px] w-px bg-border"
-        />
-      ) : null}
-      <ol className="flex flex-col gap-3">
-        {view.steps.map((s) => (
+    <div
+      className="relative"
+      style={personaIdentityStyle({ id: personaId })}
+      data-slot="run-timeline"
+    >
+      {/* Each step carries its own .v-run-rail (dot + connector); the list has
+          no gap so the connectors form one continuous spine. */}
+      <ol className="flex flex-col">
+        {view.steps.map((s, i) => (
           <StepCard
             key={s.step}
             step={s}
             awaiting={s.step === awaitingStep}
+            last={i === view.steps.length - 1 && !tailWorking}
             onAnswer={onAnswer}
             personaId={personaId}
           />
         ))}
       </ol>
-      {running && awaitingStep === undefined ? (
+      {tailWorking ? (
         <div
-          className="type-ui mt-3 flex items-center gap-2 pl-8 text-muted-foreground"
+          className="v-run-step"
           data-slot="run-timeline-working"
           aria-live="polite"
         >
-          <span
-            aria-hidden="true"
-            className="size-2 animate-pulse rounded-full bg-primary"
-          />
-          {t("working")}
+          <div className="v-run-rail">
+            <span
+              className="v-run-dot"
+              data-state="running"
+              aria-hidden="true"
+            />
+          </div>
+          <div className="type-ui flex items-center pt-0.5 text-muted-foreground">
+            {t("working")}
+          </div>
         </div>
       ) : null}
     </div>
