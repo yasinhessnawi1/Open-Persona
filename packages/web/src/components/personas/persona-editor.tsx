@@ -302,7 +302,8 @@ export function PersonaEditor({
             title={t("advancedTitle")}
             icon={Settings2}
           >
-            {personaId ? <ByoMcpManager personaId={personaId} bare /> : null}
+            {/* Raw YAML first: a fixed toggle position so it never drifts as the
+                MCP list below grows for power users. */}
             <div className="flex flex-col gap-2">
               <button
                 type="button"
@@ -323,6 +324,11 @@ export function PersonaEditor({
                 </>
               ) : null}
             </div>
+            {personaId ? (
+              <div className="border-border border-t pt-4">
+                <ByoMcpManager personaId={personaId} bare />
+              </div>
+            ) : null}
           </CollapsibleSection>
 
           <div className="flex items-center justify-end gap-3">
