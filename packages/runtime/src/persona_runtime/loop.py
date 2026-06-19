@@ -105,6 +105,10 @@ _SUMMARISE_INSTRUCTION = (
     "Summarise the following conversation excerpt into a short paragraph, "
     "preserving names, facts, and decisions. Be concise."
 )
+# Persisted (never a blank bubble) when a turn produced NO visible text at all —
+# only tool calls, with an empty final generation. An honest marker beats an
+# empty assistant row that "vanishes on refresh".
+_NO_VISIBLE_TEXT_MARKER = "(No response was generated for this turn.)"
 
 
 def _backend_max_tokens(backend: ChatBackend) -> int:
@@ -481,6 +485,14 @@ class ConversationLoop:
         session_recreated = False
         usage: TokenUsage | None = None
         assistant_text = ""
+        # Turn-resilience buffer: every text delta yielded to the client this
+        # turn is appended here, across ALL rounds. ``assistant_text`` holds only
+        # the LAST round's text (the normal write-back: a clean agentic turn ends
+        # with the synthesized answer). When that final text is empty/whitespace —
+        # a tool-heavy turn that ended on tool calls + an empty forced final
+        # generation — we fall back to this buffer at write-back so the persisted
+        # message matches what the user actually saw, never a blank bubble.
+        visible_text = ""
         # Seeded with the spec-21 stated-assumption nudge when a non-asked signal
         # fired (D-21-18); otherwise empty. Carried into every round's prompt.
         tool_messages: list[ConversationMessage] = list(assumption_seed)
@@ -505,6 +517,7 @@ class ConversationLoop:
             ]
             outcome = _RoundOutcome()
             async for delta in self._stream_round(backend, prompt_messages, outcome):
+                visible_text += delta
                 yield _text_chunk(delta)
             round_text, round_calls, round_usage = outcome.text, outcome.calls, outcome.usage
             assistant_text = round_text
@@ -610,6 +623,7 @@ class ConversationLoop:
                 ]
                 final_outcome = _RoundOutcome()
                 async for delta in self._stream_round(backend, final_prompt, final_outcome):
+                    visible_text += delta
                     yield _text_chunk(delta)
                 assistant_text = final_outcome.text
                 round_usage = final_outcome.usage
@@ -664,6 +678,7 @@ class ConversationLoop:
                 ]
                 retry_outcome = _RoundOutcome()
                 async for delta in self._stream_round(backend, retry_prompt, retry_outcome):
+                    visible_text += delta
                     yield _text_chunk(delta)
                 if retry_outcome.text:
                     assistant_text = retry_outcome.text
@@ -675,6 +690,18 @@ class ConversationLoop:
                     tools=",".join(refused),
                     tier=tier,
                 )
+
+        # Turn-resilience fallback (the "vanishes on refresh" bug): a tool-heavy
+        # turn that ends on tool calls + an empty forced final generation leaves
+        # ``assistant_text`` blank, even though substantial text streamed to the
+        # user this turn. Persisting that blank produces an empty assistant row
+        # (content=''). When the final round's text is empty/whitespace, fall back
+        # to the full visible text the user actually saw; when even that is empty
+        # (a turn that produced no text at all — only tool calls), persist a short
+        # honest marker rather than a blank bubble. Normal turns are unaffected:
+        # ``assistant_text`` is the final synthesized answer and wins.
+        if not assistant_text.strip():
+            assistant_text = visible_text.strip() or _NO_VISIBLE_TEXT_MARKER
 
         # Spec 26 T10 (D-26-4): runtime tool-gap detection — AFTER generation
         # (the mirror of Spec 25's refusal detector above). If the model said it

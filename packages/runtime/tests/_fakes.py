@@ -27,7 +27,14 @@ if TYPE_CHECKING:
 
 
 class ScriptedRound:
-    """One scripted backend round: either text, or one tool call."""
+    """One scripted backend round.
+
+    A round is normally text-only or a single tool call, but a round may carry
+    BOTH text (pre-tool narration that streams to the user) AND a tool call —
+    the realistic tool-heavy shape where the model says "let me look that up…"
+    and emits a tool call in the same turn. When ``tool_name`` is set, any
+    ``text``/``text_deltas`` stream first, then the tool-call delta.
+    """
 
     def __init__(
         self,
@@ -103,6 +110,7 @@ class ScriptedBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        **_kwargs: Any,  # forward-compat: accept sampling knobs (top_p, etc.)
     ) -> Any:
         from persona.backends.types import ChatResponse
 
@@ -140,6 +148,7 @@ class ScriptedBackend:
         temperature: float = 0.0,
         max_tokens: int = 4096,
         stop: list[str] | None = None,
+        **_kwargs: Any,  # forward-compat: accept sampling knobs (top_p, etc.)
     ) -> AsyncIterator[StreamChunk]:
         self.chat_stream_calls += 1
         if self._index >= len(self._rounds):
@@ -152,6 +161,13 @@ class ScriptedBackend:
             return
         rnd = self._rounds[self._index]
         self._index += 1
+        # Pre-tool narration streams first (a round may carry both text and a
+        # tool call — the realistic tool-heavy shape).
+        if rnd.text_deltas:
+            for piece in rnd.text_deltas:
+                yield StreamChunk(delta=piece)
+        elif rnd.text:
+            yield StreamChunk(delta=rnd.text)
         if rnd.tool_name is not None:
             yield StreamChunk(
                 delta="",
@@ -161,11 +177,6 @@ class ScriptedBackend:
                     arguments_delta=json.dumps(rnd.tool_args),
                 ),
             )
-        elif rnd.text_deltas:
-            for piece in rnd.text_deltas:
-                yield StreamChunk(delta=piece)
-        elif rnd.text:
-            yield StreamChunk(delta=rnd.text)
         yield StreamChunk(
             delta="",
             is_final=True,

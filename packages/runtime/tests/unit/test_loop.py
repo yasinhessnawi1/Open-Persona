@@ -245,6 +245,119 @@ class TestMaxToolRoundsCap:
         assert writer.logs[0].tool_calls == 1
 
 
+class TestEmptyFinalRoundFallback:
+    """A tool-heavy turn whose final round produces no text must still persist
+    the visible text the user actually saw (the ``content=''`` "vanishes on
+    refresh" bug). The persisted assistant message must NEVER be blank when any
+    text streamed this turn.
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_final_round_falls_back_to_accumulated_text(self) -> None:
+        # Round 0 streams substantial narration to the user AND calls a tool;
+        # round 1 (the post-tool generation) returns NO text. On current code the
+        # last round's text (``""``) is what gets persisted → blank bubble.
+        backend = ScriptedBackend(
+            [
+                ScriptedRound(
+                    text="Here is the detailed answer the user actually saw.",
+                    tool_name="echo",
+                    tool_args={"message": "ping"},
+                    call_id="c0",
+                ),
+                ScriptedRound(text=""),  # empty final round (no synthesized answer)
+            ]
+        )
+        loop, stores, writer = _make_loop(backend)
+        conv = _conv(2)
+
+        chunks = [c async for c in loop.turn(conv, "do the thing")]
+        accumulated = "".join(c.delta for c in chunks)
+        assert "Here is the detailed answer" in accumulated
+
+        # The persisted assistant message must equal the visible text, not ''.
+        assistant_msgs = [m for m in conv.messages if m.role == "assistant"]
+        assert assistant_msgs, "an assistant message must be appended"
+        assert assistant_msgs[-1].content.strip(), "assistant content must not be blank"
+        assert "Here is the detailed answer the user actually saw." in assistant_msgs[-1].content
+
+        # The episodic write-back must carry the same visible text.
+        episodic_chunk = stores["episodic"].writes[-1][0]
+        assert "Here is the detailed answer the user actually saw." in episodic_chunk.text
+        assert writer.logs, "a TurnLog must be written"
+
+    @pytest.mark.asyncio
+    async def test_at_cap_empty_final_generation_falls_back(self) -> None:
+        # cap=1: round 0 streams narration + a tool call (dispatched, rounds->1);
+        # round 1 is at_cap → nudge + ONE final generation that returns empty.
+        # The accumulated narration must survive write-back.
+        backend = ScriptedBackend(
+            [
+                ScriptedRound(
+                    text="Searching the statute for the relevant clause now.",
+                    tool_name="echo",
+                    tool_args={"message": "x"},
+                    call_id="c0",
+                ),
+                ScriptedRound(tool_name="echo", tool_args={"message": "y"}, call_id="c1"),
+                ScriptedRound(text=""),  # forced post-cap final generation: empty
+            ]
+        )
+        loop, stores, _writer = _make_loop(backend, max_tool_rounds=1)
+        conv = _conv(2)
+
+        _ = [c async for c in loop.turn(conv, "go")]
+
+        assistant_msgs = [m for m in conv.messages if m.role == "assistant"]
+        assert assistant_msgs[-1].content.strip()
+        assert "Searching the statute" in assistant_msgs[-1].content
+        episodic_chunk = stores["episodic"].writes[-1][0]
+        assert "Searching the statute" in episodic_chunk.text
+
+    @pytest.mark.asyncio
+    async def test_normal_turn_persists_final_round_text_not_concatenation(self) -> None:
+        # Regression guard: a normal agentic turn ends with a synthesized answer.
+        # The persisted text must be the FINAL round's answer, NOT every round's
+        # "let me search…" narration concatenated.
+        backend = ScriptedBackend(
+            [
+                ScriptedRound(
+                    text="Let me look that up.",
+                    tool_name="echo",
+                    tool_args={"message": "ping"},
+                    call_id="c0",
+                ),
+                ScriptedRound(text="The husleieloven says X."),
+            ]
+        )
+        loop, _stores, _writer = _make_loop(backend)
+        conv = _conv(2)
+
+        _ = [c async for c in loop.turn(conv, "what does the law say")]
+
+        assistant_msgs = [m for m in conv.messages if m.role == "assistant"]
+        assert assistant_msgs[-1].content == "The husleieloven says X."
+
+    @pytest.mark.asyncio
+    async def test_truly_textless_turn_persists_honest_marker(self) -> None:
+        # A turn that produced NO visible text at all (only a tool call, then an
+        # empty final) must not persist a blank bubble — it persists a short
+        # honest marker instead.
+        backend = ScriptedBackend(
+            [
+                ScriptedRound(tool_name="echo", tool_args={"message": "x"}, call_id="c0"),
+                ScriptedRound(text=""),  # empty final, no narration anywhere
+            ]
+        )
+        loop, _stores, _writer = _make_loop(backend)
+        conv = _conv(2)
+
+        _ = [c async for c in loop.turn(conv, "go")]
+
+        assistant_msgs = [m for m in conv.messages if m.role == "assistant"]
+        assert assistant_msgs[-1].content.strip(), "must not persist a blank bubble"
+
+
 class TestUseSkillIntercept:
     @pytest.mark.asyncio
     async def test_use_skill_injects_and_records_skill_used(self) -> None:

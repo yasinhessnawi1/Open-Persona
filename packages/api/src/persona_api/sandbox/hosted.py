@@ -148,6 +148,26 @@ def detect_env_setup(code: str) -> bool:
 _HOSTED_SUBSTRATE_MEMORY_FLOOR_MB = 2048
 _HOSTED_SUBSTRATE_DISK_FLOOR_MB = 1024
 
+#: The documented writable output directory the model is told to write to. The
+#: prompt builder (``persona_runtime.prompt``) and every document-generation
+#: skill instruct the model to write produced files under ``/workspace/out``
+#: (the LocalDockerSandbox mounts it read-write and runs with it as the working
+#: dir; the sandbox image even ``WORKDIR``\\ s it). The E2B substrate boots with
+#: ``/home/user`` as the working dir and has NO ``/workspace/out`` — so model
+#: code writing to ``/workspace/out/<file>`` hit ``FileNotFoundError`` on the
+#: hosted path. We ensure the directory exists per sandbox so the documented
+#: out-dir contract holds across both substrates (parity with
+#: ``LocalDockerSandbox._make_workspace_dirs``).
+_HOSTED_WORKSPACE_OUT = "/workspace/out"
+
+#: Per-execute bootstrap prepended to user code on the hosted path so the
+#: documented out-dir always exists before the code runs (belt-and-braces for an
+#: SDK without ``files.make_dir``, or a reaped dir). One ``os.makedirs`` with
+#: ``exist_ok=True`` — idempotent and ~free.
+_WORKSPACE_OUT_BOOTSTRAP = (
+    f"import os as _os; _os.makedirs({_HOSTED_WORKSPACE_OUT!r}, exist_ok=True)"
+)
+
 
 def _is_sandbox_reaped(stderr: str) -> bool:
     """True if an execution error indicates the E2B sandbox was reaped/gone.
@@ -426,10 +446,22 @@ class HostedSandbox:
         return data
 
     @staticmethod
-    def _read_e2b_bytes(sandbox: E2BSandbox, ref: str) -> bytes:
-        """Sync E2B file read. Substrate path is ``/home/user/<ref>``
-        (D-12-9 hosted equivalent of /workspace/out)."""
-        result = sandbox.files.read(f"/home/user/{ref}", format="bytes")
+    def _resolve_out_ref(ref: str) -> str:
+        """Resolve a produced-file ``ref`` to its absolute substrate path.
+
+        Out-dir parity: produced files are written under the documented
+        ``/workspace/out`` (same contract as the local substrate). A relative
+        ``ref`` is resolved there; an already-absolute ``ref`` is honoured
+        verbatim (the model may emit a full path).
+        """
+        if ref.startswith("/"):
+            return ref
+        return f"{_HOSTED_WORKSPACE_OUT}/{ref}"
+
+    @classmethod
+    def _read_e2b_bytes(cls, sandbox: E2BSandbox, ref: str) -> bytes:
+        """Sync E2B file read from the documented ``/workspace/out`` out-dir."""
+        result = sandbox.files.read(cls._resolve_out_ref(ref), format="bytes")
         if not isinstance(result, bytes):
             # E2B's typed overloads return str by default; format="bytes" must yield bytes.
             return bytes(result)
@@ -553,7 +585,7 @@ class HostedSandbox:
         if not network.enabled:
             kwargs["allow_internet_access"] = False
         try:
-            return Sandbox(**kwargs)
+            sandbox = Sandbox(**kwargs)
         except Exception as exc:  # noqa: BLE001 — SDK raises a hierarchy we don't import
             _logger.warning(
                 "E2B sandbox creation failed",
@@ -562,6 +594,36 @@ class HostedSandbox:
             )
             msg = f"E2B sandbox creation failed: {type(exc).__name__}: {exc}"
             raise SandboxUnavailableError(msg, context={"reason": "e2b_create_failed"}) from exc
+        # Out-dir parity (the documented ``/workspace/out`` contract). The local
+        # substrate creates + mounts it read-write; the E2B substrate must too,
+        # or model code writing to ``/workspace/out/<file>`` raises
+        # ``FileNotFoundError`` (and the turn thrashes). Best-effort: a substrate
+        # that already has the dir, or an SDK without ``make_dir``, must not break
+        # creation — the per-execute bootstrap (``_run_and_marshal``) is the
+        # belt-and-braces fallback.
+        self._ensure_workspace_out(sandbox)
+        return sandbox
+
+    @staticmethod
+    def _ensure_workspace_out(sandbox: E2BSandbox) -> None:
+        """Ensure the documented ``/workspace/out`` dir exists on the sandbox.
+
+        The model is told to write produced files under ``/workspace/out`` (the
+        prompt builder + every document-generation skill). The E2B substrate has
+        no such directory by default, so we create it once per sandbox. Uses the
+        SDK ``files.make_dir`` when available; failure is logged and swallowed
+        (the per-execute bootstrap re-ensures it before user code runs).
+        """
+        make_dir = getattr(getattr(sandbox, "files", None), "make_dir", None)
+        if make_dir is None:
+            return
+        try:
+            make_dir(_HOSTED_WORKSPACE_OUT)
+        except Exception as exc:  # noqa: BLE001 — SDK error hierarchy abstracted
+            _logger.debug(
+                "could not pre-create /workspace/out (will retry in-exec)",
+                exc_type=type(exc).__name__,
+            )
 
     def _run_and_marshal(
         self,
@@ -584,6 +646,13 @@ class HostedSandbox:
                     path=f.path,
                     exc_type=type(exc).__name__,
                 )
+
+        # Out-dir parity belt-and-braces: ensure the documented /workspace/out
+        # exists before user code runs, in case the SDK lacks ``files.make_dir``
+        # or the dir was reaped. Idempotent + cheap; runs in the same kernel so
+        # the directory persists for subsequent stateful calls. Prepended (not a
+        # separate run_code) so it cannot consume a turn or perturb timing.
+        code = f"{_WORKSPACE_OUT_BOOTSTRAP}\n{code}"
 
         started = time.perf_counter()
         try:
