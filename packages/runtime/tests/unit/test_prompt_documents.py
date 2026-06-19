@@ -688,6 +688,38 @@ def _descriptor(
     )
 
 
+class TestSynopsisUploadAccessHint:
+    """The synopsis tells the model WHERE to read an attached document.
+
+    Before this hint the model was told documents *exist* (the synopsis) but
+    never that the original bytes are on disk at ``uploads/<filename>`` — and
+    the code_execution verification block points it at ``/workspace/out`` (the
+    produced-files dir), which never holds uploads. The hint closes the gap so
+    the model uses ``file_read("uploads/<name>")`` / ``open("uploads/<name>")``.
+    """
+
+    def test_synopsis_includes_uploads_access_hint(
+        self,
+        builder: PromptBuilder,
+        persona: Persona,
+        empty_context: RetrievedContext,
+    ) -> None:
+        doc_ctx = DocumentContext(
+            attached_documents=(_descriptor("README.md", "md", size_bytes=1024),),
+        )
+        text = builder.build(
+            persona,
+            empty_context,
+            history=[],
+            skill_index="",
+            user_message="what does the readme say",
+            max_tokens=8000,
+            document_context=doc_ctx,
+        )[0].content
+        assert "uploads/<filename>" in text
+        assert 'file_read("uploads/<filename>")' in text
+
+
 class TestSynopsisRendering:
     def test_pdf_descriptor_with_pages_and_size(
         self,

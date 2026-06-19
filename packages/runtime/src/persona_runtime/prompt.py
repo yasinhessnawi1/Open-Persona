@@ -451,12 +451,32 @@ class PromptBuilder:
         attached documents regardless of which had chunks retrieved this
         turn. The model can then reason about coverage rather than mistaking
         retrieved fragments for the whole.
+
+        An access-path hint is appended so the model knows the ORIGINAL
+        uploaded file is on disk at ``uploads/<filename>`` (relative to the
+        working directory). The chat path stages each attached document there
+        for BOTH ``file_read`` (the host-side scoped root) and
+        ``code_execution`` (the sandbox working directory) — so a
+        ``file_read("uploads/<filename>")`` or ``open("uploads/<filename>")``
+        reads the real bytes, not only this synopsis. Without the hint the
+        model was told documents *exist* but never where to read them, and the
+        ``code_execution`` verification block points it at ``/workspace/out``
+        (the produced-files dir), which never contains uploads.
         """
         descriptors = [
             PromptBuilder._format_document_descriptor(doc)
             for doc in document_context.attached_documents
         ]
-        return "Attached documents: " + "; ".join(descriptors)
+        synopsis = "Attached documents: " + "; ".join(descriptors)
+        return (
+            synopsis
+            + "\nThe original uploaded files are on disk at "
+            + "uploads/<filename> (relative to your working directory). To read "
+            + 'a document\'s actual contents, use file_read("uploads/<filename>") '
+            + 'or, inside code_execution, open("uploads/<filename>"); list '
+            + 'os.listdir("uploads") to see them. Do NOT say you cannot access '
+            + "an attached file."
+        )
 
     @staticmethod
     def _format_document_descriptor(doc: DocumentDescriptor) -> str:

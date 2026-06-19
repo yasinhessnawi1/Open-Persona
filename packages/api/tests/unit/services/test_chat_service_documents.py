@@ -107,6 +107,162 @@ class TestResolveTurnDocuments:
         )
 
 
+class TestStageDocumentsForFileRead:
+    """The host-side mirror that makes ``file_read("uploads/<name>")`` work.
+
+    ``code_execution`` reads the staged document because the runtime ships the
+    bytes into the REMOTE sandbox CWD; ``file_read`` reads the LOCAL filesystem
+    under ``<workspace_root>/<owner_id>/<persona_id>``. The mirror writes the
+    document under THAT scoped root so the SAME relative path serves both tools.
+    """
+
+    _OWNER = "owner_1"
+
+    def _resolved(self, tmp_path: Path) -> list[object]:
+        _write_document(tmp_path)
+        return list(
+            _resolve_turn_documents(
+                workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+            )
+        )
+
+    def test_mirrors_document_into_file_read_scoped_root(self, tmp_path: Path) -> None:
+        from persona_api.services.chat_service import _stage_documents_for_file_read
+
+        documents = self._resolved(tmp_path)
+        _stage_documents_for_file_read(
+            workspace_root=tmp_path,
+            owner_id=self._OWNER,
+            persona_id=_PERSONA,
+            documents=documents,  # type: ignore[arg-type]
+        )
+
+        # file_read resolves <workspace_root>/<owner_id>/<persona_id>/<path>;
+        # the mirrored doc must land at uploads/<filename> under THAT root.
+        target = tmp_path / self._OWNER / _PERSONA / "uploads" / "pollys-layout-test.md"
+        assert target.exists()
+        assert target.read_bytes() == _DOC_BODY
+
+    def test_no_workspace_root_is_noop(self) -> None:
+        from persona_api.services.chat_service import _stage_documents_for_file_read
+
+        # Must not raise even with documents present (CLI / test path).
+        _stage_documents_for_file_read(
+            workspace_root=None, owner_id=self._OWNER, persona_id=_PERSONA, documents=[]
+        )
+
+    def test_isolation_persona_a_cannot_reach_persona_b(self, tmp_path: Path) -> None:
+        """A document's mirror lands ONLY under the current owner/persona root.
+
+        Persona B's scoped root must stay empty — the invariant the just-landed
+        security scoping guarantees, preserved by the mirror.
+        """
+        from persona_api.services.chat_service import _stage_documents_for_file_read
+
+        documents = self._resolved(tmp_path)
+        _stage_documents_for_file_read(
+            workspace_root=tmp_path,
+            owner_id=self._OWNER,
+            persona_id=_PERSONA,
+            documents=documents,  # type: ignore[arg-type]
+        )
+
+        # Persona B (different persona, same owner) gets NOTHING.
+        other_persona_root = tmp_path / self._OWNER / "other_persona"
+        assert not other_persona_root.exists()
+        # A different owner gets NOTHING either.
+        other_owner_root = tmp_path / "owner_2"
+        assert not other_owner_root.exists()
+
+    def test_traversal_filename_does_not_escape_scoped_root(self, tmp_path: Path) -> None:
+        """A pathological ``SandboxFile.path`` is rejected, not written outside."""
+        from persona.sandbox.result import SandboxFile
+        from persona_api.services.chat_service import _stage_documents_for_file_read
+
+        evil = SandboxFile(
+            path="uploads/../../escape.md",
+            content_bytes=b"nope",
+            size_bytes=4,
+            media_type="text/markdown",
+        )
+        _stage_documents_for_file_read(
+            workspace_root=tmp_path,
+            owner_id=self._OWNER,
+            persona_id=_PERSONA,
+            documents=[evil],
+        )
+        # Nothing escaped above the scoped root.
+        assert not (tmp_path / "escape.md").exists()
+        assert not (tmp_path / self._OWNER / "escape.md").exists()
+
+
+class TestFileReadReconciliation:
+    """End-to-end: a mirrored document is readable by the REAL ``file_read`` tool.
+
+    Proves the path model is coherent — ``file_read("uploads/<filename>")``
+    resolves against the SAME per-(owner, persona) scoped root the mirror writes
+    to, and reads THIS document's actual bytes. Also proves the isolation
+    invariant against the real tool: persona B's file_read (its own scoped root)
+    cannot see persona A's mirrored document.
+    """
+
+    _OWNER = "owner_1"
+
+    @pytest.mark.asyncio
+    async def test_file_read_reads_mirrored_document(self, tmp_path: Path) -> None:
+        from persona.tools.builtin.file_read import make_file_read_tool
+        from persona_api.services.chat_service import _stage_documents_for_file_read
+
+        _write_document(tmp_path)
+        documents = list(
+            _resolve_turn_documents(
+                workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+            )
+        )
+        _stage_documents_for_file_read(
+            workspace_root=tmp_path,
+            owner_id=self._OWNER,
+            persona_id=_PERSONA,
+            documents=documents,  # type: ignore[arg-type]
+        )
+
+        # The file_read provider resolves <workspace_root>/<owner>/<persona>
+        # (mirror of runtime_factory._build_file_sandbox_root_provider).
+        scoped_root = tmp_path / self._OWNER / _PERSONA
+        tool = make_file_read_tool(sandbox_root=scoped_root)
+        result = await tool.execute(path="uploads/pollys-layout-test.md")
+
+        assert result.is_error is False
+        assert result.content == _DOC_BODY.decode()
+
+    @pytest.mark.asyncio
+    async def test_file_read_isolation_other_persona_cannot_read(self, tmp_path: Path) -> None:
+        from persona.tools.builtin.file_read import make_file_read_tool
+        from persona_api.services.chat_service import _stage_documents_for_file_read
+
+        _write_document(tmp_path)
+        documents = list(
+            _resolve_turn_documents(
+                workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+            )
+        )
+        _stage_documents_for_file_read(
+            workspace_root=tmp_path,
+            owner_id=self._OWNER,
+            persona_id=_PERSONA,
+            documents=documents,  # type: ignore[arg-type]
+        )
+
+        # Persona B's file_read is scoped to ITS OWN root — A's doc is invisible.
+        other_root = tmp_path / self._OWNER / "persona_b"
+        other_root.mkdir(parents=True, exist_ok=True)
+        tool = make_file_read_tool(sandbox_root=other_root)
+        result = await tool.execute(path="uploads/pollys-layout-test.md")
+
+        assert result.is_error is True
+        assert "FileNotFoundError" in result.content
+
+
 class _CapturingLoop:
     """Scripted loop that records the ``documents`` kwarg it received."""
 

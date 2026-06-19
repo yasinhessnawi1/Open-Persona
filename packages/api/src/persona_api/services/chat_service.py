@@ -364,6 +364,23 @@ async def stream_chat(
             persona_id=persona_id,
             conversation_id=conversation_id,
         )
+        # file_read is a HOST-side tool scoped to ``<workspace_root>/<owner_id>/
+        # <persona_id>`` (runtime_factory._build_file_sandbox_root_provider) — a
+        # DIFFERENT subtree from the conversation-scoped document store
+        # (``<workspace_root>/persona_<id>/conversations/<conv>/documents/``).
+        # Staging onto ``deferred_input_files`` only reaches the REMOTE E2B
+        # sandbox (where ``code_execution`` runs), never file_read's host root,
+        # so ``file_read("uploads/<name>")`` 404'd. Mirror each staged document
+        # into the file_read scoped root at ``uploads/<filename>`` so BOTH tools
+        # read the SAME relative path. Per-(owner, persona) isolation is intact:
+        # we only ever write under THIS request's scoped root, and only THIS
+        # conversation's attached documents.
+        _stage_documents_for_file_read(
+            workspace_root=workspace_root,
+            owner_id=owner_id,
+            persona_id=persona_id,
+            documents=turn_documents,
+        )
 
         # The loop fires on_event synchronously between chunk yields; buffer the
         # events and flush them (in order) before the next chunk's frame, so the SSE
@@ -597,6 +614,87 @@ def _resolve_turn_documents(
             )
         )
     return resolved
+
+
+def _stage_documents_for_file_read(
+    *,
+    workspace_root: Path | None,
+    owner_id: str,
+    persona_id: str,
+    documents: list[SandboxFile],
+) -> None:
+    """Mirror staged documents into the HOST-side ``file_read`` scoped root.
+
+    The ``code_execution`` tool reads the documents staged onto
+    ``deferred_input_files`` because the runtime ships those bytes into the
+    REMOTE sandbox's working directory (``/home/user/uploads/<name>`` on the
+    hosted E2B substrate — relative ``uploads/<name>`` from CWD). The built-in
+    ``file_read`` tool, by contrast, reads the LOCAL filesystem under its
+    per-request scoped root ``<workspace_root>/<owner_id>/<persona_id>``
+    (:func:`persona_api.services.runtime_factory.RuntimeFactory._build_file_sandbox_root_provider`)
+    — a *different* subtree from the conversation-scoped document store. Without
+    this mirror, ``file_read("uploads/<name>")`` resolves to a path that does
+    not exist and returns ``FileNotFoundError``.
+
+    This stages each document's bytes to
+    ``<workspace_root>/<owner_id>/<persona_id>/uploads/<filename>`` so a
+    ``file_read("uploads/<filename>")`` finds THIS conversation's uploaded
+    document at the SAME relative path ``code_execution`` uses. The result is a
+    single coherent path model — ``uploads/<filename>`` — across both tools.
+
+    Isolation invariant (do NOT regress the just-landed security scoping): the
+    target is resolved THROUGH :func:`resolve_sandbox_path` against the same
+    per-(owner, persona) root file_read reads, so a pathological filename cannot
+    escape the persona's subtree, and persona A never gains a path into persona
+    B's (or another owner's) files. Only the CURRENT request's owner/persona
+    root is ever written, and only the CURRENT conversation's attached
+    documents (the ``documents`` already resolved for this turn).
+
+    Best-effort: a write failure is logged and skipped (the model still has the
+    ``document_context`` synopsis + the ``code_execution`` copy); a partial
+    staging beats a hard turn failure.
+
+    Args:
+        workspace_root: The per-deployment workspace root (``app.state``). When
+            ``None`` (CLI / test path) the file tools have no scoped provider
+            anyway, so staging is a no-op.
+        owner_id: Authenticated tenant id — the first scope segment.
+        persona_id: Persona owning the conversation — the second scope segment.
+        documents: The :class:`SandboxFile` carriers already resolved for this
+            turn by :func:`_resolve_turn_documents` (path ``uploads/<filename>``,
+            bytes in ``content_bytes``).
+    """
+    if workspace_root is None or not documents:
+        return
+    # Local import: keep the api module-load import graph free of the core
+    # sandbox resolver (mirrors the lazy-import discipline elsewhere here).
+    from persona.errors import SandboxViolationError  # noqa: PLC0415
+    from persona.tools._sandbox import resolve_sandbox_path  # noqa: PLC0415
+
+    # The EXACT root the file_read provider resolves at dispatch time
+    # (runtime_factory._build_file_sandbox_root_provider). Keeping the two in
+    # lockstep is the contract that makes ``file_read("uploads/<name>")`` work.
+    file_read_root = workspace_root / owner_id / persona_id
+    for sf in documents:
+        if sf.content_bytes is None:
+            continue
+        try:
+            target = resolve_sandbox_path(file_read_root, sf.path)
+        except SandboxViolationError:
+            _log.warning(
+                "document path escapes the file_read scoped root; not mirrored",
+                path=sf.path,
+            )
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(sf.content_bytes)
+        except OSError as exc:
+            _log.warning(
+                "could not mirror document into the file_read root; skipping",
+                path=sf.path,
+                exc_type=type(exc).__name__,
+            )
 
 
 def _persist_turn(
