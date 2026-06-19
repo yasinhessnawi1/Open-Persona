@@ -1,8 +1,10 @@
-import { ArrowLeft, MessageSquare, Pencil, Shield } from "lucide-react";
+import { ArrowLeft, MessageSquare, Pencil, Phone, Shield } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { startVoice } from "@/app/actions";
 import { Grid, PageBody, Section, Stack } from "@/components/layout";
+import { MemoryStores } from "@/components/persona/memory-stores";
 import { PersonaDetailManageMenu } from "@/components/persona/persona-detail-manage-menu";
 import { PersonaIdentityHeaderLive } from "@/components/persona/persona-identity-header-live";
 import { StartRunForm } from "@/components/personas/start-run-form";
@@ -66,7 +68,7 @@ export default async function PersonaDetailPage({
   };
 
   return (
-    <PageBody>
+    <PageBody width="wide">
       <Link
         href="/personas"
         className="type-ui mb-6 inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
@@ -88,6 +90,15 @@ export default async function PersonaDetailPage({
           >
             {p.languageDefault}
           </Badge>
+          <form action={startVoice.bind(null, id)}>
+            <button
+              type="submit"
+              className={cn(buttonVariants({ variant: "outline" }), "gap-2")}
+            >
+              <Phone className="size-4" aria-hidden="true" />
+              {t("memory.call")}
+            </button>
+          </form>
           <form action={startChat.bind(null, id)}>
             <button type="submit" className={cn(buttonVariants(), "gap-2")}>
               <MessageSquare className="size-4" aria-hidden="true" />
@@ -146,45 +157,16 @@ export default async function PersonaDetailPage({
           </Card>
         </Section>
 
-        {p.selfFacts.length > 0 ? (
-          <Section heading={t("selfFacts")}>
-            <Card className="p-5">
-              <ul className="type-body flex flex-col gap-1.5">
-                {p.selfFacts.map((f) => (
-                  <li key={f.fact} className="text-muted-foreground">
-                    {f.fact}
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          </Section>
-        ) : null}
-
-        {p.worldview.length > 0 ? (
-          <Section heading={t("worldview")}>
-            <Card className="p-5">
-              <ul className="type-body flex flex-col gap-2.5">
-                {p.worldview.map((w) => (
-                  <li
-                    key={w.claim}
-                    className="flex flex-wrap items-baseline gap-2"
-                  >
-                    <span>{w.claim}</span>
-                    {w.epistemic ? (
-                      <Badge
-                        variant="outline"
-                        className="type-caption font-mono uppercase"
-                        data-slot="worldview-epistemic"
-                      >
-                        {w.epistemic}
-                      </Badge>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          </Section>
-        ) : null}
+        <Section heading={t("memory.heading")}>
+          <MemoryStores
+            name={p.name}
+            role={p.role}
+            language={p.languageDefault}
+            selfFacts={p.selfFacts.map((f) => f.fact)}
+            worldview={p.worldview}
+            conversationCount={detail.conversation_count ?? 0}
+          />
+        </Section>
 
         {(p.tools.length > 0 || p.skills.length > 0) && (
           <Grid cols={{ base: 1, sm: 2 }} gap={5}>

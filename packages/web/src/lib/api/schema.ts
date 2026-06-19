@@ -1477,6 +1477,11 @@ export interface components {
        * Format: date-time
        */
       updated_at: string;
+      /**
+       * Conversation Count
+       * @default 0
+       */
+      conversation_count: number;
     };
     /**
      * PersonaSummary

@@ -124,6 +124,10 @@ class PersonaDetail(_Output):
     consent_updated_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    # Spec 35: conversations the persona has had — the source of its episodic
+    # memory (retrieved + compacted per turn at runtime). One cheap COUNT; lets
+    # the detail's episodic-store card show a real figure instead of a guess.
+    conversation_count: int = 0
 
 
 # -- LLM-assisted authoring (spec 10, §3 / D-10-6) --------------------------

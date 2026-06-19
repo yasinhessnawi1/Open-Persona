@@ -115,6 +115,7 @@ def _persona_detail(
     row: dict[str, object],
     *,
     tier_registry: TierRegistry | None,
+    conversation_count: int = 0,
 ) -> PersonaDetail:
     avatar = row.get("avatar_url")
     consent = row.get("consent_to_auto_dispatch")
@@ -128,6 +129,7 @@ def _persona_detail(
         consent_updated_at=row.get("consent_updated_at"),  # type: ignore[arg-type]
         created_at=row["created_at"],  # type: ignore[arg-type]
         updated_at=row["updated_at"],  # type: ignore[arg-type]
+        conversation_count=conversation_count,
     )
 
 
@@ -603,10 +605,10 @@ async def get_persona(
     user: AuthenticatedUser = Depends(get_current_user),  # noqa: ARG001 — RLS via contextvar
 ) -> PersonaDetail:
     """Get a persona's YAML + metadata (404 if not the caller's)."""
-    row = persona_service.get_persona(
-        rls_engine=request.app.state.rls_engine, persona_id=persona_id
-    )
-    return _persona_detail(row, tier_registry=_tier_registry(request))
+    rls_engine = request.app.state.rls_engine
+    row = persona_service.get_persona(rls_engine=rls_engine, persona_id=persona_id)
+    count = persona_service.conversation_count_for(rls_engine=rls_engine, persona_id=persona_id)
+    return _persona_detail(row, tier_registry=_tier_registry(request), conversation_count=count)
 
 
 @router.patch("/{persona_id}", response_model=PersonaDetail)

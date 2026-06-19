@@ -2795,6 +2795,11 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "conversation_count": {
+            "type": "integer",
+            "title": "Conversation Count",
+            "default": 0
           }
         },
         "additionalProperties": false,

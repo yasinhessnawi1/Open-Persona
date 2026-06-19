@@ -304,6 +304,17 @@ def conversation_counts(*, rls_engine: Engine) -> dict[str, int]:
     return {str(persona_id): int(n) for persona_id, n in rows}
 
 
+def conversation_count_for(*, rls_engine: Engine, persona_id: str) -> int:
+    """Conversation count for one persona (RLS-scoped) — the episodic source."""
+    with rls_engine.begin() as conn:
+        n = conn.execute(
+            select(func.count())
+            .select_from(conversations_t)
+            .where(conversations_t.c.persona_id == persona_id)
+        ).scalar_one()
+    return int(n)
+
+
 def delete_persona(
     *, rls_engine: Engine, persona_id: str, workspace_root: Path | None = None, owner_id: str
 ) -> None:
