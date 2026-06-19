@@ -93,17 +93,20 @@ export function QuickEditCard({
             persona={{ id: seedId, name: identity.name }}
             size="lg"
           />
-          <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <p className="type-caption font-mono text-muted-foreground uppercase">
               {t("quickEyebrow")}
             </p>
+            {/* Name + role read as plain text and reveal an edit affordance on
+                hover/focus — no resting box (the base Input's dark fill is
+                cleared). */}
             <Input
               value={identity.name}
               onChange={(e) =>
                 onChange(writeIdentityField(doc, "name", e.target.value))
               }
               aria-label={t("name")}
-              className="type-heading mt-1 h-auto border-0 px-0 shadow-none focus-visible:ring-0"
+              className="type-heading -mx-2 h-auto rounded-md border-0 bg-transparent px-2 py-0.5 leading-tight shadow-none transition-colors hover:bg-muted dark:bg-transparent dark:hover:bg-muted"
               data-slot="quick-name"
             />
             <Input
@@ -112,7 +115,7 @@ export function QuickEditCard({
                 onChange(writeIdentityField(doc, "role", e.target.value))
               }
               aria-label={t("role")}
-              className="type-ui h-auto border-0 px-0 text-muted-foreground shadow-none focus-visible:ring-0"
+              className="type-ui -mx-2 h-auto rounded-md border-0 bg-transparent px-2 py-0.5 text-muted-foreground shadow-none transition-colors hover:bg-muted dark:bg-transparent dark:hover:bg-muted"
             />
           </div>
           <span className="type-caption shrink-0 rounded-full bg-muted px-2.5 py-1 font-mono text-muted-foreground uppercase">
