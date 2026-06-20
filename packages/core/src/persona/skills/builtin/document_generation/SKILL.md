@@ -7,7 +7,8 @@ when_to_use: >
   the chat). Pass format=docx|pdf|pptx|xlsx|md|txt. For prose-then-format, draft
   the prose in your own context first, then activate this skill and embed the
   prose as a Python string. This skill also COVERS condensing/summarising source
-  material into a brief — say so via content_spec. Skip for inline replies.
+  material into a brief — say so via content_spec (a plain string of the text is
+  fine; an object with sections is optional). Skip for inline replies.
 tools_required:
   - code_execution
 metadata:
@@ -28,8 +29,14 @@ metadata:
         type: string
         description: Optional domain hint (e.g. legal, business, academic) for tone.
       content_spec:
-        type: object
-        description: Structured content to render (title, sections, summary, ...).
+        description: >
+          The content to render. Pass EITHER a plain string of the document text
+          (the simplest call — it is wrapped to {content: "<text>"} for you), OR
+          an object with structured fields (title, sections, summary, ...). Both
+          forms work; reach for the object only when you need named sections.
+        oneOf:
+          - type: string
+          - type: object
   not_for:
     - Inline chat replies or single-paragraph answers — just write the text.
     - Reading or parsing an existing document — that is document ingestion, not generation.
@@ -74,7 +81,9 @@ improvising an unsupported one.
 - **Summarise in place.** When the user wants a condensed brief, do the
   condensing as you build `content_spec` (lead with the finding, cut to the
   essentials) — there is no separate summarise skill; this is the folded
-  capability (D-24-7).
+  capability (D-24-7). `content_spec` accepts a plain **string** of the text
+  (wrapped to `{content: "..."}` for you) or a structured object — pass the
+  string unless you need named sections.
 - **Depth on demand.** The section below is the must-do path. Read a supplement
   **from inside your generated code** only when the task needs the depth:
   `Path("/workspace/in/.skills/document_generation/supplements/<format>-<topic>.md").read_text()`.

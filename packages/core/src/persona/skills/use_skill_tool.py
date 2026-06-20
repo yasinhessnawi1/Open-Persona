@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 from persona.errors import SkillArgumentValidationError
 from persona.schema.tools import ToolResult
-from persona.skills.parameters import validate_parameters
+from persona.skills.parameters import coerce_parameters, validate_parameters
 from persona.tools.protocol import AsyncTool, tool
 
 if TYPE_CHECKING:
@@ -120,8 +120,9 @@ def make_use_skill_tool(skills: list[SkillSpec]) -> AsyncTool:
             "Activate one of the persona's declared skills by name. "
             "Pass the skill_name; optionally pass parameters (an object) when "
             "the skill declares a parameter schema (e.g. document_generation "
-            "takes format). The runtime injects the skill's instructions into "
-            "the next turn."
+            "takes format, and content_spec which may be a plain string of the "
+            "text OR an object with sections). The runtime injects the skill's "
+            "instructions into the next turn."
         ),
     )
     async def use_skill(
@@ -141,9 +142,18 @@ def make_use_skill_tool(skills: list[SkillSpec]) -> AsyncTool:
         # against the skill's declared schema. Omitting the optional arg
         # entirely is allowed (the skill still activates on its SKILL.md
         # guidance) — only *supplied* arguments are gated.
+        #
+        # D-24-content-spec-string: first coerce the natural call — a bare
+        # string for a property that accepts an object (e.g.
+        # ``content_spec="<text>"``) becomes ``{"content": "<text>"}`` — so the
+        # obvious call validates on the first try and the handler receives the
+        # same shape as the explicit-dict form. The coerced dict is what we
+        # validate AND surface to the runtime.
         if parameters is not None:
+            spec = by_name[skill_name]
+            parameters = coerce_parameters(spec, parameters)
             try:
-                validate_parameters(by_name[skill_name], parameters)
+                validate_parameters(spec, parameters)
             except SkillArgumentValidationError as exc:
                 return ToolResult(
                     tool_name="use_skill",
