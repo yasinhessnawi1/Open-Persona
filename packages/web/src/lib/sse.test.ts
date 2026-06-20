@@ -117,7 +117,9 @@ describe("parseChatEvent (bare payload)", () => {
   });
 
   it("returns null for unknown event names", () => {
-    expect(parseChatEvent({ event: "totally_unknown_event", data: "{}" })).toBeNull();
+    expect(
+      parseChatEvent({ event: "totally_unknown_event", data: "{}" }),
+    ).toBeNull();
   });
 });
 

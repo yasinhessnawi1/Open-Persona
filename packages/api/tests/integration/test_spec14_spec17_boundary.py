@@ -218,10 +218,11 @@ class TestSpec14CsvLandsAtDocumentedPath:
         doc_ref = body["doc_ref"]
         workspace_path = body["workspace_path"]
 
-        # T01 finding #2: the path is conversation-scoped with the
-        # ``persona_`` prefix, NOT the persona-scoped ``uploads/`` path
-        # Spec 13 images use. This pin is the cross-spec contract.
-        assert workspace_path.startswith(f"persona_{pid}/conversations/{cid}/documents/")
+        # T01 finding #2: the path is owner+conversation-scoped (a48a1c2 moved
+        # docs under ``<owner>/persona_.../conversations/...`` so the Files
+        # viewer finds them), in the ``documents/`` subtree — NOT the
+        # ``uploads/`` subtree Spec 13 images use. This pin is the cross-spec contract.
+        assert workspace_path.startswith(f"{uid}/{pid}/conversations/{cid}/documents/")
         assert workspace_path.endswith(".csv")
 
         # The actual file is on disk at that path.
@@ -310,12 +311,11 @@ class TestSpec14Spec17PathSchemesDiverge:
     """Pin the path-scheme divergence T01 audit finding #2 documented.
 
     Spec 13 images use ``<owner>/<persona>/uploads/<blake2b>.<ext>``.
-    Spec 14 docs use ``persona_<persona>/conversations/<conv>/documents/<doc_ref>.<ext>``.
-    These are DIFFERENT directories; they coexist in the same workspace_root.
-
-    The divergence is intentional (Spec 14 conversation-scoping +
-    cascade-delete vs Spec 13 persona-scoping + content-addressing) but
-    means cross-spec readers must use the right resolver per modality.
+    Spec 14 docs use ``<owner>/persona_<persona>/conversations/<conv>/documents/<doc_ref>.<ext>``
+    (a48a1c2 moved docs under the owner so the Files viewer finds them).
+    Both are owner-scoped now but DIVERGE by subtree (``uploads/`` vs
+    ``conversations/.../documents/``); cross-spec readers must use the right
+    resolver per modality.
     """
 
     def test_doc_path_is_not_under_uploads_prefix(
@@ -333,10 +333,9 @@ class TestSpec14Spec17PathSchemesDiverge:
         )
         assert resp.status_code == 201, resp.text
         workspace_path = resp.json()["workspace_path"]
-        # The doc path does NOT start with "uploads/" — that's the Spec 13
-        # image namespace; documents have their own scheme.
-        assert not workspace_path.startswith("uploads/")
-        # It also does NOT start with the owner_id namespace Spec 13 uses.
-        assert not workspace_path.startswith(uid + "/")
-        # It DOES start with persona_<id>/ — the conversation-scoped scheme.
-        assert workspace_path.startswith(f"persona_{pid}/")
+        # Both images and docs are owner-scoped now (a48a1c2). They DIVERGE by
+        # subtree: images under ``.../uploads/``, docs under
+        # ``.../conversations/<conv>/documents/``.
+        assert workspace_path.startswith(f"{uid}/{pid}/")
+        assert f"/conversations/{cid}/documents/" in workspace_path
+        assert "/uploads/" not in workspace_path

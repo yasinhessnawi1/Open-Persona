@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from persona.schema.chunks import PersonaChunk
 from persona.stores.postgres import PostgresBackend
 from persona_api.auth import AuthenticatedUser, get_current_user
+from persona_api.editions.owner_resolver import CloudOwnerResolver
 from persona_api.errors import register_exception_handlers
 from persona_api.middleware.rls_context import get_rls_connection, make_rls_engine
 from sqlalchemy import Connection, create_engine, text
@@ -86,6 +87,10 @@ def _build_app(rls_engine: Engine, persona_lookup: dict[str, str], emb: HashEmbe
         return AuthenticatedUser(id=token, email=None)  # token == user_id, for the test
 
     app.state.verify_token = _fake_verify
+    # Spec 33: get_current_user resolves the owner via the edition's
+    # OwnerResolver (reads app.state.owner_resolver). The cloud resolver
+    # extracts the bearer + calls the verify callable above.
+    app.state.owner_resolver = CloudOwnerResolver()
 
     @app.get("/probe")
     async def _probe(

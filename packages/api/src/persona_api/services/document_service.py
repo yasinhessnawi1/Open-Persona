@@ -9,7 +9,7 @@ upload-on-the-API-boundary contract.
 
 ::
 
-    {sandbox_root}/{persona_id}/conversations/{conversation_id}/documents/
+    {sandbox_root}/{owner_id}/{persona_id}/conversations/{conversation_id}/documents/
         {doc_ref}.{ext}           original bytes
         {doc_ref}.meta.json       DocumentRef sidecar (strategy, token_count,
                                   format, title, page_count, sheet_names, ...)
@@ -131,7 +131,7 @@ class DocumentRef(BaseModel):
 
     workspace_path: str
     """Path under ``sandbox_root`` (e.g.
-    ``persona_X/conversations/conv_Y/documents/doc.pdf``)."""
+    ``<owner>/persona_X/conversations/conv_Y/documents/doc.pdf``)."""
 
     strategy: IngestStrategy
     """The ingestion path taken. ``WHOLE_INJECT`` means T14 reads the

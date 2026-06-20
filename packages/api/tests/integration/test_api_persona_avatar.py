@@ -187,8 +187,10 @@ def test_create_auto_generates_avatar_and_sets_served_url(
     # served URL with the Bearer token); a browser <img> can't auth the full
     # /v1/... route, so storing the full path 404'd against the web origin.
     expected = f"uploads/{_PNG_REF}.png"
-    assert detail["avatar_url"] == expected
-    # Persisted + visible via GET.
+    # Async-create: the create response returns immediately WITHOUT the avatar;
+    # it's generated in a background task and lands on a subsequent GET.
+    assert detail["avatar_url"] is None
+    # Persisted + visible via GET once the background task has run.
     assert c.get(f"/v1/personas/{pid}", headers=_auth(_USER)).json()["avatar_url"] == expected
     # Bytes on disk at the D-13-4 layout.
     on_disk = workspace_root / _USER / pid / "uploads" / f"{_PNG_REF}.png"
@@ -201,10 +203,11 @@ def test_auto_generated_avatar_serves_through_uploads_route(
 ) -> None:
     c, _uid, _ws, _su = client
     detail = _create(c)
-    avatar_url = detail["avatar_url"]
+    pid = detail["id"]
+    # Async-create: the avatar lands via a background task → read it from the GET.
+    avatar_url = c.get(f"/v1/personas/{pid}", headers=_auth(_USER)).json()["avatar_url"]
     assert avatar_url is not None
     # The web builds the served URL the same way: {API}/v1/personas/{id}/uploads/{ref}.
-    pid = detail["id"]
     resp = c.get(f"/v1/personas/{pid}/uploads/{avatar_url}", headers=_auth(_USER))
     assert resp.status_code == 200
     assert resp.content == _TINY_PNG
@@ -274,9 +277,11 @@ def test_patch_overrides_generated_avatar(
     c, _uid, _ws, _su = client
     detail = _create(c)
     pid = detail["id"]
-    assert detail["avatar_url"] is not None
+    # Async-create: the generated avatar lands via a background task → read via GET.
+    avatar_url = c.get(f"/v1/personas/{pid}", headers=_auth(_USER)).json()["avatar_url"]
+    assert avatar_url is not None
     # Generated avatars are stored as the bare workspace ref (uploads/<ref>.ext).
-    assert detail["avatar_url"].startswith("uploads/")
+    assert avatar_url.startswith("uploads/")
 
     c.patch(
         f"/v1/personas/{pid}",

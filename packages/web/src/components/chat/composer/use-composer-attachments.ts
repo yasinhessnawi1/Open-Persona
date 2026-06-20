@@ -145,7 +145,7 @@ export function useComposerAttachments(
         }));
       }
     },
-    [personaId, token, patch],
+    [personaId, token, patch, conversationId],
   );
 
   const attachImage = useCallback(
