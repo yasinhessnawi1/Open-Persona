@@ -1,7 +1,11 @@
-"""Health endpoint (spec 08, T12, §8.3).
+"""Health endpoints (spec 08, T12, §8.3).
 
 ``GET /healthz`` → 200 ``{"status":"ok","db":"connected"}`` when Postgres is
 reachable, 503 when it isn't. No auth (uptime monitors + load balancers hit it).
+
+``GET /livez`` → always 200 ``{"status":"ok"}``. Liveness only — no dependency
+checks. Fly.io's machine health check points here so a DB blip can't kill the
+process; the deep ``/healthz`` readiness check stays for monitoring.
 """
 
 from __future__ import annotations
@@ -36,3 +40,9 @@ async def healthz(request: Request) -> JSONResponse:
         status_code=status.HTTP_200_OK,
         content={"status": "ok", "db": "connected"},
     )
+
+
+@router.get("/livez")
+async def livez() -> JSONResponse:
+    """Liveness probe — process is up; no dependency checks."""
+    return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ok"})

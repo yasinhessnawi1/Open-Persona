@@ -40,6 +40,7 @@ def test_core_endpoints_present(spec: dict) -> None:
     assert "/v1/runs/{run_id}/events" in paths
     assert "/v1/me/credits" in paths
     assert "/healthz" in paths
+    assert "/livez" in paths
 
 
 def test_channel_context_is_nullable_optional_on_message_request(spec: dict) -> None:

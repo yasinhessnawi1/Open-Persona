@@ -79,10 +79,13 @@ kill_timeout = "30s"
     hard_limit = 200
 
 [[http_service.checks]]
+  # Liveness only — DB-free (couples machine health to process, NOT DB
+  # reachability). The deep /healthz readiness check (DB SELECT 1) stays
+  # available for monitoring; it's just not the machine liveness gate.
   grace_period = "30s"
   interval = "30s"
   method = "GET"
-  path = "/healthz"
+  path = "/livez"
   timeout = "5s"
 
 [[vm]]
