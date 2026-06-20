@@ -431,9 +431,7 @@ class TestUnifiedDocumentGenerationSkill:
         )
         # pptx must be flagged as unavailable / degraded, not produced via
         # an absent library import.
-        assert "python-pptx" in body, (
-            "SKILL.md must name python-pptx in the pptx degrade guidance."
-        )
+        assert "python-pptx" in body, "SKILL.md must name python-pptx in the pptx degrade guidance."
         assert "NOT installed" in body, (
             "SKILL.md must state python-pptx is NOT installed and degrade the "
             "pptx format honestly (offer docx/md instead)."

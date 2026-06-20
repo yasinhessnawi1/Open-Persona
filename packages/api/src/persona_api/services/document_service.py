@@ -667,9 +667,7 @@ def _rasterise_and_persist_pages(
     dpi = _resolve_raster_dpi()
     scale = dpi / 72.0
 
-    base_relative = (
-        f"{owner_id}/{persona_id}/conversations/{conversation_id}/{DOCUMENT_DIR_NAME}"
-    )
+    base_relative = f"{owner_id}/{persona_id}/conversations/{conversation_id}/{DOCUMENT_DIR_NAME}"
 
     images: list[ImageContent] = []
     pdf = pypdfium2.PdfDocument(str(pdf_path))
@@ -710,9 +708,7 @@ def _conversation_documents_dir(
     # Spec 35: owner-scoped layout (matches image_service + the F5 artifacts
     # walk: workspace_root/<owner_id>/<persona_id>/...). Previously persona-only
     # ("persona_<id>/...") which the conversation Files viewer never found.
-    relative = (
-        f"{owner_id}/{persona_id}/conversations/{conversation_id}/{DOCUMENT_DIR_NAME}"
-    )
+    relative = f"{owner_id}/{persona_id}/conversations/{conversation_id}/{DOCUMENT_DIR_NAME}"
     # Resolve through the sandbox helper so traversal attempts are caught even
     # for the read paths. ``resolve_sandbox_path`` raises ``SandboxViolationError``
     # on traversal; this is a programmer-error boundary for read helpers
