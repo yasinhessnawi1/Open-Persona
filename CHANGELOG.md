@@ -11,6 +11,23 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+---
+
+## [1.0.0] - 2026-06-20
+
+> **Open Persona v1.0 — first stable release.** The complete four-layer platform: a
+> source-available core (`persona-core`, MIT) with four typed memory stores
+> (identity / self_facts / worldview / episodic), versioned append-only history, and a
+> CLI; the runtime (`persona-runtime`, MIT) conversation loop, rule-based tier router,
+> and agentic engine; the hosted FastAPI service (`persona-api`, PolyForm-NC) with
+> Postgres + pgvector, per-tenant RLS, SSE streaming, document & image ingestion, a
+> sandboxed code-execution tool, and credit metering; the real-time voice service
+> (`persona-voice`, MIT, WebRTC via LiveKit); and the Next.js web app (`persona-web`,
+> PolyForm-NC). Open-core editions ship via `PERSONA_EDITION=community|cloud`. All five
+> packages are versioned at 1.0.0; `persona-core` / `persona-runtime` / `persona-voice`
+> are published to PyPI. The entries below are the cumulative feature history rolled
+> into this release.
+
 ### Prebuilt Personas — editable starters, no authoring required (code-complete 2026-06-18)
 
 > The new-persona screen now leads with a curated row of **flagship, fully-structured
