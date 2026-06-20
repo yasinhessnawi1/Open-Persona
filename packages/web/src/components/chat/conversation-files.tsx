@@ -62,6 +62,40 @@ function nameOf(item: ArtifactItem): string {
   return item.metadata?.original_name ?? item.ref.split("/").pop() ?? item.ref;
 }
 
+/**
+ * Short stable token to disambiguate two files that share a display name (two
+ * different uploads both named `report.pdf`, or two generated artifacts with the
+ * same suggested name). Derived from the ref's basename: the upload's `doc_ref`
+ * uuid tail (`report-a1b2c3d4` → `a1b2c3d4`) or the content hash's head.
+ */
+function refToken(item: ArtifactItem): string {
+  const base = (item.ref.split("/").pop() ?? item.ref).replace(/\.[^.]+$/, "");
+  return base.includes("-")
+    ? base.slice(base.lastIndexOf("-") + 1)
+    : base.slice(0, 8);
+}
+
+/**
+ * Build a ref→label map: the clean `nameOf` for unique names, suffixed with a
+ * short `refToken` only where a name collides — so identical-looking files stay
+ * distinguishable without cluttering the common (unique) case. `nameOf` stays
+ * the canonical name for downloads + renderer-kind detection.
+ */
+function labelMap(items: ArtifactItem[]): Map<string, string> {
+  const counts = new Map<string, number>();
+  for (const it of items)
+    counts.set(nameOf(it), (counts.get(nameOf(it)) ?? 0) + 1);
+  const labels = new Map<string, string>();
+  for (const it of items) {
+    const name = nameOf(it);
+    labels.set(
+      it.ref,
+      (counts.get(name) ?? 0) > 1 ? `${name} · ${refToken(it)}` : name,
+    );
+  }
+  return labels;
+}
+
 type Mode = "rendered" | "raw";
 
 /**
@@ -126,6 +160,10 @@ export function ConversationFiles({
     }
     return { uploads, generated };
   }, [items]);
+
+  // Collision-aware display labels (clean name unless it collides → suffix).
+  const labels = useMemo(() => labelMap(items), [items]);
+  const labelOf = (item: ArtifactItem) => labels.get(item.ref) ?? nameOf(item);
 
   // Default the preview to the first file once the list lands / the panel opens.
   useEffect(() => {
@@ -229,12 +267,14 @@ export function ConversationFiles({
                     items={uploads}
                     selectedRef={selectedRef}
                     onSelect={setSelectedRef}
+                    labelOf={labelOf}
                   />
                   <FileGroup
                     label={t("generated", { name: personaName })}
                     items={generated}
                     selectedRef={selectedRef}
                     onSelect={setSelectedRef}
+                    labelOf={labelOf}
                   />
                 </>
               )}
@@ -247,9 +287,9 @@ export function ConversationFiles({
                   <div className="flex items-center gap-2 border-b border-border px-3 py-2">
                     <span
                       className="type-ui min-w-0 flex-1 truncate"
-                      title={nameOf(selected)}
+                      title={labelOf(selected)}
                     >
-                      {nameOf(selected)}
+                      {labelOf(selected)}
                     </span>
                     {!selectedBinary ? (
                       <div className="flex items-center rounded-md border border-border">
@@ -309,11 +349,13 @@ function FileGroup({
   items,
   selectedRef,
   onSelect,
+  labelOf,
 }: {
   label: string;
   items: ArtifactItem[];
   selectedRef: string | null;
   onSelect: (ref: string) => void;
+  labelOf: (item: ArtifactItem) => string;
 }) {
   if (items.length === 0) return null;
   return (
@@ -324,6 +366,7 @@ function FileGroup({
       <ul>
         {items.map((item) => {
           const name = nameOf(item);
+          const display = labelOf(item);
           const kind = rendererKindFor(item.media_type, name);
           const Icon = ICON_BY_KIND[kind];
           const active = item.ref === selectedRef;
@@ -345,8 +388,8 @@ function FileGroup({
                   aria-hidden
                 />
                 <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="type-ui truncate" title={name}>
-                    {name}
+                  <span className="type-ui truncate" title={display}>
+                    {display}
                   </span>
                   <span className="type-caption text-muted-foreground">
                     {kind.toUpperCase()} · {formatSize(item.size_bytes)}

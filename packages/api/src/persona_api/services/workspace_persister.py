@@ -93,6 +93,21 @@ def _sidecar_type_for(mime_type: str) -> str:
     return _SIDECAR_TYPE_BY_MIME.get(mime_type, "doc")
 
 
+def _display_name_for(suggested_filename: str) -> str | None:
+    """Sanitise the tool-suggested filename for the F5 sidecar ``original_name``.
+
+    The bytes are stored content-addressed (``<blake2b><ext>``); without a
+    human-readable ``original_name`` the Files viewer falls back to the hash.
+    The tool always supplies a meaningful basename (``report.docx``,
+    ``diagram.svg``, ``generated_image_0.png``) — keep it, stripped of control
+    chars / path separators and length-capped. Returns ``None`` only when
+    nothing usable survives (the viewer then falls back to the path segment).
+    """
+    base = suggested_filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    cleaned = "".join(c for c in base if ord(c) >= 32).strip()[:120]
+    return cleaned or None
+
+
 class WorkspaceDirPersister:
     """Persist tool bytes to ``<workspace_root>/<owner>/<persona>/uploads/``.
 
@@ -158,7 +173,7 @@ class WorkspaceDirPersister:
                     producing_spec="28",
                     conversation_id=conversation_id,
                     created_at=utcnow(),
-                    original_name=None,
+                    original_name=_display_name_for(suggested_filename),
                 ),
             )
 
