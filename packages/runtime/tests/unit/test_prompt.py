@@ -375,3 +375,63 @@ class TestProducedFilesVerification:
         )
         # And the footer remains the final non-empty line of the system block.
         assert system.rstrip().endswith("Stay in character. Cite sources when using tool results.")
+
+
+class TestFileWorkspaceConventions:
+    """File-workspace conventions block — capability-gated.
+
+    Teaches the persistent working dir + the file_write↔code_execution
+    bridge (intermediate/) so the model uses files correctly even in a task
+    run with NO attached documents. Renders for any persona whose tools
+    include file_read, file_write, or code_execution.
+    """
+
+    def test_block_emitted_when_file_read_in_tools(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona(tools=["file_read"]),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+        assert "persists across the task" in system
+        assert "intermediate/" in system
+        assert "file_read" in system
+
+    def test_block_emitted_when_code_execution_in_tools(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona(tools=["code_execution"]),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+        assert "persists across the task" in system
+        assert "intermediate/" in system
+        assert "file_read" in system
+
+    def test_block_omitted_when_no_file_tools(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona(tools=["web_search", "use_skill"]),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+        assert "persists across the task" not in system
+
+    def test_block_appears_before_footer(self, builder: PromptBuilder) -> None:
+        system = builder.build(
+            _persona(tools=["file_read", "code_execution"]),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+        conventions_pos = system.index("persists across the task")
+        footer_pos = system.index("Stay in character.")
+        assert conventions_pos < footer_pos

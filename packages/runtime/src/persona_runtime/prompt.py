@@ -81,6 +81,16 @@ _PRODUCED_FILES_VERIFICATION = (
     "report success."
 )
 
+_FILE_WORKSPACE_CONVENTIONS = (
+    "Your working directory persists across the task. A file you create with "
+    "file_write you can read back with file_read using the same relative path; "
+    "uploaded files are under uploads/. To hand a file you wrote to "
+    'code_execution, save it under intermediate/ (e.g. file_write("intermediate/'
+    'data.csv", ...)) — files there are loaded into the code_execution sandbox '
+    "automatically. Never claim you cannot access a file you created or that was "
+    "uploaded; read it with file_read first."
+)
+
 
 class DocumentInjection(BaseModel):
     """A single attached document's whole-text payload for prompt injection.
@@ -391,6 +401,15 @@ class PromptBuilder:
         # scope" synopsis as a structural defence for Dominant Concern #2.
         if document_context and document_context.whole_inject_docs:
             parts.append(self._render_whole_inject_documents(document_context))
+
+        # 8a-pre. File-workspace conventions — capability-gated. Teaches the
+        # persistent working dir + the file_write↔code_execution bridge
+        # (intermediate/) so the model uses files correctly even in a task run
+        # with NO attached documents (the 4a synopsis only renders when docs are
+        # attached). The default capability floor gives every persona
+        # file_read + code_execution, so this renders for them.
+        if {"file_read", "file_write", "code_execution"} & set(persona.tools):
+            parts.append(_FILE_WORKSPACE_CONVENTIONS)
 
         # 8a. Produced-files verification (D-19-X-prompt-builder-produced-files-
         # verification). Capability-gated on the ``code_execution`` allow-list
