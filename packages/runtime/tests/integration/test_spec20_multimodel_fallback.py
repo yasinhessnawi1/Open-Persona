@@ -121,6 +121,9 @@ class _ScriptedChatBackend:
         temperature: float = 0.0,  # noqa: ARG002
         max_tokens: int = 4096,  # noqa: ARG002
         stop: list[str] | None = None,  # noqa: ARG002
+        top_p: float | None = None,  # noqa: ARG002
+        top_k: int | None = None,  # noqa: ARG002
+        **_kwargs: object,  # forward-compat: accept any further sampling knobs
     ) -> ChatResponse:
         self.call_count += 1
         outcome = self._script.pop(0)
@@ -137,6 +140,9 @@ class _ScriptedChatBackend:
         temperature: float = 0.0,  # noqa: ARG002
         max_tokens: int = 4096,  # noqa: ARG002
         stop: list[str] | None = None,  # noqa: ARG002
+        top_p: float | None = None,  # noqa: ARG002
+        top_k: int | None = None,  # noqa: ARG002
+        **_kwargs: object,  # forward-compat: accept any further sampling knobs
     ) -> AsyncIterator[StreamChunk]:
         self.stream_call_count += 1
         outcome = self._script.pop(0)
