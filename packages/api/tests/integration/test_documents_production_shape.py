@@ -247,6 +247,7 @@ async def test_production_shape_upload_to_prompt(
         # policy this write raises InsufficientPrivilege.
         ref = document_service.upload(
             sandbox_root=workspace_root,
+            owner_id=owner,
             persona_id=persona_id,
             conversation_id=conversation_id,
             file_bytes=_DOCUMENT_BODY.encode(),
@@ -265,6 +266,7 @@ async def test_production_shape_upload_to_prompt(
         # the DocumentContext the runtime threads into PromptBuilder.
         document_context = document_service.build_document_context(
             sandbox_root=workspace_root,
+            owner_id=owner,
             persona_id=persona_id,
             conversation_id=conversation_id,
             user_message=f"What does the {_DISTINCTIVE_TOKEN} clause say?",

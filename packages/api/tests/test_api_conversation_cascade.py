@@ -154,6 +154,7 @@ class TestDocumentCascadeOnConversationDelete:
         # Upload two documents to the conversation.
         document_service.upload(
             sandbox_root=workspace_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
             file_bytes=b"Lease memo content here.",
@@ -162,6 +163,7 @@ class TestDocumentCascadeOnConversationDelete:
         )
         document_service.upload(
             sandbox_root=workspace_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
             file_bytes=b"another doc",
@@ -172,6 +174,7 @@ class TestDocumentCascadeOnConversationDelete:
             len(
                 document_service.list_for_conversation(
                     sandbox_root=workspace_root,
+                    owner_id="u1",
                     persona_id="astrid",
                     conversation_id="conv_u1",
                 )
@@ -186,6 +189,7 @@ class TestDocumentCascadeOnConversationDelete:
         # Workspace files for the conversation's documents are gone.
         remaining = document_service.list_for_conversation(
             sandbox_root=workspace_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
         )
@@ -202,6 +206,7 @@ class TestDocumentCascadeOnConversationDelete:
         monkeypatch.setenv("PERSONA_DOC_INJECT_THRESHOLD", "100")
         document_service.upload(
             sandbox_root=workspace_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
             file_bytes=("Paragraph. " * 200).encode("utf-8"),
@@ -227,6 +232,7 @@ class TestDocumentCascadeOnConversationDelete:
         # accepts conv_u1).
         document_service.upload(
             sandbox_root=workspace_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
             file_bytes=b"u1 doc",
@@ -235,6 +241,7 @@ class TestDocumentCascadeOnConversationDelete:
         )
         document_service.upload(
             sandbox_root=workspace_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_OTHER",
             file_bytes=b"other doc",
@@ -247,6 +254,7 @@ class TestDocumentCascadeOnConversationDelete:
         # conv_OTHER's documents survived the cascade.
         other_remaining = document_service.list_for_conversation(
             sandbox_root=workspace_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_OTHER",
         )
@@ -277,6 +285,7 @@ class TestCriterion6HoldsAtCascadeBoundary:
 
         document_service.upload(
             sandbox_root=workspace_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
             file_bytes=b"doc body",

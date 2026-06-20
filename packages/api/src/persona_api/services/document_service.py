@@ -166,6 +166,7 @@ class DocumentRef(BaseModel):
 def upload(
     *,
     sandbox_root: Path,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
     file_bytes: bytes,
@@ -219,7 +220,7 @@ def upload(
 
     doc_ref = _make_doc_ref(filename)
     relative_path = (
-        f"persona_{persona_id}/conversations/{conversation_id}"
+        f"{owner_id}/{persona_id}/conversations/{conversation_id}"
         f"/{DOCUMENT_DIR_NAME}/{doc_ref}{extension}"
     )
     workspace_path = resolve_sandbox_path(sandbox_root, relative_path)
@@ -257,6 +258,7 @@ def upload(
         # vision-capable tier per D-13-X-pdf-contract.
         images = _rasterise_and_persist_pages(
             sandbox_root=sandbox_root,
+            owner_id=owner_id,
             persona_id=persona_id,
             conversation_id=conversation_id,
             doc_ref=doc_ref,
@@ -316,6 +318,7 @@ def upload(
 def list_for_conversation(
     *,
     sandbox_root: Path,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
 ) -> list[DocumentRef]:
@@ -324,7 +327,7 @@ def list_for_conversation(
     Returns an empty list if the conversation directory doesn't exist
     (no documents uploaded yet).
     """
-    base = _conversation_documents_dir(sandbox_root, persona_id, conversation_id)
+    base = _conversation_documents_dir(sandbox_root, owner_id, persona_id, conversation_id)
     if not base.exists():
         return []
     refs: list[DocumentRef] = []
@@ -341,6 +344,7 @@ def list_for_conversation(
 def build_document_context(
     *,
     sandbox_root: Path,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
     user_message: str,
@@ -391,6 +395,7 @@ def build_document_context(
 
     refs = list_for_conversation(
         sandbox_root=sandbox_root,
+        owner_id=owner_id,
         persona_id=persona_id,
         conversation_id=conversation_id,
     )
@@ -414,6 +419,7 @@ def build_document_context(
         if ref.strategy == IngestStrategy.WHOLE_INJECT:
             text = get_document_text(
                 sandbox_root=sandbox_root,
+                owner_id=owner_id,
                 persona_id=persona_id,
                 conversation_id=conversation_id,
                 doc_ref=ref.doc_ref,
@@ -455,6 +461,7 @@ def build_document_context(
 def get_document_text(
     *,
     sandbox_root: Path,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
     doc_ref: str,
@@ -475,7 +482,7 @@ def get_document_text(
         The full extracted text. Empty string if the document isn't
         found or is unreadable (T14 handles empty cleanly).
     """
-    base = _conversation_documents_dir(sandbox_root, persona_id, conversation_id)
+    base = _conversation_documents_dir(sandbox_root, owner_id, persona_id, conversation_id)
     if not base.exists():
         return ""
     # Find the original file by doc_ref prefix (the extension is preserved).
@@ -509,6 +516,7 @@ def _is_original_document(candidate: Path, doc_ref: str) -> bool:
 def read_document_bytes(
     *,
     sandbox_root: Path,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
     doc_ref: str,
@@ -532,7 +540,7 @@ def read_document_bytes(
         The raw file bytes, or ``None`` when the document is missing/unreadable
         (the caller skips it — a partial staging beats a hard turn failure).
     """
-    base = _conversation_documents_dir(sandbox_root, persona_id, conversation_id)
+    base = _conversation_documents_dir(sandbox_root, owner_id, persona_id, conversation_id)
     if not base.exists():
         return None
     for candidate in base.iterdir():
@@ -548,6 +556,7 @@ def read_document_bytes(
 def remove_document(
     *,
     sandbox_root: Path,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
     doc_ref: str,
@@ -566,7 +575,7 @@ def remove_document(
             this ``doc_ref`` are removed via the 4-component
             chunk-ID prefix-match (D-14-X-document-chunk-id).
     """
-    base = _conversation_documents_dir(sandbox_root, persona_id, conversation_id)
+    base = _conversation_documents_dir(sandbox_root, owner_id, persona_id, conversation_id)
     if base.exists():
         for candidate in list(base.iterdir()):
             if candidate.name.startswith(f"{doc_ref}.") or candidate.name.startswith(f"{doc_ref}."):
@@ -580,6 +589,7 @@ def remove_document(
 def remove_all_for_conversation(
     *,
     sandbox_root: Path,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
     document_store: DocumentStore,
@@ -595,7 +605,7 @@ def remove_all_for_conversation(
 
     Idempotent: removing an empty / non-existent set is a no-op.
     """
-    base = _conversation_documents_dir(sandbox_root, persona_id, conversation_id)
+    base = _conversation_documents_dir(sandbox_root, owner_id, persona_id, conversation_id)
     if base.exists():
         for child in list(base.iterdir()):
             child.unlink(missing_ok=True)
@@ -633,6 +643,7 @@ def _resolve_raster_dpi() -> int:
 def _rasterise_and_persist_pages(
     *,
     sandbox_root: Path,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
     doc_ref: str,
@@ -656,7 +667,9 @@ def _rasterise_and_persist_pages(
     dpi = _resolve_raster_dpi()
     scale = dpi / 72.0
 
-    base_relative = f"persona_{persona_id}/conversations/{conversation_id}/{DOCUMENT_DIR_NAME}"
+    base_relative = (
+        f"{owner_id}/{persona_id}/conversations/{conversation_id}/{DOCUMENT_DIR_NAME}"
+    )
 
     images: list[ImageContent] = []
     pdf = pypdfium2.PdfDocument(str(pdf_path))
@@ -691,8 +704,15 @@ def _rasterise_and_persist_pages(
 # ----- helpers (private) -----------------------------------------------------
 
 
-def _conversation_documents_dir(sandbox_root: Path, persona_id: str, conversation_id: str) -> Path:
-    relative = f"persona_{persona_id}/conversations/{conversation_id}/{DOCUMENT_DIR_NAME}"
+def _conversation_documents_dir(
+    sandbox_root: Path, owner_id: str, persona_id: str, conversation_id: str
+) -> Path:
+    # Spec 35: owner-scoped layout (matches image_service + the F5 artifacts
+    # walk: workspace_root/<owner_id>/<persona_id>/...). Previously persona-only
+    # ("persona_<id>/...") which the conversation Files viewer never found.
+    relative = (
+        f"{owner_id}/{persona_id}/conversations/{conversation_id}/{DOCUMENT_DIR_NAME}"
+    )
     # Resolve through the sandbox helper so traversal attempts are caught even
     # for the read paths. ``resolve_sandbox_path`` raises ``SandboxViolationError``
     # on traversal; this is a programmer-error boundary for read helpers

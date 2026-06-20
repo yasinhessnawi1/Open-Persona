@@ -361,6 +361,7 @@ async def stream_chat(
         # document_context synopsis, and not a stale file from another context).
         turn_documents = _resolve_turn_documents(
             workspace_root=workspace_root,
+            owner_id=owner_id,
             persona_id=persona_id,
             conversation_id=conversation_id,
         )
@@ -539,6 +540,7 @@ def _resolve_turn_images(
 def _resolve_turn_documents(
     *,
     workspace_root: Path | None,
+    owner_id: str,
     persona_id: str,
     conversation_id: str,
 ) -> list[SandboxFile]:
@@ -574,6 +576,7 @@ def _resolve_turn_documents(
 
     refs = document_service.list_for_conversation(
         sandbox_root=workspace_root,
+        owner_id=owner_id,
         persona_id=persona_id,
         conversation_id=conversation_id,
     )
@@ -584,6 +587,7 @@ def _resolve_turn_documents(
     for ref in refs:
         file_bytes = document_service.read_document_bytes(
             sandbox_root=workspace_root,
+            owner_id=owner_id,
             persona_id=persona_id,
             conversation_id=conversation_id,
             doc_ref=ref.doc_ref,

@@ -97,6 +97,7 @@ class TestUploadSmallDoc:
         text = b"The lease is for twelve months."
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=text,
@@ -116,6 +117,7 @@ class TestUploadSmallDoc:
         # required to pass.
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hello",
@@ -131,6 +133,7 @@ class TestUploadSmallDoc:
     ) -> None:
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hi",
@@ -140,8 +143,8 @@ class TestUploadSmallDoc:
         # The DocumentRef carries a RELATIVE path (relative to sandbox_root),
         # not an absolute one — the API never leaks workspace absolute paths.
         assert not Path(ref.workspace_path).is_absolute()
-        # Path structure: persona_X/conversations/conv_Y/documents/...
-        assert "persona_astrid" in ref.workspace_path
+        # Spec 35: owner-scoped structure {owner}/{persona}/conversations/{conv}/documents/...
+        assert ref.workspace_path.startswith("owner/astrid/")
         assert "conv1" in ref.workspace_path
         assert DOCUMENT_DIR_NAME in ref.workspace_path
 
@@ -150,6 +153,7 @@ class TestUploadSmallDoc:
     ) -> None:
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hi",
@@ -158,6 +162,7 @@ class TestUploadSmallDoc:
         )
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -174,6 +179,7 @@ class TestUploadSmallDoc:
 
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hi",
@@ -194,6 +200,7 @@ class TestUploadSmallDoc:
         # slug-stripped.
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hi",
@@ -213,6 +220,7 @@ class TestUploadLargeDoc:
         text = ("Paragraph content. " * 200).encode("utf-8")
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=text,
@@ -232,6 +240,7 @@ class TestUploadUnsupportedFormat:
         with pytest.raises(UnsupportedFormatError):
             upload(
                 sandbox_root=sandbox_root,
+                owner_id="owner",
                 persona_id="astrid",
                 conversation_id="conv1",
                 file_bytes=b"junk",
@@ -241,6 +250,7 @@ class TestUploadUnsupportedFormat:
         # Nothing landed in the workspace.
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -254,6 +264,7 @@ class TestUploadCorruptFile:
         with pytest.raises(CorruptDocumentError):
             upload(
                 sandbox_root=sandbox_root,
+                owner_id="owner",
                 persona_id="astrid",
                 conversation_id="conv1",
                 file_bytes=b"   \n\n  \n",  # empty extraction
@@ -263,6 +274,7 @@ class TestUploadCorruptFile:
         # The orphan workspace file from the failed parse was cleaned up.
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -285,6 +297,7 @@ class TestVisionHandoffPath:
         scanned = FIXTURE_DIR / "scanned-like.pdf"
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=scanned.read_bytes(),
@@ -300,6 +313,7 @@ class TestVisionHandoffPath:
         scanned = FIXTURE_DIR / "scanned-like.pdf"
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=scanned.read_bytes(),
@@ -321,6 +335,7 @@ class TestVisionHandoffPath:
         scanned = FIXTURE_DIR / "scanned-like.pdf"
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=scanned.read_bytes(),
@@ -339,6 +354,7 @@ class TestVisionHandoffPath:
         scanned = FIXTURE_DIR / "scanned-like.pdf"
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=scanned.read_bytes(),
@@ -347,6 +363,7 @@ class TestVisionHandoffPath:
         )
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -358,6 +375,7 @@ class TestListForConversation:
     def test_empty_when_no_uploads(self, sandbox_root: Path) -> None:
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -368,6 +386,7 @@ class TestListForConversation:
     ) -> None:
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hi",
@@ -376,6 +395,7 @@ class TestListForConversation:
         )
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hi 2",
@@ -384,6 +404,7 @@ class TestListForConversation:
         )
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -394,6 +415,7 @@ class TestListForConversation:
     ) -> None:
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hi",
@@ -402,6 +424,7 @@ class TestListForConversation:
         )
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -414,6 +437,7 @@ class TestGetDocumentText:
     ) -> None:
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"The lease runs for twelve months.",
@@ -422,6 +446,7 @@ class TestGetDocumentText:
         )
         text = get_document_text(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             doc_ref=ref.doc_ref,
@@ -431,6 +456,7 @@ class TestGetDocumentText:
     def test_empty_for_missing_doc(self, sandbox_root: Path) -> None:
         text = get_document_text(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             doc_ref="does-not-exist",
@@ -444,6 +470,7 @@ class TestRemoveDocument:
     ) -> None:
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"hi",
@@ -452,6 +479,7 @@ class TestRemoveDocument:
         )
         remove_document(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             doc_ref=ref.doc_ref,
@@ -459,6 +487,7 @@ class TestRemoveDocument:
         )
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -470,6 +499,7 @@ class TestRemoveDocument:
         monkeypatch.setenv("PERSONA_DOC_INJECT_THRESHOLD", "100")
         ref = upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=("Paragraph. " * 200).encode("utf-8"),
@@ -479,6 +509,7 @@ class TestRemoveDocument:
         assert len(document_store.get_all("conv1")) >= 1
         remove_document(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             doc_ref=ref.doc_ref,
@@ -492,6 +523,7 @@ class TestRemoveDocument:
         # Removing a non-existent document is a no-op (no error).
         remove_document(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             doc_ref="not-here",
@@ -507,6 +539,7 @@ class TestRemoveAllForConversation:
     ) -> None:
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"a",
@@ -515,6 +548,7 @@ class TestRemoveAllForConversation:
         )
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=b"b",
@@ -523,12 +557,14 @@ class TestRemoveAllForConversation:
         )
         remove_all_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             document_store=document_store,
         )
         refs = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
         )
@@ -540,6 +576,7 @@ class TestRemoveAllForConversation:
         monkeypatch.setenv("PERSONA_DOC_INJECT_THRESHOLD", "100")
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             file_bytes=("Paragraph. " * 200).encode("utf-8"),
@@ -548,6 +585,7 @@ class TestRemoveAllForConversation:
         )
         remove_all_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="conv1",
             document_store=document_store,
@@ -559,6 +597,7 @@ class TestRemoveAllForConversation:
     ) -> None:
         remove_all_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="never-existed",
             document_store=document_store,
@@ -569,6 +608,7 @@ class TestRemoveAllForConversation:
     ) -> None:
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="convA",
             file_bytes=b"a",
@@ -577,6 +617,7 @@ class TestRemoveAllForConversation:
         )
         upload(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="convB",
             file_bytes=b"b",
@@ -585,6 +626,7 @@ class TestRemoveAllForConversation:
         )
         remove_all_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="convA",
             document_store=document_store,
@@ -592,6 +634,7 @@ class TestRemoveAllForConversation:
         # convB still has its document.
         refs_b = list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="owner",
             persona_id="astrid",
             conversation_id="convB",
         )
@@ -615,6 +658,7 @@ class TestCsa2DispatcherCompatibility:
         sig = inspect.signature(upload)
         expected = {
             "sandbox_root",
+            "owner_id",
             "persona_id",
             "conversation_id",
             "file_bytes",

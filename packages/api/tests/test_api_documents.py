@@ -138,6 +138,7 @@ class TestListDocuments:
     ) -> None:
         document_service.upload(
             sandbox_root=sandbox_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
             file_bytes=b"hello",
@@ -169,6 +170,7 @@ class TestDeleteDocument:
     ) -> None:
         ref = document_service.upload(
             sandbox_root=sandbox_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
             file_bytes=b"hi",
@@ -183,6 +185,7 @@ class TestDeleteDocument:
         # List confirms the document was removed.
         refs = document_service.list_for_conversation(
             sandbox_root=sandbox_root,
+            owner_id="u1",
             persona_id="astrid",
             conversation_id="conv_u1",
         )
@@ -224,6 +227,7 @@ class TestCrossTenantIsolation:
         # is unknown to the fake get_conversation → 404.
         document_service.upload(
             sandbox_root=sandbox_root,
+            owner_id="u1",
             persona_id="other_persona",
             conversation_id="conv_other",
             file_bytes=b"secret",

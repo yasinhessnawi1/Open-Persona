@@ -34,22 +34,24 @@ if TYPE_CHECKING:
 
 _PERSONA = "astrid"
 _CONV = "c1"
+_OWNER = "owner_1"
 _DOC_BODY = b"# Polly's Layout Test\n\nThis is the ACTUAL uploaded document.\n"
 
 
 def _write_document(
     workspace_root: Path,
     *,
+    owner: str = _OWNER,
     doc_ref: str = "pollys_layout_test",
     filename: str = "pollys-layout-test.md",
     body: bytes = _DOC_BODY,
 ) -> DocumentRef:
     """Lay down an attached document the way document_service.upload does."""
-    base = workspace_root / f"persona_{_PERSONA}" / "conversations" / _CONV / DOCUMENT_DIR_NAME
+    base = workspace_root / owner / _PERSONA / "conversations" / _CONV / DOCUMENT_DIR_NAME
     base.mkdir(parents=True, exist_ok=True)
     original = base / f"{doc_ref}.md"
     original.write_bytes(body)
-    relative_path = f"persona_{_PERSONA}/conversations/{_CONV}/{DOCUMENT_DIR_NAME}/{doc_ref}.md"
+    relative_path = f"{owner}/{_PERSONA}/conversations/{_CONV}/{DOCUMENT_DIR_NAME}/{doc_ref}.md"
     ref = DocumentRef(
         doc_ref=doc_ref,
         filename=filename,
@@ -70,7 +72,7 @@ class TestResolveTurnDocuments:
         _write_document(tmp_path)
 
         staged = _resolve_turn_documents(
-            workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+            workspace_root=tmp_path, owner_id=_OWNER, persona_id=_PERSONA, conversation_id=_CONV
         )
 
         assert len(staged) == 1
@@ -81,14 +83,16 @@ class TestResolveTurnDocuments:
 
     def test_no_workspace_root_returns_empty(self) -> None:
         assert (
-            _resolve_turn_documents(workspace_root=None, persona_id=_PERSONA, conversation_id=_CONV)
+            _resolve_turn_documents(
+                workspace_root=None, owner_id=_OWNER, persona_id=_PERSONA, conversation_id=_CONV
+            )
             == []
         )
 
     def test_no_documents_returns_empty(self, tmp_path: Path) -> None:
         assert (
             _resolve_turn_documents(
-                workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+                workspace_root=tmp_path, owner_id=_OWNER, persona_id=_PERSONA, conversation_id=_CONV
             )
             == []
         )
@@ -101,7 +105,7 @@ class TestResolveTurnDocuments:
 
         assert (
             _resolve_turn_documents(
-                workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+                workspace_root=tmp_path, owner_id=_OWNER, persona_id=_PERSONA, conversation_id=_CONV
             )
             == []
         )
@@ -122,7 +126,7 @@ class TestStageDocumentsForFileRead:
         _write_document(tmp_path)
         return list(
             _resolve_turn_documents(
-                workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+                workspace_root=tmp_path, owner_id=_OWNER, persona_id=_PERSONA, conversation_id=_CONV
             )
         )
 
@@ -216,7 +220,7 @@ class TestFileReadReconciliation:
         _write_document(tmp_path)
         documents = list(
             _resolve_turn_documents(
-                workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+                workspace_root=tmp_path, owner_id=_OWNER, persona_id=_PERSONA, conversation_id=_CONV
             )
         )
         _stage_documents_for_file_read(
@@ -243,7 +247,7 @@ class TestFileReadReconciliation:
         _write_document(tmp_path)
         documents = list(
             _resolve_turn_documents(
-                workspace_root=tmp_path, persona_id=_PERSONA, conversation_id=_CONV
+                workspace_root=tmp_path, owner_id=_OWNER, persona_id=_PERSONA, conversation_id=_CONV
             )
         )
         _stage_documents_for_file_read(
@@ -331,7 +335,7 @@ async def test_stream_chat_forwards_resolved_documents_to_loop(
         async for frame in chat_service.stream_chat(
             rls_engine=_FakeEngine(),  # type: ignore[arg-type]
             loop_builder=_build_loop,  # type: ignore[arg-type]
-            owner_id="user_1",
+            owner_id=_OWNER,
             conversation_id=_CONV,
             user_message="summarise the doc",
             channel=None,

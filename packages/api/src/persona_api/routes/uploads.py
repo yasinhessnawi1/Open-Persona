@@ -289,6 +289,7 @@ def _handle_document_upload(
     try:
         ref = document_service.upload(
             sandbox_root=Path(request.app.state.workspace_root),
+            owner_id=user.id,
             persona_id=persona_id,
             conversation_id=conversation_id,
             file_bytes=file_bytes,

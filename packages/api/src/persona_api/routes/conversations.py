@@ -147,6 +147,7 @@ async def delete_conversation(
 
         document_service.remove_all_for_conversation(
             sandbox_root=Path(workspace_root),
+            owner_id=user.id,
             persona_id=persona_id,
             conversation_id=conversation_id,
             document_store=build_document_store(),
@@ -217,6 +218,7 @@ async def post_message(
         persona_id_for_docs = str(conversation_row["persona_id"])
         document_context = document_service.build_document_context(
             sandbox_root=request.app.state.workspace_root,
+            owner_id=user.id,
             persona_id=persona_id_for_docs,
             conversation_id=conversation_id,
             user_message=body.content,
