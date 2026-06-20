@@ -174,6 +174,11 @@ export type ChatEvent =
   | { event: "asking_user"; data: AskingUserData }
   // Spec 35 (D-35-4): the typed-memory recall state, named per store.
   | { event: "memory_recall"; data: MemoryRecallData }
+  // The model is generating this round — drives a "working" pulse during the
+  // gap before any text/tool event (notably while writing a long code_execution
+  // call, whose args don't stream as deltas). Empty payload; cleared on the
+  // next chunk/tool_calling/tool_result.
+  | { event: "thinking"; data: Record<string, never> }
   | { event: "done"; data: ChatDoneData };
 
 const CHAT_EVENTS = new Set([
@@ -182,6 +187,7 @@ const CHAT_EVENTS = new Set([
   "tool_result",
   "asking_user",
   "memory_recall",
+  "thinking",
   "done",
 ]);
 

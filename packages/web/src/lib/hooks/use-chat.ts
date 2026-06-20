@@ -149,9 +149,15 @@ export function useChat(
         )) {
           const ev = parseChatEvent(raw);
           if (!ev) continue;
-          if (ev.event === "chunk") {
+          if (ev.event === "thinking") {
+            // The model is generating this round — show a "working" pulse during
+            // the gap before any text/tool event (notably while writing a long
+            // code_execution call). Cleared by the next chunk / tool_calling.
+            patch((a) => ({ ...a, working: true }));
+          } else if (ev.event === "chunk") {
             patch((a) => ({
               ...a,
+              working: false,
               content: a.content + ev.data.delta,
               events: [
                 ...(a.events ?? []),
@@ -161,6 +167,7 @@ export function useChat(
           } else if (ev.event === "tool_calling") {
             patch((a) => ({
               ...a,
+              working: false,
               tools: [
                 ...(a.tools ?? []),
                 ...ev.data.tool_calls.map((c) => ({

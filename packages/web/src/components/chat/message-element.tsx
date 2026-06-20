@@ -128,6 +128,13 @@ export interface MessageElementView {
   /** D-F2-15: ordered event log. When present, MessageElement renders interleaved. */
   events?: MessageEvent[];
   streaming?: boolean;
+  /**
+   * The model is generating the current round but hasn't emitted text or a tool
+   * call yet — driven by the `thinking` SSE event. Shows a "working" pulse in
+   * the gap (notably while writing a long code_execution call, whose args don't
+   * stream as deltas). Cleared on the round's first chunk / tool event.
+   */
+  working?: boolean;
   /** F3 (T06): workspace references to attached images on this message. */
   images?: { workspace_path: string; media_type: string }[];
   /**
@@ -352,6 +359,7 @@ function PersonaMessage({
             <InterleavedContent
               events={message.events ?? []}
               streaming={!!message.streaming}
+              working={!!message.working}
               thinkingLabel={thinkingLabel}
               personaName={persona.name}
               personaId={persona.id}
@@ -507,6 +515,7 @@ function StackedContent({
 function InterleavedContent({
   events,
   streaming,
+  working = false,
   thinkingLabel,
   personaName,
   personaId,
@@ -514,6 +523,8 @@ function InterleavedContent({
 }: {
   events: readonly MessageEvent[];
   streaming: boolean;
+  /** Model is generating this round (thinking event); shows a working pulse. */
+  working?: boolean;
   thinkingLabel: string;
   personaName: string;
   /** F4 T10: passed through to OutputDispatcher for Bearer-auth byte loading. */
@@ -525,7 +536,7 @@ function InterleavedContent({
 
   // Render items computed in a single pass via memo for stability across
   // re-renders that don't change events.
-  const { items, pendingToolName } = useMemo(() => {
+  const { items, pendingToolName, isLiveText } = useMemo(() => {
     const out: ReactNode[] = [];
     let textBuffer = "";
     let textIdx = 0;
@@ -655,7 +666,7 @@ function InterleavedContent({
     const isLive = streaming && lastKind === "text" && pending === null;
     flushText(`text-${textIdx++}`, isLive);
 
-    return { items: out, pendingToolName: pending };
+    return { items: out, pendingToolName: pending, isLiveText: isLive };
   }, [events, streaming, personaId, onViewLarger]);
 
   // Activity indicator state machine:
@@ -675,6 +686,11 @@ function InterleavedContent({
   }
 
   const showToolRunning = streaming && pendingToolName !== null;
+  // The gap between rounds: the model is generating (thinking event) but hasn't
+  // produced text or a tool call yet — no live caret, no pending tool. Without
+  // this the surface looks frozen while a long code_execution call is written.
+  const showWorking =
+    streaming && working && pendingToolName === null && !isLiveText;
 
   return (
     <div
@@ -688,6 +704,13 @@ function InterleavedContent({
             name: personaName,
             tool: pendingToolName,
           })}
+        />
+      ) : showWorking ? (
+        <StreamingTextRenderer
+          text=""
+          streaming
+          thinking
+          thinkingLabel={thinkingLabel}
         />
       ) : null}
     </div>

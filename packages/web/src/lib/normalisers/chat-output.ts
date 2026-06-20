@@ -34,6 +34,9 @@ export function chatSseToOutputContent(event: ChatEvent): OutputContent[] {
     // Spec 35 (D-35-4): the memory-recall "remembering" state is a transient
     // pre-answer indicator, not assistant output content.
     case "memory_recall":
+    // The "working" pulse during round generation is a transient indicator,
+    // not assistant output content.
+    case "thinking":
       return [];
     case "tool_calling":
       return projectToolCalling(event.data.tool_calls);

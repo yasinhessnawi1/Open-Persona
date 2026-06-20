@@ -626,6 +626,14 @@ class ConversationLoop:
                 *tool_messages,
             ]
             outcome = _RoundOutcome()
+            # Signal "the model is generating this round" so the chat surface can
+            # show a working indicator during the gap BEFORE any text or tool
+            # event — notably while the model writes a long ``code_execution``
+            # call, whose arguments don't stream as text deltas (without this the
+            # UI looks frozen for the whole generation). Mirrors AgenticLoop's
+            # per-step thinking emit; cleared on the round's first chunk/tool event.
+            if on_event is not None:
+                await on_event(RunEvent.thinking(-1))
             async for delta in self._stream_round(backend, prompt_messages, outcome):
                 visible_text += delta
                 yield _text_chunk(delta)

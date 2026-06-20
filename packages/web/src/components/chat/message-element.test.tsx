@@ -409,6 +409,87 @@ describe("MessageElement — D-F2-15 interleaved layout", () => {
     ).toBeNull();
   });
 
+  it("shows the working pulse in the gap between rounds (streaming + working, completed tool, no pending)", () => {
+    // After a tool_result, the model writes the next code_execution call (no
+    // text/tool event yet). The `thinking` event sets working=true → the gap
+    // shows the thinking pulse instead of looking frozen.
+    const msg = interleavedMsg(
+      [
+        { kind: "text", delta: "Let me build it. " },
+        {
+          kind: "tool_call",
+          callId: "c0",
+          toolName: "code_execution",
+          args: {},
+        },
+        {
+          kind: "tool_result",
+          toolName: "code_execution",
+          content: "ok",
+          isError: false,
+        },
+      ],
+      { streaming: true, working: true },
+    );
+    const { container } = renderWithIntl(
+      <MessageElement message={msg} persona={ASTRID} />,
+    );
+    expect(
+      container.querySelector('[data-slot="streaming-thinking"]'),
+    ).not.toBeNull();
+  });
+
+  it("does NOT show the working pulse once a tool is pending (tool-running wins)", () => {
+    const msg = interleavedMsg(
+      [
+        {
+          kind: "tool_call",
+          callId: "c0",
+          toolName: "code_execution",
+          args: {},
+        },
+        // no tool_result → pending
+      ],
+      { streaming: true, working: true },
+    );
+    const { container } = renderWithIntl(
+      <MessageElement message={msg} persona={ASTRID} />,
+    );
+    // The pending tool's running indicator shows; the gap pulse does not duplicate it.
+    expect(
+      container.querySelector('[data-slot="message-element-tool-running"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-slot="streaming-thinking"]'),
+    ).toBeNull();
+  });
+
+  it("does NOT show the working pulse on a terminal (non-streaming) turn", () => {
+    const msg = interleavedMsg(
+      [
+        {
+          kind: "tool_call",
+          callId: "c0",
+          toolName: "code_execution",
+          args: {},
+        },
+        {
+          kind: "tool_result",
+          toolName: "code_execution",
+          content: "ok",
+          isError: false,
+        },
+      ],
+      { streaming: false, working: true },
+    );
+    const { container } = renderWithIntl(
+      <MessageElement message={msg} persona={ASTRID} />,
+    );
+    expect(
+      container.querySelector('[data-slot="streaming-thinking"]'),
+    ).toBeNull();
+  });
+
   it("shows the caret next to the last text span when streaming and last event was text", () => {
     const msg = interleavedMsg(
       [
