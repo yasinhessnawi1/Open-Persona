@@ -311,15 +311,23 @@ def make_pool_code_execution_tool(
                 write_artifact_sidecar,
             )
 
+            # Scope the sidecar to THIS conversation so the F5 artifact walk
+            # (queried with ``?conversation_id=``) surfaces the file in the
+            # conversation's Files viewer. A ``None`` conversation_id is filtered
+            # out of the scoped listing — the produced file would persist on disk
+            # but never appear in the panel. ``original_name`` is the produced
+            # ref's basename (code_execution keeps real names, e.g.
+            # ``marketing_strategy.pdf``), so the viewer shows a human name.
+            ctx = get_sandbox_request_context()
             write_artifact_sidecar(
                 target,
                 WorkspaceArtifactMetadata(
                     source="generated",
                     type=artifact_type,  # type: ignore[arg-type]
                     producing_spec=producing_spec,  # type: ignore[arg-type]
-                    conversation_id=None,
+                    conversation_id=ctx.conversation_id if ctx is not None else None,
                     created_at=utcnow(),
-                    original_name=None,
+                    original_name=ref.rsplit("/", 1)[-1] or None,
                 ),
             )
         except Exception:  # noqa: BLE001 — sidecar failure non-fatal

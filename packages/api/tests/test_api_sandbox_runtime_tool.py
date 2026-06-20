@@ -556,6 +556,53 @@ class TestWorkspaceRootPersisterWiring:
         assert not result.is_error
         assert fake.copy_calls == []
 
+    @pytest.mark.asyncio
+    async def test_produced_file_sidecar_scopes_to_conversation(
+        self,
+        pool_with_fake: tuple[SandboxPool, _FakeSandbox],
+        tmp_path: Path,
+    ) -> None:
+        """The F5 sidecar carries THIS conversation's id + the ref basename.
+
+        Regression: a ``None`` conversation_id is filtered out of the
+        conversation-scoped artifact walk, so the produced file persists on
+        disk but never appears in the Files viewer. The ref basename gives the
+        viewer a human name instead of falling back to a hash.
+        """
+        from persona_api.services.artifact_metadata import read_artifact_sidecar
+
+        pool, fake = pool_with_fake
+        fake.produced_files = (
+            SandboxFile(
+                path="marketing_strategy.pdf", size_bytes=30030, media_type="application/pdf"
+            ),
+        )
+        rls_engine = object()
+        workspace_root = tmp_path / "workspaces"
+        # write_artifact_sidecar does not autocreate parents — the real persister
+        # creates them on copy; the fake copy is a no-op, so make uploads/ here.
+        (workspace_root / "alice" / "persona-A" / "uploads").mkdir(parents=True)
+        tool = make_pool_code_execution_tool(
+            pool=pool,
+            rls_engine=rls_engine,  # type: ignore[arg-type]
+            persona_id="persona-A",
+            workspace_root=workspace_root,
+        )
+        token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id="alice", conversation_id="conv-42")
+        )
+        try:
+            result = await tool.execute(code="pdf.savefig(fig)")
+        finally:
+            reset_sandbox_request_context(token)
+        assert not result.is_error
+        target = workspace_root / "alice" / "persona-A" / "uploads" / "marketing_strategy.pdf"
+        meta = read_artifact_sidecar(target)
+        assert meta is not None
+        assert meta.source == "generated"
+        assert meta.conversation_id == "conv-42"
+        assert meta.original_name == "marketing_strategy.pdf"
+
 
 class TestCrossTurnIntermediateStaging:
     """D-17-X-bytes-persistence inverse flow: ``intermediate/*`` staged before dispatch."""
