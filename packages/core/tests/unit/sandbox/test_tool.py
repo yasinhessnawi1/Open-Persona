@@ -42,6 +42,26 @@ class TestFactoryShape:
         # Description is non-empty so the model can decide to call it.
         assert tool.description
 
+    def test_description_warns_no_internet_and_lists_preinstalled_libs(self) -> None:
+        """Regression guard: the description the model reads must tell it the
+        sandbox has no network egress, that install commands hang/time out, and
+        which pre-installed libraries to use instead. Without this the model
+        improvises ``pip install`` and burns the per-turn setup cap on DNS."""
+        sandbox = FakeSandbox()
+        tool = make_code_execution_tool(sandbox)
+        description = tool.description.lower()
+        # No-internet / no-install guidance.
+        assert "no internet" in description or "no network" in description
+        assert "pip" in description
+        # Steer toward the pre-installed libraries.
+        assert "pre-installed" in description
+        for lib in ("numpy", "pandas", "matplotlib", "python-docx", "openpyxl"):
+            assert lib in description, f"description should mention {lib}"
+        assert "pil" in description or "pillow" in description
+        # Call out what is NOT available so the model doesn't reach for it.
+        assert "reportlab" in description
+        assert "python-pptx" in description
+
     def test_parameters_schema_only_exposes_code(self) -> None:
         """D-12-4: the model can supply ONLY ``code``. Network / limits /
         session are bound at factory time (composition root, not the model)."""

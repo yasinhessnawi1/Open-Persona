@@ -92,7 +92,11 @@ _DEFAULT_DESCRIPTION = (
     "calculations, data analysis, file processing, charts, or documents — "
     "do not say you cannot run code: call this tool. It executes Python in a "
     "secure sandbox and returns stdout, stderr, and any files the code writes "
-    "to the workspace. Network access is disabled by default."
+    "to the workspace. "
+    "NO internet access: the sandbox has NO network egress. Do NOT run "
+    "pip/apt/npm/curl/wget or any install command — it will hang and time out. "
+    "Use ONLY pre-installed libraries: numpy, pandas, matplotlib, python-docx, "
+    "openpyxl, Pillow (PIL). reportlab and python-pptx are NOT available."
 )
 
 
