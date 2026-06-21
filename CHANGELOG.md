@@ -11,6 +11,23 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Web v1 redesign — global notification + consent systems (2026-06-21)
+
+> Close-out of the web v1 production redesign. The screen/shell restyle landed
+> incrementally; this entry records the two final app-wide systems that complete
+> it — every user-facing message now flows through one notification façade, and
+> every confirmation through one consent dialog. **Zero native browser dialogs
+> remain.** No new dependency.
+
+#### Added
+- **Global notifications (`useNotify` / `NotificationProvider`)** — a single façade over the existing toast layer that *also* feeds a persistent **bell center**: a client-side feed (capped at 30, `localStorage`, no backend) shown in a base-ui popover from the sidebar header (desktop) + mobile header. Levels are `success` / `error` / `info` / `warning`; error + success persist to the bell by default, transient info/warning don't (override per call). Wired to real events — chat document attach/error and delete/duplicate successes across conversations, personas, and artifacts.
+- **Global consent (`useConfirm` / `ConfirmProvider`)** — an async `confirm()` that resolves off one token-styled base-ui dialog (destructive "danger" tone for delete flows), replacing every native `window.confirm()`.
+
+#### Changed
+- **All 6 native `confirm()` calls replaced** (conversation / persona / artifact delete + persona duplicate ×2) — a repo grep of `packages/web` now shows zero `alert(` / `confirm(` / `window.confirm(`.
+- **Chat notifications unified** — the composer/chat surface no longer calls the toast layer directly; consequential events persist in the bell, transient validation toasts without it.
+- **Fully internationalised** — new `confirm` + `notifications` next-intl namespaces; every call site passes localised copy.
+
 ---
 
 ## [1.0.0] - 2026-06-20

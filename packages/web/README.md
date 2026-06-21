@@ -55,11 +55,16 @@ build never pulls `@clerk/*` into the bundle (enforced by CI gates +
   `/v1/voice/token` flow; a voice orb surface (V6, in flight).
 - **Settings** — credit balance + per-turn usage, theme, tier-badge
   visibility, language toggle, conversations list.
+- **Notifications + consent** — one app-wide notification façade (`useNotify`)
+  over the toast layer, plus a persistent bell center (client-side feed); and
+  one consent dialog (`useConfirm`) for every confirmation — no native browser
+  dialogs.
 - **Responsive + i18n** — usable at 375px, dark-mode-default, fully
   internationalized via `next-intl`.
 
-> The web redesign (in flight) is reshaping the UI; the app structure and
-> surfaces above are stable, the specific visual treatment is moving.
+> The web v1 production redesign is complete: an identity-spine `.v-*` design
+> system over F1 tokens (no literal colours), a rebuilt sidebar + ⌘K palette,
+> and the three signature moments (per-turn tier, typed-memory recall, presence).
 
 ## Install / run
 
