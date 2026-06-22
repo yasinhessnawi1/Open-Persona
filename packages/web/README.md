@@ -18,9 +18,10 @@ client, with every auth touch isolated behind a swappable `@/auth` seam.
 
 The browser front-end: Next.js 16 (App Router) + TypeScript (strict) +
 Tailwind v4 + shadcn/ui, an OpenAPI-generated client against `persona-api`, and
-Biome + Vitest + Playwright as the verification surface. SSE streams (chat +
-agentic-run timelines) are consumed via `fetch` + `ReadableStream` with
-hand-mirrored event shapes (OpenAPI cannot model server-sent events). State is
+Biome + Vitest + Playwright as the verification surface. SSE streams (chat,
+agentic-run timelines, and authoring drafts) are consumed via `fetch` +
+`ReadableStream` with hand-mirrored event shapes (OpenAPI cannot model
+server-sent events). State is
 server-state-first; no global store.
 
 It ships in **two editions**, selected at **build time** by `PERSONA_EDITION`:
@@ -42,8 +43,9 @@ build never pulls `@clerk/*` into the bundle (enforced by CI gates +
 
 ## Features
 
-- **Persona authoring** — one-sentence brief → frontier draft → structured form
-  ⇄ lazy Monaco YAML editor → save, plus edit and a files manager.
+- **Persona authoring** — one-sentence brief → frontier draft streamed live
+  (SSE progressive preview) → structured form ⇄ lazy Monaco YAML editor → save,
+  plus edit and a files manager.
 - **Streaming chat** — SSE chat with a visible identity header, collapsible
   tool-call cards, per-turn tier badges, file + image attachments, and a
   right-panel artifact renderer covering 10 formats (markdown / code / PDF /
@@ -127,8 +129,8 @@ App structure (App Router):
 **API access.** Every backend call goes through the committed OpenAPI-generated
 client (`src/lib`) — never hand-written `fetch`. The bearer token comes from the
 `@/auth` seam: a Clerk JWT-template token in cloud, `null` in community. SSE
-streams (chat, runs) are read via `ReadableStream` with the event shapes
-mirrored in `src/lib`.
+streams (chat, runs, authoring) are read via `ReadableStream` with the event
+shapes mirrored in `src/lib`.
 
 ## Architecture (brief)
 

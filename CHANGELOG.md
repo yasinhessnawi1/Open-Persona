@@ -77,6 +77,43 @@ Per-spec entries are added by the close-out phase of each spec.
   float32 baseline, and confirmation the K4 filter + budget truncation never drop
   a relevant node.
 
+### Streamed authoring (2026-06-22)
+
+> Close-out of `streamed-authoring`. The persona-authoring draft now **streams**
+> over SSE, so the persona visibly forms within ~1–2s of submitting
+> (time-to-first-token) instead of behind a 30–60s blank spinner — the
+> authoring-side counterpart to v1's async-create fix. **Transport + UX only:**
+> the produced draft is contract-identical to the blocking path (the validated
+> `AuthoringDraft`), and schema-validation + the retry safety net are unchanged.
+> No new dependency, no migration, no contract change.
+
+#### Added
+- **SSE-streamed authoring** — `POST /v1/personas/author` and `/author/refine`
+  now return `text/event-stream`: `chunk` deltas as the model generates, a
+  visible `retry` event when the validation-repair re-stream fires, then the
+  validated `AuthoringDraft` as the terminal `draft` event + a `done` sentinel.
+  The web author wizard consumes the stream via the shared `consumeSSE` helper
+  and paints the draft forming live (raw-text preview) before resolving to the
+  editable review form. The streamed terminal draft is byte-equivalent to the
+  blocking path; the parse → validate → retry-once safety net is shared between
+  both paths so the model-agnosticism contract cannot drift.
+- **Cancel-safe authoring** — the wizard wires an `AbortController` aborted on
+  unmount; navigating away cancels the upstream request. A cancelled or failed
+  stream produces no terminal draft — so no credit is deducted — and a stream
+  that drops before the draft surfaces a retry (no silent partial draft).
+
+#### Changed
+- **Authoring credit deducts after the terminal draft, not up front** — the flat
+  authoring credit is deducted only once the validated draft is produced (after a
+  clean stream), mirroring chat's deduct-after-completion. The top-of-route
+  pre-flight 402 + rate-limit + the refinement-round backstop still run *before*
+  streaming begins. A validation-exhausted draft (best-effort YAML + errors) is a
+  delivered draft and still charges, unchanged.
+- **OpenAPI / web client** — `/author` + `/author/refine` are now SSE-primary;
+  the `AuthoringDraft` type is preserved in the generated client and consumed as
+  the terminal SSE payload. Graceful degrade reads that terminal payload — there
+  is no separate REST fallback.
+
 ### Web v1 redesign — global notification + consent systems (2026-06-21)
 
 > Close-out of the web v1 production redesign. The screen/shell restyle landed

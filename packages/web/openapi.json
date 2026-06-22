@@ -104,7 +104,7 @@
       "post": {
         "tags": ["personas"],
         "summary": "Author Persona",
-        "description": "Generate a DRAFT persona from a description for review (D-10-2).\n\nReturns the draft envelope (YAML + clarifying questions + prompt version) \u2014\nit does NOT create a persona row. The user reviews/refines, then saves via\n``POST /v1/personas``. The flat authoring credit is deducted per call (the\ncost is the frontier-model call, not a row; D-10-8).",
+        "description": "SSE-stream a DRAFT persona from a description for review (D-10-2, spec P0).\n\nStreams the model output as it generates (``chunk`` events), then emits the\nvalidated ``AuthoringDraft`` as the terminal ``draft`` event followed by\n``done``. Creates NO persona row \u2014 the user reviews/refines, then saves via\n``POST /v1/personas``. The flat authoring credit is deducted ONLY after a\nsuccessful terminal draft (D-P0-deduct-after-validate / D-08-6); the\npre-flight 402 (D-11-12) + rate-limit run BEFORE streaming begins.",
         "operationId": "author_persona_v1_personas_author_post",
         "requestBody": {
           "content": {
@@ -124,7 +124,8 @@
                 "schema": {
                   "$ref": "#/components/schemas/AuthoringDraft"
                 }
-              }
+              },
+              "text/event-stream": {}
             }
           },
           "422": {
@@ -144,7 +145,7 @@
       "post": {
         "tags": ["personas"],
         "summary": "Refine Persona",
-        "description": "Refine a draft persona by answering a clarifying question (\u00a74, D-10-2).\n\nStateless: the request carries ``round`` (refinements already applied); the\nserver rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5).\nReturns the updated draft envelope; deducts the flat authoring credit.",
+        "description": "SSE-stream a refined draft by answering a clarifying question (\u00a74, D-10-2, spec P0).\n\nStateless: the request carries ``round`` (refinements already applied); the\nserver rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5)\nBEFORE streaming begins. Streams the same way as ``/author``; deducts the\nflat authoring credit only after the terminal draft.",
         "operationId": "refine_persona_v1_personas_author_refine_post",
         "requestBody": {
           "content": {
@@ -164,7 +165,8 @@
                 "schema": {
                   "$ref": "#/components/schemas/AuthoringDraft"
                 }
-              }
+              },
+              "text/event-stream": {}
             }
           },
           "422": {
@@ -1035,6 +1037,24 @@
         "summary": "Healthz",
         "description": "Liveness + DB connectivity check.",
         "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/livez": {
+      "get": {
+        "tags": ["health"],
+        "summary": "Livez",
+        "description": "Liveness probe \u2014 process is up; no dependency checks.",
+        "operationId": "livez_livez_get",
         "responses": {
           "200": {
             "description": "Successful Response",

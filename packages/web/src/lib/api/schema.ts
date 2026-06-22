@@ -52,12 +52,14 @@ export interface paths {
     put?: never;
     /**
      * Author Persona
-     * @description Generate a DRAFT persona from a description for review (D-10-2).
+     * @description SSE-stream a DRAFT persona from a description for review (D-10-2, spec P0).
      *
-     *     Returns the draft envelope (YAML + clarifying questions + prompt version) —
-     *     it does NOT create a persona row. The user reviews/refines, then saves via
-     *     ``POST /v1/personas``. The flat authoring credit is deducted per call (the
-     *     cost is the frontier-model call, not a row; D-10-8).
+     *     Streams the model output as it generates (``chunk`` events), then emits the
+     *     validated ``AuthoringDraft`` as the terminal ``draft`` event followed by
+     *     ``done``. Creates NO persona row — the user reviews/refines, then saves via
+     *     ``POST /v1/personas``. The flat authoring credit is deducted ONLY after a
+     *     successful terminal draft (D-P0-deduct-after-validate / D-08-6); the
+     *     pre-flight 402 (D-11-12) + rate-limit run BEFORE streaming begins.
      */
     post: operations["author_persona_v1_personas_author_post"];
     delete?: never;
@@ -77,11 +79,12 @@ export interface paths {
     put?: never;
     /**
      * Refine Persona
-     * @description Refine a draft persona by answering a clarifying question (§4, D-10-2).
+     * @description SSE-stream a refined draft by answering a clarifying question (§4, D-10-2, spec P0).
      *
      *     Stateless: the request carries ``round`` (refinements already applied); the
-     *     server rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5).
-     *     Returns the updated draft envelope; deducts the flat authoring credit.
+     *     server rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5)
+     *     BEFORE streaming begins. Streams the same way as ``/author``; deducts the
+     *     flat authoring credit only after the terminal draft.
      */
     post: operations["refine_persona_v1_personas_author_refine_post"];
     delete?: never;
@@ -500,6 +503,26 @@ export interface paths {
      * @description Liveness + DB connectivity check.
      */
     get: operations["healthz_healthz_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/livez": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Livez
+     * @description Liveness probe — process is up; no dependency checks.
+     */
+    get: operations["livez_livez_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1914,6 +1937,7 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AuthoringDraft"];
+          "text/event-stream": unknown;
         };
       };
       /** @description Validation Error */
@@ -1947,6 +1971,7 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AuthoringDraft"];
+          "text/event-stream": unknown;
         };
       };
       /** @description Validation Error */
@@ -2589,6 +2614,26 @@ export interface operations {
     };
   };
   healthz_healthz_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+    };
+  };
+  livez_livez_get: {
     parameters: {
       query?: never;
       header?: never;

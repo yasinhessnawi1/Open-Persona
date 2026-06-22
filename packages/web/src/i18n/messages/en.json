@@ -329,6 +329,7 @@
     "loadingStep1": "Shaping identity and voice…",
     "loadingStep2": "Forming worldview and self-facts…",
     "loadingStep3": "Setting constraints and capabilities…",
+    "streamRegenerating": "Adjusting the draft to fit the schema…",
     "reviewByline": "Draft — review & refine",
     "reviewTitle": "Review your persona",
     "editTitle": "Edit {name}",

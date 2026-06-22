@@ -9,10 +9,12 @@ business logic lives in the services; the routes are thin.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
+from fastapi.responses import StreamingResponse
 from persona.imagegen import ContentRejectedError, ImageGenError, craft_avatar_prompt
 from persona.logging import get_logger
 from persona.tools.audit import JSONLToolAuditLogger, ToolAuditEvent
@@ -48,6 +50,8 @@ from persona_api.services import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from persona_runtime.tier import TierRegistry
 
 # The 3-round refinement cap (D-10-5): the UI owns the counter, the server is
@@ -367,62 +371,123 @@ async def create_persona(
     return _persona_detail(row, tier_registry=_tier_registry(request))
 
 
-@router.post("/author", response_model=AuthoringDraft, dependencies=[Depends(rate_limit("author"))])
+def _sse(event: str, data: dict[str, object]) -> bytes:
+    """Frame one SSE event (mirrors the chat/runs streaming framing; D-P0-sse-reuse)."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+def _rate_limit_headers(request: Request) -> dict[str, str]:
+    """Copy the rate-limit dependency's headers onto a route-built StreamingResponse.
+
+    FastAPI does not auto-merge a dependency's response headers into a
+    route-constructed ``StreamingResponse`` — the chat path does the same copy
+    (conversations.py) so ``X-RateLimit-*`` appears on the SSE response too.
+    """
+    decision = getattr(request.state, "rate_limit_decision", None)
+    return decision.headers() if decision is not None else {}
+
+
+def _authoring_stream_response(
+    request: Request,
+    user: AuthenticatedUser,
+    events: AsyncIterator[authoring_service.AuthoringStreamEvent],
+    *,
+    action: str,
+    reason: str,
+) -> StreamingResponse:
+    """Frame the service's semantic events as SSE; deduct AFTER the terminal draft.
+
+    ``chunk`` → a forming-text frame; ``retry`` → a visible regenerating frame;
+    the terminal ``draft`` triggers the post-success credit deduct
+    (D-P0-deduct-after-validate / D-08-6) — deliberately NOT in a ``finally``, so
+    an aborted (generator cancelled mid-stream) or failed (provider error,
+    propagates before the draft) stream yields no terminal draft and deducts
+    nothing — then emits the validated-or-errored ``AuthoringDraft`` payload and
+    the ``done`` sentinel (mirrors chat). A validation-exhausted draft is a
+    delivered draft and DOES charge (D-10-8), unchanged from the blocking path.
+    """
+
+    async def _frames() -> AsyncIterator[bytes]:
+        async for kind, payload in events:
+            if kind == "chunk":
+                yield _sse("chunk", {"delta": payload, "is_final": False})
+            elif kind == "retry":
+                yield _sse("retry", {"reason": payload})
+            else:  # "draft" — the single terminal event
+                draft = cast("AuthoringDraft", payload)
+                _deduct_and_audit(request, user, action, draft.prompt_version, reason=reason)
+                yield _sse("draft", draft.model_dump())
+                yield _sse("done", {})
+
+    return StreamingResponse(
+        _frames(), media_type="text/event-stream", headers=_rate_limit_headers(request)
+    )
+
+
+@router.post(
+    "/author",
+    responses={200: {"model": AuthoringDraft, "content": {"text/event-stream": {}}}},
+    dependencies=[Depends(rate_limit("author"))],
+)
 async def author_persona(
     body: AuthorPersonaRequest,
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> AuthoringDraft:
-    """Generate a DRAFT persona from a description for review (D-10-2).
+) -> StreamingResponse:
+    """SSE-stream a DRAFT persona from a description for review (D-10-2, spec P0).
 
-    Returns the draft envelope (YAML + clarifying questions + prompt version) —
-    it does NOT create a persona row. The user reviews/refines, then saves via
-    ``POST /v1/personas``. The flat authoring credit is deducted per call (the
-    cost is the frontier-model call, not a row; D-10-8).
+    Streams the model output as it generates (``chunk`` events), then emits the
+    validated ``AuthoringDraft`` as the terminal ``draft`` event followed by
+    ``done``. Creates NO persona row — the user reviews/refines, then saves via
+    ``POST /v1/personas``. The flat authoring credit is deducted ONLY after a
+    successful terminal draft (D-P0-deduct-after-validate / D-08-6); the
+    pre-flight 402 (D-11-12) + rate-limit run BEFORE streaming begins.
     """
-    # Pre-flight credit guard (D-11-12 / spec 11 §5).
+    # Pre-flight credit guard BEFORE streaming (D-11-12 / D-P0-preflight-preserved).
     request.app.state.credits_policy.require_credits(
         rls_engine=request.app.state.rls_engine, user_id=user.id
     )
     backend = request.app.state.tier_registry.get(request.app.state.authoring_tier)
-    draft = await authoring_service.generate_authoring_draft(
+    events = authoring_service.stream_authoring_draft(
         backend,
         body.description,
         [name for name, _ in catalog_service.list_tools()],
         [name for name, _ in catalog_service.list_skills()],
         sampling=_authoring_sampling(request),
     )
-    _deduct_and_audit(
-        request, user, "persona.author", draft.prompt_version, reason="persona_authoring"
+    return _authoring_stream_response(
+        request, user, events, action="persona.author", reason="persona_authoring"
     )
-    return draft
 
 
 @router.post(
-    "/author/refine", response_model=AuthoringDraft, dependencies=[Depends(rate_limit("author"))]
+    "/author/refine",
+    responses={200: {"model": AuthoringDraft, "content": {"text/event-stream": {}}}},
+    dependencies=[Depends(rate_limit("author"))],
 )
 async def refine_persona(
     body: RefinePersonaRequest,
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
-) -> AuthoringDraft:
-    """Refine a draft persona by answering a clarifying question (§4, D-10-2).
+) -> StreamingResponse:
+    """SSE-stream a refined draft by answering a clarifying question (§4, D-10-2, spec P0).
 
     Stateless: the request carries ``round`` (refinements already applied); the
-    server rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5).
-    Returns the updated draft envelope; deducts the flat authoring credit.
+    server rejects ``round >= 3`` as the backstop on the 3-round cap (D-10-5)
+    BEFORE streaming begins. Streams the same way as ``/author``; deducts the
+    flat authoring credit only after the terminal draft.
     """
+    # Round backstop + pre-flight 402 BEFORE streaming (D-P0-preflight-preserved).
     if body.round >= _MAX_REFINE_ROUNDS:
         raise RefinementLimitError(
             "refinement limit reached",
             context={"round": str(body.round), "max_rounds": str(_MAX_REFINE_ROUNDS)},
         )
-    # Pre-flight credit guard (D-11-12 / spec 11 §5).
     request.app.state.credits_policy.require_credits(
         rls_engine=request.app.state.rls_engine, user_id=user.id
     )
     backend = request.app.state.tier_registry.get(request.app.state.authoring_tier)
-    draft = await authoring_service.refine_authoring_draft(
+    events = authoring_service.stream_refine_authoring_draft(
         backend,
         body.current_yaml,
         body.question,
@@ -431,14 +496,9 @@ async def refine_persona(
         [name for name, _ in catalog_service.list_skills()],
         sampling=_authoring_sampling(request),
     )
-    _deduct_and_audit(
-        request,
-        user,
-        "persona.author_refine",
-        draft.prompt_version,
-        reason="persona_authoring_refine",
+    return _authoring_stream_response(
+        request, user, events, action="persona.author_refine", reason="persona_authoring_refine"
     )
-    return draft
 
 
 @router.post(

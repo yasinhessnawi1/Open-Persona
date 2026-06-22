@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from persona.schema.conversation import ConversationMessage
@@ -41,17 +41,30 @@ from persona_api.services.authoring_prompt import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
 
     from persona.backends import ChatBackend
+
+#: One semantic event yielded by the streamed authoring generators (spec P0,
+#: D-P0-service-yields-events). The service is transport-agnostic — it knows
+#: nothing about SSE; the route maps each event to a ``text/event-stream`` frame.
+#: ``("chunk", delta)`` — a forming-text fragment;
+#: ``("retry", reason)`` — the validation-repair re-stream is starting;
+#: ``("draft", AuthoringDraft)`` — the single terminal event (validated or errored).
+AuthoringStreamEvent = (
+    tuple[Literal["chunk", "retry"], str] | tuple[Literal["draft"], AuthoringDraft]
+)
 
 __all__ = [
     "RECOMMENDER_PROMPT_VERSION",
     "AuthoringSampling",
+    "AuthoringStreamEvent",
     "generate_authoring_draft",
     "recommend_capabilities_for_persona",
     "recommend_tools_for_persona",
     "refine_authoring_draft",
+    "stream_authoring_draft",
+    "stream_refine_authoring_draft",
 ]
 
 
@@ -126,6 +139,40 @@ def _retry_feedback(errors: list[str]) -> str:
     )
 
 
+def _finalize_text(text: str) -> tuple[AuthoringDraft, list[str]]:
+    """Turn one generation's raw text into ``(draft, errors)``; ``errors == []`` means valid.
+
+    THE single place model text becomes a draft — shared by the blocking
+    (:func:`_generate`) and streamed (:func:`_generate_stream`) paths so the
+    ``split_response`` → ``_validate_yaml`` contract (D-10-1/3) cannot drift
+    between them (D-P0-sse-reuse). The returned draft carries ``errors``
+    populated iff validation failed, so an exhausted retry hands back the
+    best-effort YAML for the structured form to fix (§3.3) — and the caller
+    always has the validated-or-errored draft to deliver (D-P0-errors-on-terminal).
+    """
+    yaml_text, questions = split_response(text)
+    errors = _validate_yaml(yaml_text)
+    draft = AuthoringDraft(
+        yaml=yaml_text,
+        questions=questions,
+        prompt_version=AUTHORING_PROMPT_VERSION,
+        errors=errors or None,
+    )
+    return draft, errors
+
+
+def _retry_messages(
+    messages: list[ConversationMessage], prior_content: str, errors: list[str]
+) -> list[ConversationMessage]:
+    """Append the model's prior output + the validation-error feedback (§3.3)."""
+    now = datetime.now(UTC)
+    return [
+        *messages,
+        ConversationMessage(role="assistant", content=prior_content, created_at=now),
+        ConversationMessage(role="user", content=_retry_feedback(errors), created_at=now),
+    ]
+
+
 async def _generate(
     backend: ChatBackend,
     messages: list[ConversationMessage],
@@ -139,6 +186,7 @@ async def _generate(
     reliably fixes schema errors regardless of how creative the first attempt
     was (§3.3 / D-10-3). If the retry also fails, returns the best-effort YAML
     with the errors attached (the structured form fixes them) — never raises.
+    Shares :func:`_finalize_text` with the streamed path (no contract drift).
     """
     response = await backend.chat(
         messages,
@@ -146,40 +194,72 @@ async def _generate(
         top_p=sampling.top_p,
         top_k=sampling.top_k,
     )
-    yaml_text, questions = split_response(response.content)
-    errors = _validate_yaml(yaml_text)
+    draft, errors = _finalize_text(response.content)
     if not errors:
-        return AuthoringDraft(
-            yaml=yaml_text, questions=questions, prompt_version=AUTHORING_PROMPT_VERSION
-        )
-
-    now = datetime.now(UTC)
-    retry_messages = [
-        *messages,
-        ConversationMessage(role="assistant", content=response.content, created_at=now),
-        ConversationMessage(role="user", content=_retry_feedback(errors), created_at=now),
-    ]
+        return draft
     # The repair pass is GREEDY (D-10-3): high temp to invent, low temp to fix.
     retry = await backend.chat(
-        retry_messages,
+        _retry_messages(messages, response.content, errors),
         temperature=_DETERMINISTIC.temperature,
         top_p=_DETERMINISTIC.top_p,
         top_k=_DETERMINISTIC.top_k,
     )
-    yaml_text2, questions2 = split_response(retry.content)
-    errors2 = _validate_yaml(yaml_text2)
-    if not errors2:
-        return AuthoringDraft(
-            yaml=yaml_text2, questions=questions2, prompt_version=AUTHORING_PROMPT_VERSION
-        )
-    # Retry exhausted: hand back the best-effort YAML + the errors (§3.3) so the
+    # Retry exhausted (still invalid) → _finalize_text attaches the errors so the
     # structured form can fix them. Never raise — a draft is for review.
-    return AuthoringDraft(
-        yaml=yaml_text2,
-        questions=questions2,
-        prompt_version=AUTHORING_PROMPT_VERSION,
-        errors=errors2,
-    )
+    draft2, _ = _finalize_text(retry.content)
+    return draft2
+
+
+async def _generate_stream(
+    backend: ChatBackend,
+    messages: list[ConversationMessage],
+    sampling: AuthoringSampling,
+) -> AsyncIterator[AuthoringStreamEvent]:
+    """Stream the same generate-loop as :func:`_generate`, yielding semantic events.
+
+    Yields ``("chunk", delta)`` per text fragment as the model generates, then
+    runs the SHARED :func:`_finalize_text` on the accumulated text. On a clean
+    first attempt the terminal ``("draft", AuthoringDraft)`` is emitted and the
+    stream ends. On validation failure it emits a visible ``("retry", ...)`` and
+    RE-STREAMS the deterministic repair attempt (D-P0-restream-retry), then emits
+    the terminal draft — validated, or carrying ``errors`` if the repair also
+    failed (D-P0-errors-on-terminal). NEVER a half-formed draft as terminal.
+
+    Transport-agnostic (D-P0-service-yields-events): frames no SSE; the route
+    maps these events to ``text/event-stream`` and deducts only after the
+    terminal ``draft`` (so an aborted stream — this generator closed early — or a
+    provider error yields no draft and is never charged; D-08-6 lineage).
+    """
+    buffer: list[str] = []
+    async for chunk in backend.chat_stream(
+        messages,
+        temperature=sampling.temperature,
+        top_p=sampling.top_p,
+        top_k=sampling.top_k,
+    ):
+        if chunk.delta:
+            buffer.append(chunk.delta)
+            yield ("chunk", chunk.delta)
+    draft, errors = _finalize_text("".join(buffer))
+    if not errors:
+        yield ("draft", draft)
+        return
+
+    # Re-stream the deterministic repair attempt, visibly (D-P0-restream-retry /
+    # D-10-3): high temp to invent, low temp to fix.
+    yield ("retry", "validation")
+    repair: list[str] = []
+    async for chunk in backend.chat_stream(
+        _retry_messages(messages, "".join(buffer), errors),
+        temperature=_DETERMINISTIC.temperature,
+        top_p=_DETERMINISTIC.top_p,
+        top_k=_DETERMINISTIC.top_k,
+    ):
+        if chunk.delta:
+            repair.append(chunk.delta)
+            yield ("chunk", chunk.delta)
+    draft2, _ = _finalize_text("".join(repair))
+    yield ("draft", draft2)
 
 
 async def generate_authoring_draft(
@@ -241,6 +321,68 @@ async def refine_authoring_draft(
         current_yaml, question, answer, available_tools, available_skills
     )
     return await _generate(backend, messages, sampling or AuthoringSampling())
+
+
+# -- streamed variants (spec P0) --------------------------------------------
+
+
+def stream_authoring_draft(
+    backend: ChatBackend,
+    description: str,
+    available_tools: list[str],
+    available_skills: list[str],
+    *,
+    sampling: AuthoringSampling | None = None,
+) -> AsyncIterator[AuthoringStreamEvent]:
+    """Stream a draft persona from a description (spec P0; D-10-2 contract preserved).
+
+    The streamed sibling of :func:`generate_authoring_draft`.
+    Yields semantic ``AuthoringStreamEvent``s (chunk / retry / terminal draft);
+    the accumulated text runs the SHARED :func:`_finalize_text`, so the streamed
+    terminal draft is contract-equivalent to the blocking path (D-10-1/3, no
+    drift). No persona row is created (D-10-2). Returns the async iterator
+    directly (D-02-5 shape) — iterate it; the route frames events to SSE.
+
+    Args:
+        backend: The authoring-tier chat backend (injected; D-10-1).
+        description: The user's natural-language persona description.
+        available_tools: Tool names to inject (so the model suggests only real tools).
+        available_skills: Skill names to inject.
+        sampling: Creative-generation sampling for the FIRST attempt. ``None``
+            uses the :class:`AuthoringSampling` default. The repair re-stream is
+            always deterministic (D-10-3).
+    """
+    messages = build_authoring_prompt(description, available_tools, available_skills)
+    return _generate_stream(backend, messages, sampling or AuthoringSampling())
+
+
+def stream_refine_authoring_draft(
+    backend: ChatBackend,
+    current_yaml: str,
+    question: str,
+    answer: str,
+    available_tools: list[str],
+    available_skills: list[str],
+    *,
+    sampling: AuthoringSampling | None = None,
+) -> AsyncIterator[AuthoringStreamEvent]:
+    """Stream a refinement (§4); same event shape + shared finalize as the draft stream.
+
+    Args:
+        backend: The authoring-tier chat backend.
+        current_yaml: The draft YAML being refined.
+        question: The clarifying question the user answered.
+        answer: The user's answer.
+        available_tools: Tool names to inject.
+        available_skills: Skill names to inject.
+        sampling: Creative-generation sampling for the FIRST attempt. ``None``
+            uses the :class:`AuthoringSampling` default; the repair re-stream
+            stays deterministic (D-10-3).
+    """
+    messages = build_refinement_prompt(
+        current_yaml, question, answer, available_tools, available_skills
+    )
+    return _generate_stream(backend, messages, sampling or AuthoringSampling())
 
 
 # -- tool recommender (spec 26 T09) -----------------------------------------

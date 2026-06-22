@@ -18,6 +18,7 @@
  * after the spec-08 chat-SSE patch (D-09-12).
  */
 
+import type { components } from "./api/schema";
 import type { RawSSEEvent } from "./sse";
 
 /**
@@ -200,6 +201,44 @@ export function parseChatEvent(raw: RawSSEEvent): ChatEvent | null {
   if (!CHAT_EVENTS.has(raw.event)) return null;
   const data = JSON.parse(raw.data) as unknown;
   return { event: raw.event, data } as ChatEvent;
+}
+
+// =============== AUTHORING stream (bare-payload frames, spec P0) ===============
+//
+// Mirrors chat's vocabulary exactly (D-P0-event-vocab): `chunk` carries the same
+// `{delta, is_final}` as chat; `retry` is a visible regenerating signal when the
+// validation-repair re-stream starts; `draft` is the single TERMINAL event
+// carrying the full validated-or-errored `AuthoringDraft` (D-P0-errors-on-terminal,
+// the preserved codegen type); `done` is chat's closing sentinel. Like chat, the
+// frames serialise the BARE payload (`data:` IS the payload).
+
+/** The terminal authoring payload — the preserved OpenAPI type (R-P0-2). */
+export type AuthoringDraftData = components["schemas"]["AuthoringDraft"];
+
+export interface AuthorRetryData {
+  /** Why the stream is regenerating (currently always `"validation"`). */
+  reason: string;
+}
+
+/** A parsed authoring SSE event, discriminated by the `event:` name. */
+export type AuthorEvent =
+  | { event: "chunk"; data: ChatChunkData }
+  | { event: "retry"; data: AuthorRetryData }
+  | { event: "draft"; data: AuthoringDraftData }
+  | { event: "done"; data: Record<string, never> };
+
+const AUTHOR_EVENTS = new Set(["chunk", "retry", "draft", "done"]);
+
+/**
+ * Parse one raw authoring frame into a typed {@link AuthorEvent}. `data` is the
+ * bare payload (same envelope as chat). Returns null for unknown event names
+ * (forward-compatible). The wire is our own trusted API, so we cast after a name
+ * check rather than deep-validate (mirrors {@link parseChatEvent}).
+ */
+export function parseAuthorEvent(raw: RawSSEEvent): AuthorEvent | null {
+  if (!AUTHOR_EVENTS.has(raw.event)) return null;
+  const data = JSON.parse(raw.data) as unknown;
+  return { event: raw.event, data } as AuthorEvent;
 }
 
 // =================== RUN stream (RunEvent envelope frames) ===================

@@ -144,9 +144,10 @@ All routes are under `/v1`:
 | `me` | credit balance + per-turn usage |
 | `health` | liveness + readiness |
 
-**SSE.** Chat and runs stream over Server-Sent Events (token deltas, tool-call
-events, run-timeline events) — OpenAPI cannot model SSE, so the event shapes
-are the contract consumed by the web client.
+**SSE.** Chat, runs, and LLM-assisted authoring stream over Server-Sent Events
+(token deltas, tool-call events, run-timeline events, and the authoring draft as
+it forms) — OpenAPI cannot model SSE, so the event shapes are the contract
+consumed by the web client.
 
 **Auth (cloud).** Clerk JWT (RS256), verified via the `JwtVerifier` seam in
 `persona-core`. Row-Level Security at the database layer (`persona_app`

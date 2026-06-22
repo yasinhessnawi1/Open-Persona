@@ -15,7 +15,7 @@
  * no Clerk provider or network is needed.
  */
 
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import messages from "@/i18n/messages/en.json";
@@ -23,7 +23,17 @@ import { PERSONA_EXAMPLE_CATEGORIES } from "@/lib/persona-examples";
 import { SAFETY_CONSTRAINT } from "@/lib/persona-safety";
 import { AuthorWizard } from "./author-wizard";
 
-const author = vi.fn(async () => ({ yaml: "", questions: [] }));
+type AuthorHandlers = {
+  onChunk?: (delta: string) => void;
+  onRetry?: (reason: string) => void;
+};
+type DraftResult = { yaml: string; questions: never[] };
+const author = vi.fn(
+  async (_desc: string, _handlers?: AuthorHandlers): Promise<DraftResult> => ({
+    yaml: "",
+    questions: [],
+  }),
+);
 const createPersona = vi.fn(
   async (_yaml: string): Promise<{ error: string } | undefined> => undefined,
 );
@@ -179,5 +189,78 @@ describe("AuthorWizard — describe your own (drafter preserved)", () => {
     });
     fireEvent.click(bySlot(container, "author-wizard-generate"));
     await waitFor(() => expect(author).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("AuthorWizard — streaming preview (P0)", () => {
+  function startGenerate(container: HTMLElement): void {
+    const textarea = bySlot(
+      container,
+      "author-wizard-description",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "a tenancy assistant" } });
+    fireEvent.click(bySlot(container, "author-wizard-generate"));
+  }
+
+  it("paints the forming raw text into the loading preview (not a parsed form)", async () => {
+    // The drafter streams chunks then stays pending (loading phase persists).
+    author.mockImplementationOnce(
+      async (_desc: string, handlers?: AuthorHandlers) => {
+        handlers?.onChunk?.('schema_version: "1.0"');
+        handlers?.onChunk?.("\nidentity:\n  name: Lex");
+        return new Promise<DraftResult>(() => {}); // never resolves → stays in loading
+      },
+    );
+    const { container } = renderWizard();
+    startGenerate(container);
+    await waitFor(() => {
+      const pre = container.querySelector('[data-slot="author-wizard-stream"]');
+      expect(pre?.textContent).toContain("schema_version");
+      expect(pre?.textContent).toContain("name: Lex");
+    });
+  });
+
+  it("single-flight: two generate triggers in one tick fire /author only once", async () => {
+    // The draft is a PAID single-flight op. Two same-tick triggers (a double-click
+    // or a re-render/remount race) must collapse to ONE /author via the
+    // synchronous in-flight ref guard. Dispatching both clicks inside one act()
+    // means React does not flush/unmount between them, so the describe button is
+    // still mounted for the second click — isolating the guard (not the unmount).
+    author.mockImplementationOnce(() => new Promise<DraftResult>(() => {})); // stays in-flight
+    const { container } = renderWizard();
+    const textarea = bySlot(
+      container,
+      "author-wizard-description",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "a tenancy assistant" } });
+    const btn = bySlot(
+      container,
+      "author-wizard-generate",
+    ) as HTMLButtonElement;
+    act(() => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(author).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets the preview and shows a regenerating status on the validation re-stream", async () => {
+    author.mockImplementationOnce(
+      async (_desc: string, handlers?: AuthorHandlers) => {
+        handlers?.onChunk?.("attempt one text");
+        handlers?.onRetry?.("validation"); // visible reset: attempt 2 must not append onto attempt 1
+        handlers?.onChunk?.("attempt two text");
+        return new Promise<DraftResult>(() => {});
+      },
+    );
+    const { container } = renderWizard();
+    startGenerate(container);
+    await waitFor(() => {
+      const pre = container.querySelector('[data-slot="author-wizard-stream"]');
+      expect(pre?.textContent).toBe("attempt two text");
+    });
+    expect(bySlot(container, "author-wizard-loading-step").textContent).toBe(
+      messages.author.streamRegenerating,
+    );
   });
 });

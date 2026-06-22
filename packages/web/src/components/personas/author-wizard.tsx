@@ -76,6 +76,11 @@ export function AuthorWizard({
   const [doc, setDoc] = useState<PersonaDoc | null>(null);
   const [round, setRound] = useState(0);
   const [refining, setRefining] = useState(false);
+  // Spec P0 — the raw draft text streaming in during `loading`, and the visible
+  // "regenerating" flag set when the validation-repair re-stream fires (so
+  // attempt-2's text replaces attempt-1's rather than appending onto it).
+  const [streamText, setStreamText] = useState("");
+  const [streamRetrying, setStreamRetrying] = useState(false);
   const [editorKey, setEditorKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   // The avatar identity-colour seed for the quick-edit card (the starter id, or
@@ -83,6 +88,8 @@ export function AuthorWizard({
   // selected-card signal.
   const [seedId, setSeedId] = useState<string | null>(null);
   const quickEditRef = useRef<HTMLDivElement>(null);
+  // Synchronous single-flight guard for the (paid) drafter call — see generate().
+  const generatingRef = useRef(false);
 
   // Picking a starter / "start from scratch" reveals the QUICK-EDIT card inline
   // (same screen, below the gallery) — no drafter call. The safety constraint is
@@ -141,23 +148,47 @@ export function AuthorWizard({
   }
 
   async function generate() {
+    // Synchronous in-flight guard: a draft is a PAID, single-flight operation, so
+    // a second generate while one is already running is a no-op. A ref (not the
+    // `phase` STATE) is required — two same-tick calls (a double-click, or a
+    // re-render/remount race) would both observe the pre-update `phase`, but the
+    // ref is set synchronously at entry so the second call sees it. Cleared on
+    // every exit (success / error / abort) via the finally.
+    if (generatingRef.current) return;
     const desc = description.trim();
-    if (!desc) return;
+    if (!desc) return; // bail before claiming in-flight (no stream started)
+    generatingRef.current = true;
     setPhase("loading");
     setError(null);
+    setStreamText("");
+    setStreamRetrying(false);
     try {
-      const result = await author(desc);
+      // D-P0-raw-text-preview: paint the forming text live as it streams; on the
+      // validation re-stream (D-P0-restream-retry) clear the preview so attempt 2
+      // replaces attempt 1 rather than appending. Resolve to the review form on
+      // the terminal draft.
+      const result = await author(desc, {
+        onChunk: (delta) => setStreamText((prev) => prev + delta),
+        onRetry: () => {
+          setStreamText("");
+          setStreamRetrying(true);
+        },
+      });
       setRound(0);
       setEditorKey((k) => k + 1);
       if (applyDraft(result)) setPhase("review");
       else setPhase("describe");
     } catch (e) {
+      // An aborted stream (unmount / supersede) is not a user-facing error.
+      if (e instanceof Error && e.name === "AbortError") return;
       setError(
         e instanceof ApiError && e.isRateLimited
           ? t("rateLimited")
           : t("authorError"),
       );
       setPhase("describe");
+    } finally {
+      generatingRef.current = false;
     }
   }
 
@@ -274,6 +305,9 @@ export function AuthorWizard({
       <WizardLoading
         title={t("loadingTitle")}
         steps={[t("loadingStep1"), t("loadingStep2"), t("loadingStep3")]}
+        streamText={streamText}
+        retrying={streamRetrying}
+        retryingLabel={t("streamRegenerating")}
       />
     );
   }
@@ -398,10 +432,20 @@ function WizardLoading({
   title,
   steps,
   skeleton = true,
+  streamText,
+  retrying = false,
+  retryingLabel,
 }: {
   title: string;
   steps: string[];
   skeleton?: boolean;
+  // Spec P0 — the raw draft text forming live (D-P0-raw-text-preview). When
+  // non-empty it replaces the taking-shape skeleton with the streaming text.
+  streamText?: string;
+  // The validation-repair re-stream is in flight: surface a "regenerating"
+  // status instead of the cycling step (D-P0-restream-retry).
+  retrying?: boolean;
+  retryingLabel?: string;
 }) {
   const [i, setI] = useState(0);
 
@@ -409,6 +453,9 @@ function WizardLoading({
     const id = setInterval(() => setI((n) => (n + 1) % steps.length), 2800);
     return () => clearInterval(id);
   }, [steps.length]);
+
+  const hasStream = streamText !== undefined && streamText.length > 0;
+  const statusLine = retrying && retryingLabel ? retryingLabel : steps[i];
 
   return (
     <Stack gap={6} data-slot="author-wizard-loading">
@@ -426,11 +473,23 @@ function WizardLoading({
             data-slot="author-wizard-loading-step"
             aria-live="polite"
           >
-            {steps[i]}
+            {statusLine}
           </p>
         </div>
       </header>
-      {skeleton ? (
+      {hasStream ? (
+        // The persona forming live: raw streamed text, NOT a parsed form, until
+        // the terminal draft resolves to the review editor (D-P0-raw-text-preview).
+        <Card className="p-5">
+          <pre
+            className="type-ui max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-muted-foreground"
+            data-slot="author-wizard-stream"
+            aria-live="polite"
+          >
+            {streamText}
+          </pre>
+        </Card>
+      ) : skeleton ? (
         <Stack gap={4}>
           {[0, 1, 2].map((row) => (
             <Card key={row} className="gap-3 p-5">
