@@ -59,6 +59,7 @@ __all__ = [
     "VoiceLog",
     "VoiceLogWriter",
     "compute_e2e_ms",
+    "compute_stt_total_cents",
     "compute_v1_share_ms",
 ]
 
@@ -121,6 +122,14 @@ class VoiceLog(BaseModel):
     stt_audio_pushed_at: datetime | None = None
     stt_provider_cost_cents_per_minute: float | None = Field(default=None, ge=0.0)
     stt_total_cents: float | None = Field(default=None, ge=0.0)
+    # Spec V8 D-V8-X-cost-rebase — additive. The audio-seconds actually streamed
+    # to the billed STT backend after VAD/state gating (D-V8-1/2), read from
+    # ``V1STTStreamSeamAdapter.streamed_seconds`` at session end. ``stt_total_cents``
+    # is re-based onto THIS (streamed audio), not wall-clock call duration, via
+    # :func:`compute_stt_total_cents` — so the Spec-08 credits-ledger consumer
+    # reads what Deepgram actually charged. ``None`` until V8 wires it (pre-V8
+    # readers unaffected by the additive, nullable field).
+    stt_streamed_seconds: float | None = Field(default=None, ge=0.0)
 
     # Spec V3 D-V3-X-cost + D-05-9 additive TTS fields (T11) — the outbound
     # analogs of the four V2 STT fields. Distinct from the canonical
@@ -160,6 +169,27 @@ def compute_e2e_ms(log: VoiceLog) -> float | None:
         return None
     delta = log.audio_first_play_at - log.eou_at
     return delta.total_seconds() * 1000.0
+
+
+def compute_stt_total_cents(
+    streamed_seconds: float | None,
+    cents_per_minute: float | None,
+) -> float | None:
+    """Re-based STT cost: ``streamed_seconds/60 × cents_per_minute`` (D-V8-X-cost-rebase).
+
+    The Spec V8 cost basis. Before V8 the roll-up was
+    ``call_duration_minutes × cents_per_minute`` (it billed the whole call);
+    V8 streams only the user's actual speech, so the honest charge is over the
+    *streamed* seconds the gate let through (``VoiceLog.stt_streamed_seconds``,
+    sourced from :attr:`V1STTStreamSeamAdapter.streamed_seconds`). The Spec-08
+    credits-ledger consumer reads the result.
+
+    Returns ``None`` if either input is unset (the turn/session was not
+    cost-instrumented) — never a misleading zero.
+    """
+    if streamed_seconds is None or cents_per_minute is None:
+        return None
+    return (streamed_seconds / 60.0) * cents_per_minute
 
 
 def compute_v1_share_ms(log: VoiceLog) -> float | None:

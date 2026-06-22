@@ -48,7 +48,36 @@ if TYPE_CHECKING:
     from persona_voice.loop.streaming import Transcript
     from persona_voice.stt.types import SpeechEndedEvent, SpeechStartedEvent
 
-__all__ = ["SpeechActivityListener", "StreamingSTT"]
+__all__ = ["SpeechActivityListener", "StreamGate", "StreamingSTT"]
+
+
+@runtime_checkable
+class StreamGate(Protocol):
+    """Per-frame gate deciding whether inbound audio reaches the *billed* STT backend.
+
+    Spec V8 D-V8-1 (the split-tee). The seam adapter
+    (:class:`persona_voice.stt.seam_adapter.V1STTStreamSeamAdapter`) tees each
+    inbound PCM frame to two sinks: the local Silero VAD (free) and the
+    provider backend (billed per streamed second). This gate governs **only
+    the billed leg** — the VAD ALWAYS receives every frame, because barge-in
+    onset is detected locally and must never be starved (acceptance
+    criterion #3). When the gate is *closed*, the frame still reaches the VAD
+    but is withheld from the provider, so the user's actual speech is billed
+    while persona-turn audio and silence are not.
+
+    :meth:`is_open` is a cheap synchronous state read called once per inbound
+    frame on the audio dispatch path — it MUST NOT block or perform I/O. The
+    seam adapter treats an absent gate (``None``) as permanently open, which
+    is the pre-V8 ungated behaviour; the deliverable-#1 policy (closed while
+    the persona is speaking) is supplied by T2 as a concrete implementation.
+    """
+
+    def is_open(self) -> bool:
+        """Return ``True`` iff the current inbound frame should reach the billed backend.
+
+        Called per frame on the audio rail; implementations MUST be
+        non-blocking and side-effect-free (a pure state read).
+        """
 
 
 @runtime_checkable

@@ -11,6 +11,7 @@ operator pass (D2), not unit tests.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -213,6 +214,108 @@ async def test_build_agent_session_wires_room_disconnect_to_end() -> None:
     await room.disconnect_handler()  # type: ignore[attr-defined]
     await task
     assert "session_end" in calls
+
+
+# ---------- Spec V8 #3: true-end closes the Deepgram stream (criterion #4) ----
+
+
+class _SpyDeepgramBackend:
+    """StreamingSTT double whose close() records that the billed socket finished."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    @property
+    def provider_name(self) -> str:
+        return "deepgram"
+
+    @property
+    def model_name(self) -> str:
+        return "nova-3"
+
+    async def push_audio(self, pcm: bytes, sample_rate: int) -> None: ...
+
+    async def transcripts(self) -> AsyncIterator[object]:
+        return
+        yield  # pragma: no cover
+
+    async def speech_activity_events(self) -> AsyncIterator[object]:
+        return
+        yield  # pragma: no cover
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _NullVAD:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def load(self) -> None: ...
+
+    async def push_audio(self, pcm: bytes, sample_rate: int) -> None: ...
+
+    async def speech_activity_events(self) -> AsyncIterator[object]:
+        return
+        yield  # pragma: no cover
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_true_end_closes_the_deepgram_stream_no_lingering_billed_stream() -> None:
+    """Spec V8 #3 / criterion #4 (D-V8-8): on a true call-end (room disconnect —
+    the funnel for end / switch / reload-teardown), the runner's teardown closes
+    the REAL seam adapter, which finishes the Deepgram socket. A lingering open
+    stream would keep billing — this regression pins that it does not.
+    """
+    from persona_voice.stt.cost_gate import IdleAwareGate
+    from persona_voice.stt.seam_adapter import V1STTStreamSeamAdapter
+
+    calls: list[str] = []
+    backend = _SpyDeepgramBackend()
+    vad = _NullVAD()
+    stt_seam = V1STTStreamSeamAdapter(
+        backend=backend,  # type: ignore[arg-type]
+        vad=vad,  # type: ignore[arg-type]
+        gate=IdleAwareGate(),  # source-less ⇒ open; teardown path is what matters here
+        reopen_preroll_ms=300.0,
+    )
+    ended = asyncio.Event()
+    room = _FakeRoom(calls)
+    agent = AgentSession(
+        voice_room=room,  # type: ignore[arg-type]
+        loop=_FakeLoop(calls),  # type: ignore[arg-type]
+        stt_seam=stt_seam,
+        tts_seam=_FakeTtsSeam(calls),
+        session=_FakeSessionMachine(calls),  # type: ignore[arg-type]
+        mcp_clients=[],
+        livekit_url="ws://localhost:7880",
+        agent_token="tok",
+        ended=ended,
+    )
+
+    # The runner installs _on_room_disconnected → session.end() + ended.set().
+    async def _on_disconnect() -> None:
+        await agent._session.end()  # noqa: SLF001
+        ended.set()
+
+    room.set_disconnect_handler(_on_disconnect)
+
+    task = asyncio.create_task(agent.run())
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if "start_pipeline" in calls:
+            break
+
+    assert backend.closed is False  # still live mid-call
+    # True end: the user hangs up / the call is switched / the page reloads.
+    await room.disconnect_handler()  # type: ignore[attr-defined]
+    await task
+
+    # The Deepgram socket is finished + the VAD released — no lingering billed stream.
+    assert backend.closed is True
+    assert vad.closed is True
 
 
 # ---------- launcher --------------------------------------------------------

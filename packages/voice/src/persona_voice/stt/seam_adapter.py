@@ -40,12 +40,22 @@ for explicit prewarm (D-V2-X-silero-implementation-shape pillar #3).
 VAD. Background drainer tasks pump activity events from both sources into
 the listener; :meth:`close` cancels the drainers + closes both sources
 idempotently.
+
+**Spec V8 cost gate (D-V8-1 — the split-tee).** :meth:`push_audio` splits
+its tee through an optional :class:`~persona_voice.stt.protocol.StreamGate`:
+the VAD ALWAYS receives every frame (barge-in onset must never be starved —
+acceptance criterion #3), while the *billed* backend receives a frame only
+when the gate is open. An absent gate (``None``, the default) is permanently
+open — the pre-V8 ungated behaviour, so every V1–V6 path is unchanged until
+a gate is wired. The deliverable-#1 policy (gate closed while the persona is
+speaking) is a concrete gate supplied at composition time (T2).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import deque
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -54,6 +64,7 @@ if TYPE_CHECKING:
     from persona_voice.loop.streaming import Transcript
     from persona_voice.stt.protocol import (
         SpeechActivityListener,
+        StreamGate,
         StreamingSTT,
     )
     from persona_voice.stt.types import SpeechEndedEvent, SpeechStartedEvent
@@ -83,8 +94,10 @@ class V1STTStreamSeamAdapter:
         backend: StreamingSTT,
         vad: SileroVADAdapter,
         listener: SpeechActivityListener | None = None,
+        gate: StreamGate | None = None,
+        reopen_preroll_ms: float = 0.0,
     ) -> None:
-        """Wire the backend + VAD + optional listener.
+        """Wire the backend + VAD + optional listener + optional cost gate.
 
         Args:
             backend: Concrete :class:`StreamingSTT` (Deepgram at v0.1; the
@@ -95,13 +108,45 @@ class V1STTStreamSeamAdapter:
             listener: Optional :class:`SpeechActivityListener` consumer.
                 If ``None`` at construction, set via :attr:`listener` later
                 (T07 wiring path).
+            gate: Optional Spec V8 :class:`StreamGate` (D-V8-1). Governs
+                ONLY the billed-backend leg of the tee; the VAD always
+                receives every frame. ``None`` (the default) is permanently
+                open — the pre-V8 ungated behaviour. The shipped policy is
+                wired post-construction via :attr:`gate`.
+            reopen_preroll_ms: Spec V8 ring-buffer-on-reopen depth
+                (D-V8-X-measure-stop-verdict). While the gate is closed, the
+                most recent ``reopen_preroll_ms`` of inbound audio is buffered;
+                on the next closed→open transition it is flushed to the backend
+                ahead of the live frame, so the audio captured just before
+                reopen (the barge-in confirm window / the idle-resume onset lag)
+                reaches the provider and the first word is not clipped. ``0.0``
+                (the default) disables the ring — the pre-ring behaviour, so
+                every existing call site is unchanged.
         """
         self._backend = backend
         self._vad = vad
         self._listener: SpeechActivityListener | None = listener
+        self._gate: StreamGate | None = gate
         self._vad_drain_task: asyncio.Task[None] | None = None
         self._provider_drain_task: asyncio.Task[None] | None = None
         self._closed = False
+        # Spec V8 D-V8-X-cost-rebase — the cost instrument. Accumulates the
+        # audio-seconds actually forwarded to the BILLED backend (post-gate),
+        # which is what Deepgram charges for. Read at session end into
+        # VoiceLog.stt_streamed_seconds to re-base stt_total_cents off real
+        # streamed audio rather than wall-clock call duration.
+        self._streamed_seconds: float = 0.0
+        # Spec V8 ring-buffer-on-reopen (D-V8-X-measure-stop-verdict). The ring
+        # fills ONLY during gated (closed) windows; on reopen its capped tail is
+        # flushed ahead of the live frame, then cleared. Capacity is derived at
+        # the D-V1-6 inbound invariant (PCM16 mono 16 kHz ⇒ 2 bytes/sample).
+        self._reopen_preroll_ms = reopen_preroll_ms
+        self._ring: deque[tuple[bytes, int]] = deque()
+        self._ring_bytes = 0
+        self._ring_capacity_bytes = int(reopen_preroll_ms / 1000.0 * 16_000) * 2
+        # First frame is not treated as a reopen (the stream is conceptually
+        # open at start; an opening gated window flips this to False).
+        self._gate_was_open = True
 
     @property
     def listener(self) -> SpeechActivityListener | None:
@@ -110,6 +155,33 @@ class V1STTStreamSeamAdapter:
     @listener.setter
     def listener(self, value: SpeechActivityListener | None) -> None:
         self._listener = value
+
+    @property
+    def gate(self) -> StreamGate | None:
+        """Spec V8 cost gate (D-V8-1), if any.
+
+        The composition root (runner) sets this after construction so the
+        gate↔orchestrator pair can be built without a chicken-and-egg (the
+        gate reads orchestrator state, which is itself loop-backed). ``None``
+        ⇒ permanently open (pre-V8 ungated behaviour).
+        """
+        return self._gate
+
+    @gate.setter
+    def gate(self, value: StreamGate | None) -> None:
+        self._gate = value
+
+    @property
+    def streamed_seconds(self) -> float:
+        """Audio-seconds forwarded to the billed backend so far (D-V8-X-cost-rebase).
+
+        The cost basis: Deepgram bills per streamed second, and the split-tee
+        only forwards a frame to the backend when the gate is open — so this
+        counts exactly the billed audio. Read at session end into
+        :attr:`persona_voice.logging.VoiceLog.stt_streamed_seconds` to re-base
+        ``stt_total_cents`` off real streamed audio, not wall-clock duration.
+        """
+        return self._streamed_seconds
 
     async def load(self) -> None:
         """Prewarm the Silero VAD ONNX session.
@@ -129,13 +201,60 @@ class V1STTStreamSeamAdapter:
         if self._closed:
             return
         self._ensure_drainers_running()
-        # Tee — both sources receive the same audio bytes verbatim. The
-        # backend forwards to the provider WebSocket; the VAD reframes
-        # into 512-sample windows for ONNX inference.
+        # D-V8-1 split-tee. The VAD ALWAYS receives every frame — barge-in
+        # onset is detected locally (free) and must never be starved, else
+        # the user can't re-take the floor while gated (acceptance #3). The
+        # billed backend receives a frame only when the StreamGate is open;
+        # ``gate is None`` ⇒ permanently open (pre-V8 ungated behaviour).
+        now_open = self._gate is None or self._gate.is_open()
+        backend_frames = self._resolve_backend_frames(pcm, sample_rate, now_open=now_open)
+        self._gate_was_open = now_open
+        # Count what the billed backend actually receives (D-V8-X-cost-rebase):
+        # PCM16 mono ⇒ 2 bytes/sample; seconds = bytes / (2 * sample_rate).
+        for f_pcm, f_sr in backend_frames:
+            self._streamed_seconds += len(f_pcm) / (2 * f_sr)
+        # VAD (current frame, always) concurrently with the in-order backend send.
+        # The VAD reframes into 512-sample ONNX windows; the backend forwards
+        # verbatim to the provider WebSocket — frame ORDER matters there, so the
+        # (possibly multi-frame) backend send is sequential, never gathered.
         await asyncio.gather(
-            self._backend.push_audio(pcm, sample_rate),
             self._vad.push_audio(pcm, sample_rate),
+            self._send_to_backend(backend_frames),
         )
+
+    def _resolve_backend_frames(
+        self, pcm: bytes, sample_rate: int, *, now_open: bool
+    ) -> list[tuple[bytes, int]]:
+        """Decide which frames reach the billed backend this push (D-V8-1 + ring).
+
+        Without the ring (``reopen_preroll_ms == 0``): the live frame iff open.
+        With the ring: the ring fills ONLY while closed; on a closed→open
+        transition its capped tail is flushed ahead of the live frame and then
+        cleared (so already-streamed open-window frames are never re-sent), and
+        while open the ring stays empty.
+        """
+        if self._reopen_preroll_ms <= 0:
+            return [(pcm, sample_rate)] if now_open else []
+        if now_open:
+            if not self._gate_was_open:
+                # Reopen: flush the gated-window pre-roll tail, then the live frame.
+                frames = [*self._ring, (pcm, sample_rate)]
+                self._ring.clear()
+                self._ring_bytes = 0
+                return frames
+            return [(pcm, sample_rate)]
+        # Closed: buffer the live frame as pre-roll (capped); do not bill it.
+        self._ring.append((pcm, sample_rate))
+        self._ring_bytes += len(pcm)
+        while self._ring_bytes > self._ring_capacity_bytes and self._ring:
+            old_pcm, _old_sr = self._ring.popleft()
+            self._ring_bytes -= len(old_pcm)
+        return []
+
+    async def _send_to_backend(self, frames: list[tuple[bytes, int]]) -> None:
+        """Forward frames to the provider IN ORDER (websocket order is load-bearing)."""
+        for f_pcm, f_sr in frames:
+            await self._backend.push_audio(f_pcm, f_sr)
 
     def transcripts(self) -> AsyncIterator[Transcript]:
         """Forward the backend's transcript stream verbatim.

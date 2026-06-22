@@ -114,6 +114,27 @@ Per-spec entries are added by the close-out phase of each spec.
   the terminal SSE payload. Graceful degrade reads that terminal payload — there
   is no separate REST fallback.
 
+### Voice — STT cost gating (2026-06-22)
+
+> Stop billing Deepgram for the entire call. The agent runner streamed **every**
+> inbound mic frame to Deepgram, ungated, for the whole call — including the time
+> the persona is speaking and every idle pause (often half+ of a listen-heavy
+> call). V8 gates the billed stream on conversational state so Deepgram bills
+> ≈ the user's turn, not the call duration, with no transcription regression.
+> Backend-internal (`persona-voice`); no web/api/runtime/core change; **zero new
+> dependency, zero migration, zero new env var.**
+
+#### Added
+- **Split-tee cost gate.** `V1STTStreamSeamAdapter.push_audio` now splits its tee through an optional `StreamGate`: the Silero VAD **always** receives every frame (barge-in onset is local + free and must never be starved), while the billed Deepgram leg is fed only when the gate is open. An absent gate is permanently open — pre-V8 behaviour, so every existing call site is unchanged.
+- **Idle-gate (shipped).** `IdleAwareGate` streams the billed leg **only during the user's turn** (`USER_SPEAKING` / `PROCESSING`); closed during persona-speaking + listening idle + preparing. ~85 % streamed-seconds reduction on a listen-heavy profile. (The simpler `PersonaSpeakingGate` — close only while the persona speaks, ~79 % — is retained as the validated building block.)
+- **Ring-buffer-on-reopen.** A shared pre-roll ring (`reopen_preroll_ms`, 300 ms in the runner) buffers audio while the gate is closed and flushes the capped tail on every closed→open transition — so the barge-in opening (the ~250 ms confirm window) and the post-idle first word reach Deepgram intact. Fixes the only fidelity regression the gate would otherwise introduce.
+- **Cost instrument + re-base.** `V1STTStreamSeamAdapter.streamed_seconds` counts the billed audio; `VoiceLog.stt_streamed_seconds` (additive, nullable) carries it; `compute_stt_total_cents(streamed_seconds, cents_per_minute)` re-bases `stt_total_cents` off streamed audio rather than wall-clock duration.
+- **Empirical A/B harness + committed live gate.** `persona_voice.stt.cost_harness` (deterministic Axis-1 cost model + gate-faithful validation); a committed `@external` Deepgram replay (`tests/external/test_v8_cost_gating_live.py`) over rendered fixtures (`tests/fixtures/v8_corpus/`) asserting first-word-preserved + WER ≤ ungated + 2.0 pp at the reopen/resume points.
+
+#### Notes
+- The within-user-turn onset gate (and a `Finalize`-based variant) were **measured sub-threshold** (≈ 6 % marginal vs a 15 % bar) and risk WER on the user's own speech, so they are **declined** as a documented seam, not built.
+- The STT stream closes promptly on every true call-end (hang-up / switch / reload-teardown) — pinned by an end-to-end teardown regression test (no lingering billed stream).
+
 ### Web v1 redesign — global notification + consent systems (2026-06-21)
 
 > Close-out of the web v1 production redesign. The screen/shell restyle landed

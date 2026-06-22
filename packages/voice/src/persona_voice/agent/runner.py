@@ -70,6 +70,7 @@ from persona_voice.model import (
 )
 from persona_voice.session.state_machine import SessionStateMachine, make_session_rls_engine
 from persona_voice.stt import StreamingSTTConfig, load_streaming_stt
+from persona_voice.stt.cost_gate import DEFAULT_REOPEN_PREROLL_MS, IdleAwareGate
 from persona_voice.stt.seam_adapter import V1STTStreamSeamAdapter
 from persona_voice.stt.vad_silero import SileroVADAdapter
 from persona_voice.tokens.issuer import mint_room_access_token
@@ -384,7 +385,13 @@ async def build_agent_session(
     stt_config = apply_stt_route(stt_config, language_plan.stt)
     stt_backend = load_streaming_stt(stt_config)
     vad = SileroVADAdapter(stt_config, session_state_provider=_agent_speaking)
-    stt_seam = V1STTStreamSeamAdapter(backend=stt_backend, vad=vad)
+    # Spec V8: the cost gate + the ring-buffer-on-reopen (D-V8-X-measure-stop-verdict).
+    # The ring buffers the pre-reopen audio so barge-in / post-idle first words
+    # survive the gated→open transition; the gate (IdleAwareGate, wired below once
+    # the orchestrator exists) streams only the user's turn.
+    stt_seam = V1STTStreamSeamAdapter(
+        backend=stt_backend, vad=vad, reopen_preroll_ms=DEFAULT_REOPEN_PREROLL_MS
+    )
 
     # --- real V3 TTS seam bound to THIS persona's voice ---
     # Pin the Cartesia synthesis language to the persona's declared language
@@ -440,6 +447,17 @@ async def build_agent_session(
     # The STT seam dispatches speech-activity events to its listener — the
     # orchestrator (so VAD onset/offset drive the conversational state machine).
     stt_seam.listener = orchestrator
+
+    # Spec V8 cost gate (D-V8-X-measure-stop-verdict): the SHIPPED idle-gate —
+    # stream only the user's turn (USER_SPEAKING/PROCESSING); withhold the billed
+    # Deepgram leg during PERSONA_SPEAKING + LISTENING idle + PREPARING (~85% saving
+    # on a listen-heavy call). It supersets #1's state-gate. The split-tee (D-V8-1)
+    # keeps feeding Silero so barge-in/onset still fire locally → the orchestrator
+    # leaves the gated state → the gate reopens, and the seam adapter's
+    # ring-buffer-on-reopen flushes the pre-reopen audio so no first word is clipped.
+    # Bound directly (the gate is read per-frame); pre-V8 behaviour holds wherever
+    # the seam is built without a gate (default open).
+    stt_seam.gate = IdleAwareGate(source=orchestrator)
 
     # --- room disconnect → end the session + release the run() awaiter ---
     ended = asyncio.Event()

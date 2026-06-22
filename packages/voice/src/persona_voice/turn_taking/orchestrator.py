@@ -229,8 +229,26 @@ class ConversationalOrchestrator:
         While the persona speaks, the user's inbound VAD must be gated so the
         persona's own voice does not fire a false barge-in. This is the single
         source of truth for ``AgentState.SPEAKING``.
+
+        Also the Spec V8 #1 cost-gate read (D-V8-2): the billed STT leg is
+        closed exactly while this is ``True`` (``PERSONA_SPEAKING``).
         """
         return agent_state_for(self._state) is AgentState.SPEAKING
+
+    def is_user_turn_active(self) -> bool:
+        """Whether the user's turn is in progress — ``USER_SPEAKING`` or ``PROCESSING``.
+
+        The Spec V8 idle-gate read (D-V8-X-measure-stop-verdict / D-V8-7): the
+        billed STT leg streams ONLY during the user's turn (the user speaking,
+        or their just-ended turn being processed), and is closed during
+        ``PERSONA_SPEAKING`` + ``LISTENING`` idle + ``PREPARING``. A pure state
+        projection (sibling of :meth:`is_agent_speaking`); the cost gate
+        composes it, the orchestrator owns no gating policy.
+        """
+        return self._state in (
+            ConversationalState.USER_SPEAKING,
+            ConversationalState.PROCESSING,
+        )
 
     # ----- V2 SpeechActivityListener -----------------------------------
 

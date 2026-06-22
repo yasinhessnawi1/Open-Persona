@@ -57,6 +57,16 @@ Like the rest of the stack, it carries an **edition** stance (`PERSONA_EDITION`)
 - **V6 — Frontend voice client (in development).** Browser-side audio plumbing
   + UI in `persona-web`; an optional dev agent launcher fires from the token
   endpoint.
+- **V8 — STT cost gating.** Bill Deepgram for the user's speech, not the whole
+  call. The seam adapter's tee is *split* — the Silero VAD is always fed (so
+  barge-in is never starved) while the billed backend leg is gated by
+  conversational state: the shipped **idle-gate** streams only the user's turn
+  (closed during persona-speaking + listening idle), and a shared
+  **ring-buffer-on-reopen** flushes the run-up on every gated→open transition so
+  the barge-in / post-idle first word is never clipped. The actual billed audio
+  is surfaced as `VoiceLog.stt_streamed_seconds`, re-basing `stt_total_cents`
+  off streamed seconds (not wall-clock). ~85 % cost reduction on a listen-heavy
+  call; the within-turn onset gate was measured sub-threshold and declined.
 
 ## Install / run
 
