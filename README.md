@@ -93,7 +93,7 @@ attaches at the API layer and reuses the same persona / memory / runtime surface
 | Library | [`packages/core/`](packages/core/README.md) | Persona schema, four typed memory stores, model backends, tools / skills / MCP, image-gen, sandbox, audit, and the `persona` CLI. The `pip install persona-core` foundation. | **MIT** |
 | Engine | [`packages/runtime/`](packages/runtime/README.md) | Conversation loop, tier router, prompt builder, history manager, agentic plan-act-reflect loop, tool dispatch, per-turn telemetry. | **MIT** |
 | Voice | [`packages/voice/`](packages/voice/README.md) | LiveKit-based real-time voice trunk: streaming STT, streaming TTS, turn-taking + barge-in, persona-conditioned reply producer, unified memory. | **MIT** |
-| API | [`packages/api/`](packages/api/) | FastAPI service: persona CRUD, SSE-streaming chat, agentic runs, LLM-assisted authoring, voice token issuance, edition-gated auth / credits / RLS. | PolyForm-NC 1.0.0 |
+| API | [`packages/api/`](packages/api/) | FastAPI service: persona CRUD, SSE-streaming chat, agentic runs, LLM-assisted authoring, voice token issuance, edition-gated auth / credits / RLS. Plus a Postgres-backed durable **job queue** + a separate long-lived **worker** process for crash-resumable, at-least-once background work. | PolyForm-NC 1.0.0 |
 | Web | [`packages/web/`](packages/web/README.md) | Next.js app: persona authoring, chat UI, voice client. | PolyForm-NC 1.0.0 |
 
 The dependency arrow points one way. `persona-core` imports nothing from the

@@ -29,7 +29,10 @@ you can drive from Python or the terminal. It ships:
   composition + a `skills.toml` catalog + built-in skill packs);
 - an **image-generation** layer, **vision** input, document ingestion +
   generation, a **code-execution sandbox** protocol, an `AuditLogger` protocol
-  with a JSONL default, per-component loguru logging, and the **`persona` CLI**.
+  with a JSONL default, per-component loguru logging, and the **`persona` CLI**;
+- a **durable-job contract** (`persona.jobs`) — the job model + state machine,
+  frozen payloads, lease/retry policies, and a typed handler registry that the
+  hosted worker composes (the queue + worker live in `persona-api`).
 
 ## Install
 

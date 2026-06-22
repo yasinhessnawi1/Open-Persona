@@ -48,6 +48,7 @@ from persona_api.editions import (
     check_public_noauth_guard,
 )
 from persona_api.errors import register_exception_handlers
+from persona_api.jobs import JobQueue
 from persona_api.middleware.rate_limit import (
     InMemoryRateLimitStore,
     PostgresRateLimitStore,
@@ -231,6 +232,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             memory_backend = PostgresBackend(engine=rls_engine, embedder=app.state.embedder)
     app.state.rls_engine = rls_engine
     app.state.admin_engine = admin_engine
+    # A0 (T9): the durable enqueue surface. A JobQueue on the cross-tenant dispatch
+    # engine (admin/superuser for v0.1; a job_dispatcher role to harden). Present
+    # only when a dispatch engine exists; the create path uses it iff
+    # ``avatar_via_queue`` is on (the orchestrator's cutover flag).
+    _dispatch_engine = admin_engine if admin_engine is not None else rls_engine
+    app.state.job_queue = JobQueue(_dispatch_engine) if _dispatch_engine is not None else None
     app.state.audit_root = Path(config.audit_root)
     # Spec 13 D-13-4: workspace root for image uploads + (later) per-persona
     # tool artefacts. Resolved up front so routes/services can rely on it.

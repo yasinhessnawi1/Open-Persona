@@ -71,6 +71,8 @@ __all__ = [
     "graph_entities",
     "graph_node_entities",
     "graph_nodes",
+    "jobs",
+    "jobs_archive",
     "memory_chunks",
     "messages",
     "metadata",
@@ -216,6 +218,108 @@ runs = Table(
         name="fk_runs_persona_owner",
     ),
     Index("idx_runs_owner", "owner_id"),
+)
+
+# Spec A0 (durable execution) — the Postgres-backed job queue.
+#
+# ``jobs`` is the hot queue table: a worker claims with ``SELECT … FOR UPDATE
+# SKIP LOCKED`` (the partial ``idx_jobs_claim`` index serves the claim predicate),
+# writes a lease, and heartbeats while running; an expired lease returns the job
+# to claimable (crash-resume by construction). Hygiene against the known
+# Postgres-as-queue slow-death (D-A0-4): ``fillfactor=80`` so status updates stay
+# HOT (no index churn), aggressive per-table autovacuum, and a small partial-index
+# set tuned to the only two hot predicates (claim + lease-reclaim). ``state``
+# mirrors the persona-core ``JobState`` machine; ``idempotency_key`` is UNIQUE so a
+# duplicate enqueue is a no-op (``ON CONFLICT (idempotency_key) DO NOTHING``).
+# Owner-scoped + RLS like every tenant table — the worker runs as the
+# ``persona_app`` non-superuser role (RLS policy created in migration 011).
+jobs = Table(
+    "jobs",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("type", Text, nullable=False),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("payload", _json(), nullable=False, server_default=text("'{}'")),
+    Column("idempotency_key", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default=text("'queued'")),
+    Column("priority", Integer, nullable=False, server_default=text("0")),
+    Column("attempt", Integer, nullable=False, server_default=text("0")),
+    Column("max_attempts", Integer, nullable=False, server_default=text("5")),
+    Column("scheduled_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("locked_by", Text),
+    Column("last_error", Text),
+    CheckConstraint(
+        "state IN ('queued', 'claimed', 'running', 'succeeded', 'failed', 'dead')",
+        name="jobs_state_check",
+    ),
+    # Duplicate enqueues dedup on this key (operation+intent scoped — D-A0-X-...).
+    # Scoped per OWNER, not globally: a global key namespace would let one tenant
+    # pre-register another tenant's key and silently suppress their enqueue
+    # (cross-tenant DoS — security review T4). Owner-scoping also matches the RLS
+    # WITH CHECK semantics: a key means "this operation for this owner".
+    UniqueConstraint("owner_id", "idempotency_key", name="uq_jobs_owner_idempotency_key"),
+    # The claim query: WHERE state='queued' AND scheduled_at<=now()
+    #                  ORDER BY priority DESC, scheduled_at  (FOR UPDATE SKIP LOCKED).
+    Index(
+        "idx_jobs_claim",
+        text("priority DESC"),
+        text("scheduled_at"),
+        postgresql_where=text("state = 'queued'"),
+    ),
+    # The rescuer sweep: reclaim leases that lapsed under a dead/draining worker.
+    Index(
+        "idx_jobs_lease_expiry",
+        "lease_expires_at",
+        postgresql_where=text("state IN ('claimed', 'running')"),
+    ),
+    # RLS predicate filters on owner_id.
+    Index("idx_jobs_owner", "owner_id"),
+    # Claim-time fairness (T7): the per-user + global in-flight counts scan only
+    # claimed/running rows; this partial index serves both (by owner, and total).
+    Index(
+        "idx_jobs_inflight_by_owner",
+        "owner_id",
+        postgresql_where=text("state IN ('claimed', 'running')"),
+    ),
+)
+# D-A0-4 hygiene (HOT updates via fillfactor + aggressive per-table autovacuum)
+# is applied as storage reloptions in migration 011 — ``ALTER TABLE jobs SET
+# (...)`` — not here, since SQLAlchemy's ``Table`` has no portable reloptions
+# kwarg. Tunable via ALTER once the soak test (A0-R-3) measures the real churn.
+
+# ``jobs_archive`` is the cold table terminal jobs age out into (the cleaner sweep,
+# D-A0-4): keeps the hot table's working set tiny while A3/A6 still read job
+# history. Same shape as ``jobs`` plus ``archived_at``; no claim/lease indexes
+# (never claimed) and no idempotency UNIQUE (the same key may recur across time —
+# the live dedup lives on the hot table). Terminal-only by CHECK. Owner-scoped +
+# RLS (it holds tenant data; migration 011 creates the policy).
+jobs_archive = Table(
+    "jobs_archive",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("type", Text, nullable=False),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("payload", _json(), nullable=False, server_default=text("'{}'")),
+    Column("idempotency_key", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("priority", Integer, nullable=False, server_default=text("0")),
+    Column("attempt", Integer, nullable=False, server_default=text("0")),
+    Column("max_attempts", Integer, nullable=False, server_default=text("5")),
+    Column("scheduled_at", DateTime(timezone=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("locked_by", Text),
+    Column("last_error", Text),
+    Column("archived_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "state IN ('succeeded', 'failed', 'dead')",
+        name="jobs_archive_state_check",
+    ),
+    Index("idx_jobs_archive_owner", "owner_id"),
+    # Retention sweeps delete by age.
+    Index("idx_jobs_archive_archived_at", "archived_at"),
 )
 
 # D-07-4: memory_chunks promotes provenance/versioning to indexed columns.

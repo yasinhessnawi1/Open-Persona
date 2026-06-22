@@ -56,9 +56,21 @@ identical across editions — community just feeds them a constant.
 - **Safety guard** — a community/no-auth process refuses to start on a
   non-loopback bind unless `PERSONA_ALLOW_PUBLIC_NOAUTH=1` is set, so an open,
   unauthenticated instance can't accidentally burn the operator's model keys.
+- **Durable jobs & the worker service** — a Postgres-backed job queue
+  (`SELECT … FOR UPDATE SKIP LOCKED`, claim-then-commit) and a separate
+  long-lived **worker** process (`persona_api.jobs`) for background work that must
+  survive a restart, run while nobody is connected, and resume after a crash:
+  lease + heartbeat crash-resume, retry/backoff/dead-letter, claim-time fairness
+  caps, terminal-job archival, graceful drain. At-least-once delivery with
+  idempotent-by-contract handlers; avatar generation is the first tenant (behind
+  `PERSONA_API_AVATAR_VIA_QUEUE`).
 
-Single uvicorn worker by design — the in-process run event bus and in-memory
-rate limiter assume one worker.
+The **api** runs as a single uvicorn worker by design — its in-process run event
+bus and in-memory rate limiter assume one worker. The **job worker** is a separate
+process class and scales horizontally (N processes); durable job state lives in
+Postgres, so it is multi-worker-correct. Worker knobs are `WORKER_*` env vars (see
+`.env.example`); `WORKER_DISPATCH_DATABASE_URL` points the worker's cross-tenant
+dispatch engine at a least-privilege `job_dispatcher` role to harden.
 
 ## Install / run
 

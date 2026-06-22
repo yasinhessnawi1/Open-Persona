@@ -264,5 +264,6 @@ markers = [
     "external: marks tests that call real external APIs (Anthropic, OpenAI)",
     "contract: marks protocol contract compliance tests",
     "docker: marks tests that require a running Docker daemon (Spec 16 T09 etc.)",
+    "soak: marks long-running sustained-load tests (Spec A0 T10; opt-in via -m soak)",
 ]
-addopts = "-v --tb=short -m 'not integration and not external'"
+addopts = "-v --tb=short -m 'not integration and not external and not soak'"

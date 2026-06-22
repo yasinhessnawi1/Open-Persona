@@ -11,6 +11,31 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Durable execution & the job system (2026-06-22)
+
+- A Postgres-backed job queue (`SELECT … FOR UPDATE SKIP LOCKED`, claim-then-commit)
+  and a new **worker service** (the fourth process class) for background/unattended
+  work that must survive a restart, run while nobody is connected, and resume after
+  a crash. Replaces the in-process `asyncio.Task` substrate for background work; the
+  live chat path is untouched (additive infrastructure).
+- `persona-core` `persona.jobs`: the job model + `queued→claimed→running→
+  succeeded|failed|dead` state machine, frozen-Pydantic payloads, lease/retry
+  policies, and a Toolbox-style typed handler registry (`JobRegistry` / `JobContext`
+  / `JobHandler`).
+- `persona-api` `persona_api.jobs`: the durable queue (lease + heartbeat
+  crash-resume, retry with capped-exponential backoff + jitter, dead-letter with
+  cause, claim-time per-user/global fairness caps, terminal-job archival +
+  retention) and the worker (composition root, continuous loop, graceful drain,
+  maintenance sweep, health probes). Honest **at-least-once** delivery — every
+  handler is idempotent by contract, proven by forced re-delivery tests.
+- **Avatar generation** is the first durable tenant — idempotent (skip-if-set +
+  compare-and-set), enqueued from persona-create behind `PERSONA_API_AVATAR_VIA_QUEUE`
+  (default off; the create contract is preserved until the worker is deployed).
+- New `jobs` + `jobs_archive` tables (migration `011`), under RLS, with claim-tuned
+  partial indexes and per-table autovacuum tuning. New env vars: `WORKER_*`,
+  `WORKER_DISPATCH_DATABASE_URL`, `PERSONA_API_AVATAR_VIA_QUEUE`. No new runtime
+  dependencies (built in-house on SQLAlchemy Core + sync psycopg3).
+
 ### Web v1 redesign — global notification + consent systems (2026-06-21)
 
 > Close-out of the web v1 production redesign. The screen/shell restyle landed

@@ -22,9 +22,12 @@ __all__ = [
     "BrokenVersionChainError",
     "CalculatorError",
     "CreditsExhaustedError",
+    "DuplicateJobTypeError",
+    "JobStateError",
     "MCPBuiltinServerError",
     "MCPConnectionError",
     "MCPServerUnavailableError",
+    "PermanentJobError",
     "PersonaError",
     "PersonaNotFoundError",
     "PersonaSelfWriteForbiddenError",
@@ -41,6 +44,7 @@ __all__ = [
     "ToolNotAllowedError",
     "UnknownDocumentFormatError",
     "UnknownDocumentTemplateError",
+    "UnknownJobTypeError",
 ]
 
 
@@ -312,4 +316,43 @@ class AutonomyCooldownError(PersonaError):
     raises this rather than appending a churn version. ``context`` carries the
     ``persona_id``, the cooldown window that tripped (``session`` | ``day``),
     and the head version's ``written_at`` timestamp.
+    """
+
+
+class JobStateError(PersonaError):
+    """Raised when an illegal job state transition is attempted.
+
+    Spec A0 (D-A0-2). The durable job state machine
+    (``queued → claimed → running → succeeded | failed | dead``) rejects any
+    move not in its transition table — e.g. resurrecting a terminal job or
+    claiming a job that is already running. ``context`` carries ``from`` and
+    ``to`` so the log line names the rejected edge.
+    """
+
+
+class DuplicateJobTypeError(PersonaError):
+    """Raised when a job type is registered twice in a :class:`JobRegistry`.
+
+    Spec A0 (D-A0-2). The registry is Toolbox-style and explicit; a duplicate
+    registration would let a second runtime silently shadow a handler, so it
+    fails loud at composition time. ``context`` carries the offending ``type``.
+    """
+
+
+class UnknownJobTypeError(PersonaError):
+    """Raised when an unregistered job type is resolved from a :class:`JobRegistry`.
+
+    Spec A0 (D-A0-2). ``context`` carries the requested ``type`` and the
+    ``known`` registered types so the miss is debuggable.
+    """
+
+
+class PermanentJobError(PersonaError):
+    """Raised by a job handler to signal a NON-retryable (permanent) failure.
+
+    Spec A0 (T6). The durable queue is at-least-once: a handler that raises an
+    ordinary exception is retried with backoff and dead-letters at exhaustion.
+    A handler raises this when the failure will never succeed on retry (malformed
+    input, a permanent provider rejection) — the executor moves the job straight
+    to the terminal ``failed`` state, no retries. ``context`` carries the cause.
     """

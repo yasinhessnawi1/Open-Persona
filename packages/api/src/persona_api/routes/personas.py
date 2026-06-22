@@ -21,6 +21,7 @@ from persona_api.auth import AuthenticatedUser, get_current_user
 from persona_api.config import Edition
 from persona_api.errors import RefinementLimitError
 from persona_api.imagegen import service as imagegen_service
+from persona_api.jobs.handlers.avatar import enqueue_avatar_generation
 from persona_api.middleware.rate_limit import rate_limit
 from persona_api.middleware.rls_context import current_user_id
 from persona_api.schemas import (
@@ -337,19 +338,29 @@ async def create_persona(
         action="persona.create",
         target=persona_id,
     )
-    # Defer voice auto-pick + avatar generation OFF the create critical path:
-    # they run after this response is sent (BackgroundTasks). The voice pick is
-    # always considered (it no-ops when the persona already declares a voice);
-    # the avatar hook runs only when the builder supplied none (criterion 6),
-    # passed through as ``generate_avatar`` to mirror the old guard.
+    # Defer voice auto-pick + avatar generation OFF the create critical path.
+    # Voice always runs in-process (BackgroundTasks). Avatar generation routes to
+    # the DURABLE queue when the cutover flag is on (A0 T9) — owner_id is the
+    # authenticated user (server-side, never the request body) — else it runs
+    # in-process as before. Either way the response carries ``avatar_url=null``;
+    # the avatar appears on a later GET. Both paths stay fail-soft.
+    config = request.app.state.config
+    job_queue = getattr(request.app.state, "job_queue", None)
+    avatar_via_queue = (
+        body.avatar_url is None
+        and getattr(config, "avatar_via_queue", False)
+        and job_queue is not None
+    )
     background_tasks.add_task(
         _enrich_persona_after_create,
         request,
         owner_id=user.id,
         persona_id=persona_id,
         yaml_str=body.yaml,
-        generate_avatar=body.avatar_url is None,
+        generate_avatar=body.avatar_url is None and not avatar_via_queue,
     )
+    if avatar_via_queue and job_queue is not None:
+        enqueue_avatar_generation(job_queue, persona_id=persona_id, owner_id=user.id)
     row = persona_service.get_persona(
         rls_engine=request.app.state.rls_engine, persona_id=persona_id
     )

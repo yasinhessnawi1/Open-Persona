@@ -104,6 +104,61 @@ class APIConfig(BaseSettings):
     # APP_DATABASE_URL). validation_alias overrides the env_prefix per field.
     database_url: str = Field(default="", validation_alias="DATABASE_URL", repr=False)
     app_database_url: str = Field(default="", validation_alias="APP_DATABASE_URL", repr=False)
+    # Spec A0 (D-A0-X-rls-chokepoint hardening): the worker's CROSS-TENANT
+    # dispatch engine DSN — claim/heartbeat/complete on the jobs tables only.
+    # Empty → falls back to ``database_url`` (the superuser engine) for v0.1.
+    # Point this at a least-privilege ``job_dispatcher`` role (BYPASSRLS, granted
+    # on jobs/jobs_archive ONLY, no tenant-table grants) to harden — a pure-config
+    # swap, no code change. The role is provisioned out-of-band (D-07-5); migration
+    # 011 conditionally grants to it if present.
+    worker_dispatch_database_url: str = Field(
+        default="", validation_alias="WORKER_DISPATCH_DATABASE_URL", repr=False
+    )
+    # Spec A0 worker runtime knobs (all config-driven — D-A0-3 concurrency, D-A0-5
+    # drain). Poll uses a jittered interval so N workers don't thunder the claim
+    # query in lockstep. ``worker_drain_seconds`` must be < Fly's ``kill_timeout``
+    # (300s); default 270 leaves a ~30s safety margin (D-A0-5). The claim lease is
+    # a bootstrap; per-job-type heartbeat (D-A0-1) extends it during execution.
+    worker_concurrency: int = Field(default=4, ge=1, validation_alias="WORKER_CONCURRENCY")
+    worker_poll_interval_seconds: float = Field(
+        default=1.0, gt=0, validation_alias="WORKER_POLL_INTERVAL_SECONDS"
+    )
+    worker_poll_jitter_seconds: float = Field(
+        default=0.5, ge=0, validation_alias="WORKER_POLL_JITTER_SECONDS"
+    )
+    worker_claim_lease_seconds: int = Field(
+        default=90, gt=0, validation_alias="WORKER_CLAIM_LEASE_SECONDS"
+    )
+    worker_drain_seconds: float = Field(
+        default=270.0, gt=0, validation_alias="WORKER_DRAIN_SECONDS"
+    )
+    # Claim-time fairness caps (D-A0-6). ``per_user`` (default 3) stops one user's
+    # flood from starving others — a user already at the cap has their queued jobs
+    # skipped so other users' jobs are claimed. ``global`` (0 = unlimited) caps
+    # total in-flight across all users. Anti-starvation gate, not a hard cap.
+    worker_max_jobs_per_user: int = Field(
+        default=3, ge=1, validation_alias="WORKER_MAX_JOBS_PER_USER"
+    )
+    worker_max_jobs_global: int = Field(default=0, ge=0, validation_alias="WORKER_MAX_JOBS_GLOBAL")
+    # Maintenance sweep cadence (D-A0-4): each worker periodically rescues expired
+    # leases (the rescuer), ages terminal jobs older than ``archive_after`` into the
+    # cold ``jobs_archive`` (the cleaner — keeps the hot table small), and purges
+    # archive rows past ``retention``. All config-driven; defaults: sweep every 30s,
+    # archive after 1 day, retain the archive 30 days.
+    worker_maintenance_interval_seconds: float = Field(
+        default=30.0, gt=0, validation_alias="WORKER_MAINTENANCE_INTERVAL_SECONDS"
+    )
+    worker_archive_after_seconds: float = Field(
+        default=86_400.0, gt=0, validation_alias="WORKER_ARCHIVE_AFTER_SECONDS"
+    )
+    worker_archive_retention_seconds: float = Field(
+        default=2_592_000.0, gt=0, validation_alias="WORKER_ARCHIVE_RETENTION_SECONDS"
+    )
+    # A0 T9 enqueue→worker cutover flag. OFF (default) → avatar generation runs the
+    # legacy in-process BackgroundTasks path (contract unchanged). ON → the create
+    # path ENQUEUES a durable avatar job for the worker (survives an api restart).
+    # The orchestrator flips this at close-out once the worker is deployed.
+    avatar_via_queue: bool = Field(default=False, validation_alias="PERSONA_API_AVATAR_VIA_QUEUE")
 
     # Auth (D-08-4). Secrets never logged.
     jwt_secret: SecretStr | None = Field(default=None, repr=False)
