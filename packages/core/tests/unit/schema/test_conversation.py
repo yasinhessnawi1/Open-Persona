@@ -35,7 +35,7 @@ from typing import Any
 
 import pytest
 from persona.schema.content import ImageContent, TextContent
-from persona.schema.conversation import ConversationMessage
+from persona.schema.conversation import ORIGINATED_METADATA_KEY, ConversationMessage
 from pydantic import ValidationError
 
 UTC_NOW = datetime(2026, 6, 5, 12, 0, 0, tzinfo=UTC)
@@ -98,6 +98,44 @@ class TestPhase1RegressionByteForByte:
     def test_corpus_is_non_empty(self) -> None:
         """Sanity: T01 captured at least the spec's >=10-entry target."""
         assert len(_CORPUS) >= 10
+
+
+class TestOriginatedMarker:
+    """The in-core origination marker rides ``metadata`` (Spec C0, D-C0-X-discriminator
+    in-core half), mirroring the existing ``proactive_question`` idiom — NOT a new
+    top-level field (that would stamp ``originated:false`` on every solicited message
+    and break the byte-for-byte corpus). ``role`` stays the orthogonal who-speaks axis.
+    """
+
+    def test_ordinary_message_is_not_originated(self) -> None:
+        msg = ConversationMessage(role="user", content="hi", created_at=UTC_NOW)
+        assert msg.is_originated is False
+
+    def test_metadata_marker_makes_message_originated(self) -> None:
+        msg = ConversationMessage(
+            role="assistant",
+            content="I've finished.",
+            created_at=UTC_NOW,
+            metadata={ORIGINATED_METADATA_KEY: "true"},
+        )
+        assert msg.is_originated is True
+
+    def test_marker_does_not_change_byte_for_byte_dump_of_unmarked_messages(self) -> None:
+        """The accessor is a property, not a field — unmarked dumps are unchanged."""
+        msg = ConversationMessage(role="user", content="hi", created_at=UTC_NOW)
+        assert "originated" not in msg.model_dump(mode="json")
+
+    def test_is_originated_is_a_property_not_a_serialized_field(self) -> None:
+        msg = ConversationMessage(
+            role="assistant",
+            content="x",
+            created_at=UTC_NOW,
+            metadata={ORIGINATED_METADATA_KEY: "true"},
+        )
+        dumped = msg.model_dump(mode="json")
+        # The marker lives inside metadata; there is no top-level ``originated`` field.
+        assert "originated" not in dumped
+        assert dumped["metadata"][ORIGINATED_METADATA_KEY] == "true"
 
 
 class TestSingleTextAsListForbidden:

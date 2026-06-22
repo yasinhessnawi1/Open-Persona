@@ -14,6 +14,7 @@ from persona.schema.chunks import (
     make_chunk_id,
 )
 from persona.schema.conversation import (
+    ORIGINATED_METADATA_KEY,
     Conversation,
     ConversationHistory,
     ConversationMessage,
@@ -22,6 +23,10 @@ from persona.schema.defaults import (
     DEFAULT_SKILLS,
     DEFAULT_TOOLS,
     ensure_default_capabilities,
+)
+from persona.schema.origination import (
+    OriginatedMessage,
+    PersonaIdentityTag,
 )
 from persona.schema.persona import (
     SUPPORTED_SCHEMA_VERSIONS,
@@ -46,6 +51,7 @@ __all__ = [
     "CHUNK_ID_INDEX_WIDTH",
     "DEFAULT_SKILLS",
     "DEFAULT_TOOLS",
+    "ORIGINATED_METADATA_KEY",
     "SAFETY_CONSTRAINT",
     "SUPPORTED_SCHEMA_VERSIONS",
     "CatalogueVoice",
@@ -57,9 +63,11 @@ __all__ = [
     "EpisodicEntry",
     "IntelligentRoutingConfig",
     "ModelScoringWeights",
+    "OriginatedMessage",
     "Persona",
     "PersonaChunk",
     "PersonaIdentity",
+    "PersonaIdentityTag",
     "RoutingBudgetConfig",
     "RoutingConfig",
     "SelfFact",

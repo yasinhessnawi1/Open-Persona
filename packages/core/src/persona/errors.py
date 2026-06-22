@@ -21,12 +21,15 @@ __all__ = [
     "AuthenticationError",
     "BrokenVersionChainError",
     "CalculatorError",
+    "ChannelUnreachableError",
     "CreditsExhaustedError",
     "DuplicateJobTypeError",
     "JobStateError",
     "MCPBuiltinServerError",
     "MCPConnectionError",
     "MCPServerUnavailableError",
+    "MessageDeliveryError",
+    "OriginationForbiddenError",
     "PermanentJobError",
     "PersonaError",
     "PersonaNotFoundError",
@@ -305,6 +308,39 @@ class InvalidAutonomyLevelError(PersonaError):
     back to the YAML default — a malformed learned-autonomy value is a data
     integrity problem the caller must see. ``context`` carries the offending
     value, the ``logical_id``, and the ``persona_id``.
+    """
+
+
+class MessageDeliveryError(PersonaError):
+    """Raised when delivering an originated message fails as a FAULT (Spec C0, T1).
+
+    The base for delivery faults the routing layer re-raises at its boundary
+    (a deliverer raising, a serialisation failure, an unexpected channel error).
+    Ordinary unreachability is NOT a fault — that is reported as
+    ``DeliveryOutcome.pending`` (criterion 6), never raised. ``context`` carries
+    the ``owner_user_id`` / channel descriptor so the log line is structured.
+    """
+
+
+class ChannelUnreachableError(MessageDeliveryError):
+    """Raised when no channel can reach the user and the caller demanded delivery.
+
+    Subclass of :class:`MessageDeliveryError` so callers can catch the broad
+    delivery error or disambiguate the unreachable case. Distinct from the v1
+    fail-soft path where an undeliverable message is queued/present-on-next-open
+    (D-C0-4): this is the explicit-failure variant a caller opts into.
+    """
+
+
+class OriginationForbiddenError(PersonaError):
+    """Raised when a persona attempts to originate to a user that is not its owner.
+
+    Spec C0 criterion 9 (the hard ownership boundary, D-C0-X-rls-ownership). A
+    persona may originate ONLY to the user who owns it; a cross-tenant attempt is
+    a privacy breach and is rejected rather than half-written. NOT a
+    :class:`MessageDeliveryError` — this is an authorisation failure, not a
+    delivery failure. ``context`` carries the owning + target user ids (never any
+    further tenant data).
     """
 
 

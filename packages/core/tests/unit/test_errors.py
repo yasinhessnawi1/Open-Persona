@@ -9,6 +9,9 @@ import pytest
 from persona.errors import (
     AuditWriteError,
     BrokenVersionChainError,
+    ChannelUnreachableError,
+    MessageDeliveryError,
+    OriginationForbiddenError,
     PersonaError,
     PersonaNotFoundError,
     PersonaSelfWriteForbiddenError,
@@ -67,6 +70,32 @@ class TestPolicyExceptions:
         assert not isinstance(err, PersonaSelfWriteForbiddenError)
 
 
+class TestOriginationExceptions:
+    """Spec C0 domain exceptions for the origination + delivery boundary."""
+
+    def test_channel_unreachable_is_a_message_delivery_error(self) -> None:
+        """Callers can catch the broad delivery error or the specific unreachable case."""
+        err = ChannelUnreachableError("no reachable channel", context={"owner_user_id": "user_1"})
+        assert isinstance(err, MessageDeliveryError)
+        assert isinstance(err, PersonaError)
+        assert "owner_user_id=user_1" in str(err)
+
+    def test_message_delivery_error_is_not_channel_unreachable_specifically(self) -> None:
+        err = MessageDeliveryError(context={"reason": "serialise"})
+        assert not isinstance(err, ChannelUnreachableError)
+
+    def test_origination_forbidden_is_a_persona_error_not_a_delivery_error(self) -> None:
+        """Ownership (criterion 9) is an authorisation failure, NOT a delivery failure —
+        a cross-tenant origination must not be mistaken for an unreachable channel."""
+        err = OriginationForbiddenError(
+            "persona may only originate to its owner",
+            context={"persona_owner": "user_1", "target": "user_2"},
+        )
+        assert isinstance(err, PersonaError)
+        assert not isinstance(err, MessageDeliveryError)
+        assert "target=user_2" in str(err)
+
+
 class TestAllExceptionsAcceptContext:
     """Smoke-test every public exception class with the context kwarg."""
 
@@ -83,6 +112,9 @@ class TestAllExceptionsAcceptContext:
             ToolNotAllowedError,
             ToolExecutionError,
             SandboxViolationError,
+            MessageDeliveryError,
+            ChannelUnreachableError,
+            OriginationForbiddenError,
         ],
     )
     def test_each_exception_accepts_context(self, exc_cls: type[PersonaError]) -> None:

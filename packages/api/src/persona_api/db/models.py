@@ -186,6 +186,14 @@ messages = Table(
     # written before this migration carry NULL → the chip simply does not render
     # (clean degrade, D-35-2), never a wrong tier.
     Column("tier_used", Text),
+    # Spec C0 D-C0-X-discriminator (DB half) / migration 013: an originated
+    # (persona-initiated) message — one the persona produced with no preceding
+    # user turn. role stays 'assistant' (orthogonal axis — the role CHECK is
+    # untouched); this boolean is the persisted who-initiated discriminator and
+    # the queryable source of truth. The persona-api boundary maps it to/from the
+    # in-core ``metadata["originated"]`` marker. NOT NULL DEFAULT false: every
+    # historical / solicited row reads false (correct — they were all solicited).
+    Column("originated", Boolean, nullable=False, server_default=text("false")),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     CheckConstraint("role IN ('system', 'user', 'assistant', 'tool')", name="messages_role_check"),
     Index("idx_messages_conversation", "conversation_id"),

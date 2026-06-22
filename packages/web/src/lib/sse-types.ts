@@ -190,7 +190,29 @@ const CHAT_EVENTS = new Set([
   "memory_recall",
   "thinking",
   "done",
+  // PENDING-web seam (Spec C0, D-C0-X-within-runtime-default-off): the api can
+  // push a "persona_originated" event (a persona-initiated message) inline on the
+  // open stream when PERSONA_API_WITHIN_RUNTIME_ORIGINATION is enabled. C0 (Layer
+  // 1+3) does not render it; enabling the feature pairs with a Layer-4 follow-up
+  // here — add "persona_originated" to CHAT_EVENTS + a render case in use-chat,
+  // and an "originated" badge on the assistant bubble. Until then the message is
+  // never lost: it is a persisted assistant message, rendered present-on-next-open.
 ]);
+
+/**
+ * Warn (dev only) when the api emits an SSE event the web does not handle, so a
+ * missed live-render is loud, not silent. The durable render (persisted message on
+ * next open) is the backstop, so this is a missed-live-render, not data loss.
+ */
+export function warnUnhandledSseEvent(stream: string, eventName: string): void {
+  if (process.env.NODE_ENV !== "production") {
+    // Intentional dev-only trace so a missed live-render is loud, not silent.
+    console.warn(
+      `[sse] unhandled ${stream} event "${eventName}" — dropped (no Layer-4 handler). ` +
+        `If this is "persona_originated", see the Spec C0 PENDING-web seam.`,
+    );
+  }
+}
 
 /**
  * Parse one raw chat frame into a typed {@link ChatEvent}. `data` is the bare
@@ -198,7 +220,10 @@ const CHAT_EVENTS = new Set([
  * is our own trusted API, so we cast after a name check rather than deep-validate.
  */
 export function parseChatEvent(raw: RawSSEEvent): ChatEvent | null {
-  if (!CHAT_EVENTS.has(raw.event)) return null;
+  if (!CHAT_EVENTS.has(raw.event)) {
+    warnUnhandledSseEvent("chat", raw.event);
+    return null;
+  }
   const data = JSON.parse(raw.data) as unknown;
   return { event: raw.event, data } as ChatEvent;
 }
@@ -258,6 +283,12 @@ export type RunEventType =
   | "max_steps"
   | "error"
   | "finished";
+// PENDING-web seam (Spec C0): a "persona_originated" run event (a persona-initiated
+// message inline on the run stream) is NOT in this union — C0 (Layer 1+3) emits it
+// (api) but does not render it (Layer 4). Enabling PERSONA_API_WITHIN_RUNTIME_ORIGINATION
+// pairs with adding "persona_originated" here + a case in run.ts `runViewFromEvents`
+// + an "originated" badge. Until then it is dropped (loudly — see run.ts default),
+// and the message is never lost (persisted, rendered present-on-next-open).
 
 interface RunEventBase {
   step: number;

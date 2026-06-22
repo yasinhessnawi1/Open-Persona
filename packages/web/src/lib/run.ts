@@ -6,6 +6,7 @@ import {
   projectToolResult,
 } from "@/lib/normalisers/_classify";
 import type { QuestionOption, RunEvent } from "@/lib/sse-types";
+import { warnUnhandledSseEvent } from "@/lib/sse-types";
 
 // Normalised run-viewer model (T07). Both the live `RunEvent` SSE stream and the
 // persisted `GET /runs/:id` `steps[]` reduce into one {@link RunStep} shape so the
@@ -227,6 +228,15 @@ export function runViewFromEvents(
       case "finished":
         // The authoritative terminal status (str(RunStatus)).
         status = (ev.data.status as RunStatus) ?? status;
+        break;
+      default:
+        // PENDING-web seam (Spec C0): an unhandled run event — e.g. the api's
+        // "persona_originated" inline message when within-runtime origination is
+        // enabled — is dropped here. Loud, not silent: the durable render
+        // (persisted message, present-on-next-open) is the backstop, so this is a
+        // missed live-render, not data loss. Enabling the feature pairs with a
+        // case above + an "originated" badge (see sse-types.ts RunEventType seam).
+        warnUnhandledSseEvent("run", (ev as { type: string }).type);
         break;
     }
   }

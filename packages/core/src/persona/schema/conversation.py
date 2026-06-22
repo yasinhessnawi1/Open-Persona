@@ -25,10 +25,23 @@ from persona.schema.content import (
 from persona.schema.tools import ToolCall  # noqa: TC001 — Pydantic needs runtime access
 
 __all__ = [
+    "ORIGINATED_METADATA_KEY",
     "Conversation",
     "ConversationHistory",
     "ConversationMessage",
 ]
+
+#: Metadata key marking an originated (persona-initiated) message — a message the
+#: persona produced with no preceding user turn (Spec C0, D-C0-X-discriminator,
+#: in-core half). Mirrors the existing ``proactive_question`` metadata idiom rather
+#: than a top-level field: the marker is sparse (present only on originated
+#: assistant messages), so it never stamps ``originated:false`` on solicited
+#: messages and the byte-for-byte dump corpus stays a true guard. ``role`` remains
+#: the orthogonal who-speaks axis (no CHECK widening). The persona-api boundary maps
+#: this metadata marker to/from the real ``messages.originated`` BOOLEAN column.
+#: Distinct from ``proactive_question`` (Spec 21): that marks a question asked
+#: *within* a solicited turn; this marks the absence of any preceding user turn.
+ORIGINATED_METADATA_KEY = "originated"
 
 
 class ConversationMessage(BaseModel):
@@ -63,6 +76,18 @@ class ConversationMessage(BaseModel):
     created_at: datetime
     metadata: dict[str, str] = Field(default_factory=dict)
     tool_calls: list[ToolCall] = Field(default_factory=list)
+
+    @property
+    def is_originated(self) -> bool:
+        """Whether this is an originated (persona-initiated) message (Spec C0).
+
+        True when the :data:`ORIGINATED_METADATA_KEY` marker is set — i.e. the
+        persona produced this message with no preceding user turn. A read-site
+        accessor over ``metadata`` (the marker's single source of truth); it is a
+        property, not a field, so it never appears in ``model_dump`` and the
+        byte-for-byte dump corpus is unaffected.
+        """
+        return self.metadata.get(ORIGINATED_METADATA_KEY) == "true"
 
     @field_validator("created_at", mode="after")
     @classmethod

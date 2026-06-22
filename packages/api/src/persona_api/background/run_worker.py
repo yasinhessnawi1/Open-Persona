@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     from persona_runtime.agentic.run import Run
     from sqlalchemy import Engine
 
+    from persona_api.services.within_runtime_origination import WithinRuntimeOriginator
+
 _log = get_logger("api.run_worker")
 
 __all__ = ["RunHandle", "RunRegistry"]
@@ -72,9 +74,19 @@ class RunHandle:
 class RunRegistry:
     """App-scoped registry of in-flight runs. Single-worker, in-process (S08-4)."""
 
-    def __init__(self, rls_engine: Engine) -> None:
+    def __init__(
+        self,
+        rls_engine: Engine,
+        *,
+        origination: WithinRuntimeOriginator | None = None,
+    ) -> None:
         self._engine = rls_engine
         self._handles: dict[str, RunHandle] = {}
+        # Optional within-runtime origination (Spec C0, T7). ``None`` → no
+        # origination (existing behaviour, byte-unchanged — criterion 10); when
+        # injected, a completed run originates its conclusion as a delivered
+        # message (criterion 7). Additive + best-effort: never fails the run.
+        self._origination = origination
 
     def get(self, run_id: str) -> RunHandle | None:
         return self._handles.get(run_id)
@@ -138,6 +150,11 @@ class RunRegistry:
             # Persist by the API's run_id (the DB row), NOT run.id — the loop
             # assigns its own internal id, distinct from the API's row id.
             self._persist_final(handle.run_id, run)
+            # Within-runtime origination (Spec C0, T7, criterion 7): a completed
+            # run originates its conclusion as a delivered message, pushed inline
+            # on this run's open stream BEFORE the end sentinel. Best-effort — a
+            # failure logs and never flips the completed run to error.
+            await self._maybe_originate(handle, run)
         except Exception as exc:  # noqa: BLE001 — a background task must never crash silently
             _log.error("agentic run {rid} failed: {err}", rid=handle.run_id, err=str(exc))
             self._persist_error(handle.run_id, str(exc))
@@ -145,6 +162,24 @@ class RunRegistry:
             reset_sandbox_request_context(sandbox_token)
             current_user_id.reset(token)
             await handle.events.put(None)  # end-of-stream sentinel for SSE
+
+    async def _maybe_originate(self, handle: RunHandle, run: Run) -> None:
+        """Fire within-runtime origination on a completed run (Spec C0, T7).
+
+        Best-effort and additive: no-op when origination is not wired or the run
+        did not complete; a failure logs and never propagates (origination must
+        never turn a completed run into an errored one — criterion 10).
+        """
+        if self._origination is None or run.status is not RunStatus.COMPLETED:
+            return
+        try:
+            await self._origination.originate_run_conclusion(handle, run)
+        except Exception as exc:  # noqa: BLE001 — origination is additive; never fail the run
+            _log.warning(
+                "within-runtime origination failed run={rid}: {err}",
+                rid=handle.run_id,
+                err=str(exc),
+            )
 
     def _persist_progress(self, run_id: str, event_log: list[dict[str, object]]) -> None:
         """Snapshot the event log to runs.steps as it grows (crash-viewable)."""

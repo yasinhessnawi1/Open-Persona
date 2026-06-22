@@ -186,6 +186,49 @@ prompts, K4 wellbeing, K5 graph UI build on it).
   neighbours).
 - Config via `PERSONA_GRAPH_*` (thresholds, index backend, bit-width, rerank-N).
 
+### Persona-initiated messages — the origination primitive (2026-06-22)
+
+> The system-wide primitive that lets a persona **originate** a message — one it
+> produces with no preceding user turn ("I've finished the task you asked for") —
+> as a first-class conversation + memory citizen, delivered through a
+> one-boundary-many-deliverers seam. The connectors track (Telegram/Discord/…) and
+> direction-4 autonomy are the *consumers* of this primitive; they drive one pipe,
+> not N channel-specific paths. **Zero new dependency. One additive column, no new
+> table. No regression to the request/response path.**
+
+#### Added
+- **The originated-message model (`persona-core`)** — a frozen `OriginatedMessage`
+  outbound type + `PersonaIdentityTag` (the name/visual tag that survives delivery
+  so the user sees *which* persona is speaking). An originated message persists as
+  a first-class `assistant` message marked by a `metadata["originated"]` marker
+  (in-core) ↔ a real `messages.originated` BOOLEAN column (DB), and is written to
+  episodic memory the same as a reply — the persona remembers reaching out.
+- **The trigger-agnostic origination capability (`persona.originator.Originator`)**
+  — the single callable the runtime invokes (build → record → deliver → report).
+  It knows nothing about *why* it was called, so the within-runtime conclusion and
+  (later) direction-4's autonomous trigger drive the *same* interface — the
+  direction-4 seam, proven by construction.
+- **The delivery boundary (`persona.delivery.MessageDeliverer`)** — a minimal
+  `@runtime_checkable` port + `DeliveryOutcome` / `DeliveryResult`. One boundary,
+  many deliverers: the web app implements it now; connectors will next.
+- **The web-app deliverer + delivery routing (`persona-api`)** — deliver inline on
+  a live run's open stream, else present-on-next-open (persisted; never dropped).
+  The router picks exactly one channel (web home) — no double-delivery, no silent
+  drop, no platform branching.
+- **RLS-scoped persistence with airtight ownership** — a persona originates ONLY to
+  the user who owns it; a cross-tenant attempt raises `OriginationForbiddenError`
+  before any write (fail-loud, no half-write), with RLS as the production backstop.
+- **Within-runtime origination (`PERSONA_API_WITHIN_RUNTIME_ORIGINATION`, default
+  OFF)** — when enabled, a completed agentic run originates its conclusion as a
+  delivered, persisted message, pushed inline on the run's own open stream. Default
+  OFF: the primitive is shipped + proven; *when* a persona originates is a
+  downstream/direction-4 decision.
+
+#### Migration
+- `013_add_message_originated` — idempotent `ADD COLUMN IF NOT EXISTS
+  messages.originated BOOLEAN NOT NULL DEFAULT false` (the `role` CHECK is
+  untouched — `role` = who speaks, `originated` = self-initiated vs solicited).
+
 ---
 
 ## [1.0.0] - 2026-06-20

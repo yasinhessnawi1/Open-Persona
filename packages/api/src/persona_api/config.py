@@ -75,6 +75,14 @@ class APIConfig(BaseSettings):
     # voice all read the SAME var). `cloud` is the explicit commercial opt-in.
     edition: Edition = Field(default=Edition.community, validation_alias="PERSONA_EDITION")
 
+    # Within-runtime origination (Spec C0, T7, criterion 7). When enabled, a
+    # completed agentic run originates its conclusion as a first-class, delivered
+    # message (persisted to the conversation + episodic, pushed inline on the run's
+    # open stream). Default OFF: the capability is built + proven, but auto-firing
+    # on every run is opt-in (it starts a conversation per run — D-C0-3 — a product
+    # choice). Read from ``PERSONA_API_WITHIN_RUNTIME_ORIGINATION``.
+    within_runtime_origination: bool = Field(default=False)
+
     # Safety guard (Spec 33, D-33-4 / D-33-X-public-bind-detection): community is
     # no-auth single-user-local by intent. When auth is disabled (community) the
     # API refuses to start on a non-loopback bind unless this is set — a

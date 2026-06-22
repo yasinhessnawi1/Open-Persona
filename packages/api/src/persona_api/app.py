@@ -267,7 +267,29 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sandbox_root = app.state.workspace_root
     # The agentic-run registry (T11, D-08-5): in-process event bus + task tracker.
     # Single worker (S08-4). Cancelled on shutdown.
-    run_registry = RunRegistry(rls_engine) if rls_engine is not None else None
+    #
+    # Within-runtime origination (Spec C0, T7): when enabled, a completed run
+    # originates its conclusion as a delivered message (criterion 7). Default OFF
+    # (config.within_runtime_origination) → byte-unchanged run behaviour
+    # (criterion 10); injected only when explicitly enabled and an RLS engine is
+    # present (cloud). The gateway reuses the app's engine + embedder + edition.
+    within_runtime_originator = None
+    if rls_engine is not None and memory_backend is not None and config.within_runtime_origination:
+        from persona_api.services.within_runtime_origination import (
+            WithinRuntimeOriginator,
+        )
+
+        within_runtime_originator = WithinRuntimeOriginator(
+            rls_engine=rls_engine,
+            memory_backend=memory_backend,
+            edition=config.edition,
+            audit_root=app.state.audit_root,
+        )
+    run_registry = (
+        RunRegistry(rls_engine, origination=within_runtime_originator)
+        if rls_engine is not None
+        else None
+    )
     app.state.run_registry = run_registry
 
     # Hosted sandbox + pool (spec 12 T08/T09; D-12-12/D-12-17). Built BEFORE
