@@ -361,6 +361,65 @@ async def test_barge_in_resume_closed_loop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_idle_gate_barge_in_during_persona_speech_captures_opening() -> None:
+    """D-V8-X-bargein-during-speech-fix: the regression the T4b harness missed.
+
+    With the mute-window off (the default), a barge-in onset reaches the
+    orchestrator WHILE the persona speaks → barge-in confirms → the IdleAwareGate
+    reopens → the ring flushes the buffered opening, so the user's interrupting
+    words reach Deepgram (not just a trailing fragment). The earlier harness
+    manually reopened the gate and so never exercised this path.
+    """
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    orch = ConversationalOrchestrator(actions=actions, scheduler=sched, clock=clock)
+    await _drive_to_persona_speaking(orch, sched, clock)
+
+    gate = IdleAwareGate(source=orch)
+    backend = _FakeBackend()
+    vad = _QueueVAD()
+    adapter = V1STTStreamSeamAdapter(
+        backend=backend,  # type: ignore[arg-type]
+        vad=vad,  # type: ignore[arg-type]
+        gate=gate,
+        listener=orch,
+        reopen_preroll_ms=32.0,  # 2-frame ring
+    )
+
+    # Persona is speaking → gate CLOSED. The user starts barging in: their opening
+    # frames are withheld from the backend but buffered in the ring (and fed to VAD).
+    assert orch.is_user_turn_active() is False
+    open1 = b"\xe1\xe1" * 256
+    open2 = b"\xe2\xe2" * 256
+    await adapter.push_audio(open1, 16_000)
+    await adapter.push_audio(open2, 16_000)
+    assert backend.pushed == []
+
+    # The VAD (still fed) fires the barge-in onset; it reaches the orchestrator
+    # (NOT muted) and arms the barge-in candidate.
+    onset = SpeechStartedEvent(ts_audio_s=10.0, ts_emit=clock(), source="silero", confidence=0.9)
+    vad.emit(onset)
+    await asyncio.sleep(0.05)
+    assert orch.state is ConversationalState.PERSONA_SPEAKING  # awaiting confirm
+
+    # Confirm window elapses → barge-in interrupts the persona → USER_SPEAKING.
+    clock.advance(250.0)
+    await sched.fire_last()
+    assert actions.interrupted == 1
+    assert orch.state is ConversationalState.USER_SPEAKING
+    assert orch.is_user_turn_active() is True
+
+    # Gate reopens → the ring flushes the buffered opening ahead of the live frame,
+    # so the interrupting words reach Deepgram from the start.
+    live = b"\xe3\xe3" * 256
+    await adapter.push_audio(live, 16_000)
+    assert backend.pushed == [(open1, 16_000), (open2, 16_000), (live, 16_000)]
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_idle_gate_resume_preserves_first_word_via_ring() -> None:
     """Idle-gate closed-loop: LISTENING idle → gate closed → user onset → reopen
     flushes the buffered pre-roll so the first post-idle word is NOT clipped."""

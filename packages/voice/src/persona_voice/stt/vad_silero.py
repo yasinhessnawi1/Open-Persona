@@ -31,17 +31,26 @@ transcripts on one queue causes 4× repetitions in production). T06's
 ``V1STTStreamSeamAdapter`` is the composition root that wires this adapter
 in parallel with the STT backend.
 
-TTS-mute-window safety net per D-V2-X-echo-cancellation-v1-dependency:
-V1 ships ``PassThroughEchoMode.ECHO`` (pass-through; NOT acoustic echo
-cancellation). Silero's published FP rate on TTS bleed-through is ~51 %
-(LiveKit adaptive-interruption production data). Until V1 transport-layer
-AEC is wired (v0.2 production-grade fix), the adapter accepts a
-``session_state_provider: Callable[[], bool]`` callable that returns True
-when the persona is currently speaking; while it returns True, the
-adapter suppresses ``speech_started`` event emission. The raw VAD score
-still runs internally (so ``speech_ended`` boundaries from previous
-utterances still flush correctly) — only the listener-facing notification
-is muted.
+TTS-mute-window safety net per D-V2-X-echo-cancellation-v1-dependency
+(now **opt-in, default OFF** — D-V8-X-bargein-during-speech-fix, operator-pass
+2026-06-23): the adapter accepts a ``session_state_provider: Callable[[], bool]``
+callable that returns True when the persona is currently speaking; while it
+returns True, the adapter suppresses ``speech_started`` event emission. The raw
+VAD score still runs internally (so ``speech_ended`` boundaries from previous
+utterances still flush correctly) — only the listener-facing notification is
+muted.
+
+**Why it is off by default.** A hard mute is too blunt: it also suppresses a
+*real* barge-in onset, so the persona could not be interrupted while speaking,
+and (after V8 gated the billed STT stream during persona speech) the user's
+barge-in audio was withheld from Deepgram until the persona finished — a
+transcription regression ("thank you" → a clipped fragment). Browser/transport
+AEC (on by default) removes the persona's echo from the inbound mic, and the
+orchestrator's confidence floor + confirm-window are the primary echo defense,
+so the runner leaves ``session_state_provider`` unwired unless
+``PERSONA_STT_SILERO_ECHO_MUTE_WHILE_SPEAKING`` is set (a proven-no-AEC
+deployment). Silero's published ~51 % FP rate on TTS bleed-through (LiveKit
+adaptive-interruption data) is a *raw*-bleed-through figure — AEC makes it moot.
 
 The benchmark harness :func:`benchmark_onset_latency` measures the
 wall-clock onset latency INCLUDING the ``SileroFramer`` overhead on the

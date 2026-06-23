@@ -254,6 +254,23 @@ async def test_unmuted_state_emits_speech_started() -> None:
 
 
 @pytest.mark.asyncio
+async def test_no_provider_emits_speech_started_the_default_barge_in_path() -> None:
+    """D-V8-X-bargein-during-speech-fix: with no mute provider wired (the runner's
+    default), onset emission is never suppressed — a barge-in onset always flows,
+    even while the persona is speaking."""
+    config = _make_config(
+        silero_activation_threshold=0.05,
+        silero_min_speech_duration_ms=32,
+    )
+    adapter = SileroVADAdapter(config, session_state_provider=None)
+    await adapter.load()
+    await adapter.push_audio(_speech_pcm(500), SILERO_SAMPLE_RATE_HZ)
+    event = await asyncio.wait_for(adapter._event_queue.get(), timeout=0.05)
+    assert isinstance(event, SpeechStartedEvent)
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_tts_mute_window_does_not_suppress_speech_ended() -> None:
     """speech_ended is NEVER muted — real silence transitions are real."""
     config = _make_config(

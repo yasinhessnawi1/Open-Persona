@@ -384,7 +384,15 @@ async def build_agent_session(
     # ``nb`` and the force-decode of Norwegian speech as English.
     stt_config = apply_stt_route(stt_config, language_plan.stt)
     stt_backend = load_streaming_stt(stt_config)
-    vad = SileroVADAdapter(stt_config, session_state_provider=_agent_speaking)
+    # TTS-mute-window is opt-in (default OFF — D-V8-X-bargein-during-speech-fix,
+    # operator-pass 2026-06-23). A hard mute blocks a *real* barge-in onset from
+    # reaching the orchestrator, so the persona can't be interrupted while speaking
+    # and the user's barge-in audio is withheld from the billed stream until the
+    # persona finishes. Browser/transport AEC removes the persona echo and the
+    # orchestrator's confidence + confirm-window rejects the rest, so the mute is
+    # only needed on a proven-no-AEC deployment.
+    mute_provider = _agent_speaking if stt_config.silero_echo_mute_while_speaking else None
+    vad = SileroVADAdapter(stt_config, session_state_provider=mute_provider)
     # Spec V8: the cost gate + the ring-buffer-on-reopen (D-V8-X-measure-stop-verdict).
     # The ring buffers the pre-reopen audio so barge-in / post-idle first words
     # survive the gated→open transition; the gate (IdleAwareGate, wired below once

@@ -117,3 +117,14 @@ class StreamingSTTConfig(BaseSettings):
     silero_min_speech_duration_ms: int = Field(default=50, ge=10, le=500)
     silero_min_silence_duration_ms: int = Field(default=200, ge=50, le=2000)
     silero_activation_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    # When True, suppress Silero ``speech_started`` emission while the persona is
+    # speaking (the D-V2-X-echo-cancellation-v1-dependency no-AEC stopgap). Default
+    # **False**: a hard mute also blocks a *real* barge-in onset from reaching the
+    # orchestrator, so the persona could not be interrupted while speaking AND
+    # (post-V8) the user's barge-in audio was withheld from the billed stream until
+    # the persona finished — a transcription regression (operator-pass finding,
+    # 2026-06-23). With browser/transport AEC (on by default) removing the persona's
+    # echo from the inbound mic, and the orchestrator's confidence + confirm-window
+    # echo rejection as the primary defense, the mute is unnecessary. Set True only
+    # for a deployment proven to lack AEC (echo would otherwise fire false barge-ins).
+    silero_echo_mute_while_speaking: bool = False

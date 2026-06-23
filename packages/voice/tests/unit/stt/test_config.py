@@ -179,3 +179,9 @@ def test_provider_literal_rejects_unknown_value() -> None:
 def test_vad_library_literal_rejects_unknown_value() -> None:
     with pytest.raises(ValidationError):
         StreamingSTTConfig(vad_library="custom-vad")  # type: ignore[arg-type]
+
+
+def test_echo_mute_while_speaking_defaults_off() -> None:
+    """D-V8-X-bargein-during-speech-fix: the TTS-mute-window is opt-in (default
+    OFF) so a real barge-in onset reaches the orchestrator while the persona speaks."""
+    assert StreamingSTTConfig().silero_echo_mute_while_speaking is False
