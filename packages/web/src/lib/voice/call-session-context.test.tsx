@@ -168,6 +168,13 @@ function Harness() {
       </button>
       <button
         type="button"
+        data-testid="set-always"
+        onClick={() => s.setInputMode("always")}
+      >
+        always
+      </button>
+      <button
+        type="button"
         data-testid="ptt-hold"
         onClick={() => s.setPttHeld(true)}
       >
@@ -475,6 +482,33 @@ describe("CallSessionProvider", () => {
     await waitFor(() =>
       expect(screen.getByTestId("mic-active").textContent).toBe("false"),
     );
+  });
+
+  it("switching back to always-listening re-opens the mic (no stuck-on-mute)", async () => {
+    render(
+      <CallSessionProvider>
+        <Harness />
+      </CallSessionProvider>,
+    );
+    fireEvent.click(screen.getByTestId("set-ptt"));
+    fireEvent.click(screen.getByTestId("start-a"));
+    await waitFor(() => expect(lk.rooms).toHaveLength(1));
+    const room = lk.rooms[0];
+    await act(async () => {
+      room.emit("dataReceived", encodeState("preparing", "listening"));
+      room.emit("dataReceived", encodeState("listening", "preparing"));
+    });
+    // PTT left the mic muted…
+    await waitFor(() =>
+      expect(screen.getByTestId("mic-active").textContent).toBe("false"),
+    );
+    // …and switching back to always-listening must RE-OPEN it (the bug was that
+    // it stayed muted → "stuck on mute / push-to-talk only").
+    fireEvent.click(screen.getByTestId("set-always"));
+    await waitFor(() =>
+      expect(screen.getByTestId("mic-active").textContent).toBe("true"),
+    );
+    expect(screen.getByTestId("input-mode").textContent).toBe("always");
   });
 
   it("writes a post-call recap when the call ends (web-derived, D-V7-7)", async () => {

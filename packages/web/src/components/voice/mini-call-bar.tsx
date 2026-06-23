@@ -27,7 +27,7 @@ import {
   useState,
 } from "react";
 import { PersonaAvatar } from "@/components/persona/persona-avatar";
-import { MicControl } from "@/components/voice/mic-control";
+import { InputModeToggle, MicControl } from "@/components/voice/mic-control";
 import { personaIdentityStyle } from "@/lib/persona-identity";
 import { useCallSession } from "@/lib/voice/call-session-context";
 
@@ -184,6 +184,10 @@ export function MiniCallBar(): React.JSX.Element | null {
           </div>
           {/* D-V7-6: mute toggle, or a hold-to-talk button in push-to-talk. */}
           <MicControl className="v-iconbtn" />
+          {/* D-V7-6: the listening-mode toggle (always-listening ↔ push-to-talk)
+              — also here so a call started in PTT isn't a one-way trap from the
+              mini-bar. */}
+          <InputModeToggle className="v-iconbtn" />
           <Link
             href={`/chat/${target.conversationId}/voice`}
             aria-label={t("mini.returnToCall")}

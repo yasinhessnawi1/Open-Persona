@@ -13,7 +13,7 @@
  * hoisted session; neither touches `useVoiceCall`.
  */
 
-import { Hand, Mic, MicOff } from "lucide-react";
+import { Ear, Hand, Mic, MicOff } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallSession } from "@/lib/voice/call-session-context";
 
@@ -89,6 +89,9 @@ export function InputModeToggle({
   const { inputMode, setInputMode } = useCallSession();
   const ptt = inputMode === "ptt";
 
+  // The icon shows the CURRENT mode so the user can see which they're in — an Ear
+  // for always-listening, a Hand for push-to-talk — and the label says what a tap
+  // switches TO. (Same icon in both modes was undiscoverable.)
   return (
     <button
       type="button"
@@ -98,7 +101,7 @@ export function InputModeToggle({
       title={ptt ? t("ptt.toAlways") : t("ptt.toPtt")}
       aria-pressed={ptt}
     >
-      <Hand aria-hidden />
+      {ptt ? <Hand aria-hidden /> : <Ear aria-hidden />}
     </button>
   );
 }

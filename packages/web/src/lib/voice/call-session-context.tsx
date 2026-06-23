@@ -270,17 +270,36 @@ export function CallSessionProvider({
     setPttKey(prefs.pttKey);
   }, []);
 
+  const live =
+    call.state.phase === "connected" || call.state.phase === "reconnecting";
+
   const setInputMode = useCallback(
     (mode: InputMode) => {
       setInputModeState(mode);
       setPttHeld(false);
       saveInputPrefs({ mode, pttKey });
+      // Returning to always-listening must RE-OPEN the mic: PTT had it muted, and
+      // the PTT reconcile below only manages the mic in `ptt` mode — so nothing
+      // else un-mutes it. Without this, "always-listening" would stay silently
+      // muted (the "stuck on mute / push-to-talk only" bug). Only while a call is
+      // live and past the greeting; otherwise the greeting un-gate opens it.
+      if (
+        mode === "always" &&
+        live &&
+        !call.state.micGatedForGreeting &&
+        !call.state.micActive
+      ) {
+        void toggleMute();
+      }
     },
-    [pttKey],
+    [
+      pttKey,
+      live,
+      call.state.micGatedForGreeting,
+      call.state.micActive,
+      toggleMute,
+    ],
   );
-
-  const live =
-    call.state.phase === "connected" || call.state.phase === "reconnecting";
 
   // PTT (D-V7-6): in push-to-talk the mic is open ONLY while held. Reconcile the
   // published mic to `pttHeld` whenever it diverges — THIS is what "suppresses
