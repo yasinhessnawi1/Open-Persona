@@ -26,12 +26,12 @@ const EPISTEMIC: ReadonlySet<EpistemicStatus> = new Set([
 ]);
 
 describe("persona-examples dataset", () => {
-  it("has six categories, each with four examples (24 total)", () => {
-    expect(PERSONA_EXAMPLE_CATEGORIES).toHaveLength(6);
+  it("has ten categories, each with at least four examples (~60 total)", () => {
+    expect(PERSONA_EXAMPLE_CATEGORIES).toHaveLength(10);
     for (const category of PERSONA_EXAMPLE_CATEGORIES) {
-      expect(category.examples).toHaveLength(4);
+      expect(category.examples.length).toBeGreaterThanOrEqual(4);
     }
-    expect(ALL_EXAMPLES).toHaveLength(24);
+    expect(ALL_EXAMPLES.length).toBeGreaterThanOrEqual(60);
   });
 
   it("uses unique ids across all examples and categories", () => {
