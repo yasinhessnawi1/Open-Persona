@@ -795,3 +795,66 @@ def test_list_preview_is_rls_scoped(client: tuple[TestClient, str, str]) -> None
     with su.begin() as conn:
         conn.execute(text("DELETE FROM users WHERE id = :i"), {"i": other})
     su.dispose()
+
+
+# -- Spec P1 reattach surface (T4) — CI-verified (real Postgres) ---------------
+
+
+def test_active_turn_404_when_no_turn_in_flight(client: tuple[TestClient, str, str]) -> None:
+    """With the scripted loop completing synchronously, a fresh conversation has no
+    live turn — all three reattach endpoints 404 (the client then reconciles)."""
+    c, uid, persona_id = client
+    conv = _new_conversation(c, uid, persona_id)
+
+    assert c.get(f"/v1/conversations/{conv}/active-turn", headers=_auth(uid)).status_code == 404
+    assert (
+        c.get(f"/v1/conversations/{conv}/active-turn/events", headers=_auth(uid)).status_code == 404
+    )
+    assert (
+        c.post(f"/v1/conversations/{conv}/active-turn/cancel", headers=_auth(uid)).status_code
+        == 404
+    )
+
+
+def test_active_turn_endpoints_are_rls_scoped(client: tuple[TestClient, str, str]) -> None:
+    """A conversation that isn't the caller's is invisible → 404 on every reattach
+    endpoint (the get_conversation ownership pre-check), never a cross-tenant leak."""
+    c, uid, persona_id = client
+    conv = _new_conversation(c, uid, persona_id)
+    other = "user_t08_other"
+    su = make_rls_engine(os.environ["DATABASE_URL"])
+    with su.begin() as conn:
+        conn.execute(
+            text("INSERT INTO users (id, email) VALUES (:i, :e) ON CONFLICT DO NOTHING"),
+            {"i": other, "e": f"{other}@x.test"},
+        )
+    su.dispose()
+    try:
+        assert (
+            c.get(f"/v1/conversations/{conv}/active-turn", headers=_auth(other)).status_code == 404
+        )
+        assert (
+            c.post(
+                f"/v1/conversations/{conv}/active-turn/cancel", headers=_auth(other)
+            ).status_code
+            == 404
+        )
+    finally:
+        su = make_rls_engine(os.environ["DATABASE_URL"])
+        with su.begin() as conn:
+            conn.execute(text("DELETE FROM users WHERE id = :i"), {"i": other})
+        su.dispose()
+
+
+def test_completed_turn_leaves_no_active_turn(client: tuple[TestClient, str, str]) -> None:
+    """After a turn completes (synchronous scripted loop), the conversation has the
+    finalized messages and NO active turn — reattach 404s, reconcile via history."""
+    c, uid, persona_id = client
+    conv = _new_conversation(c, uid, persona_id)
+    r = c.post(f"/v1/conversations/{conv}/messages", json={"content": "hi"}, headers=_auth(uid))
+    assert r.status_code == 200
+    _ = r.text  # drain the SSE so the detached turn finalizes
+
+    assert c.get(f"/v1/conversations/{conv}/active-turn", headers=_auth(uid)).status_code == 404
+    hist = c.get(f"/v1/conversations/{conv}", headers=_auth(uid)).json()
+    assert [m["role"] for m in hist["messages"]] == ["user", "assistant"]

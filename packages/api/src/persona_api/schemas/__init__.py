@@ -19,6 +19,7 @@ from persona_api.schemas.requests import (
     UpdatePersonaRequest,
 )
 from persona_api.schemas.responses import (
+    ActiveTurnResponse,
     ArtifactItem,
     ArtifactListResponse,
     ArtifactMetadataView,
@@ -75,6 +76,7 @@ __all__ = [
     "PostMessageRequest",
     "RefinePersonaRequest",
     "RespondToRunRequest",
+    "ActiveTurnResponse",
     "RunListResponse",
     "RunStatusResponse",
     "RunSummary",

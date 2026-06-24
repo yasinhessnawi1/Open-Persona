@@ -50,9 +50,12 @@ build never pulls `@clerk/*` into the bundle (enforced by CI gates +
   tool-call cards, per-turn tier badges, file + image attachments, and a
   right-panel artifact renderer covering 10 formats (markdown / code / PDF /
   image / CSV / JSON / HTML / Mermaid / Graphviz / plaintext, rendered↔raw
-  toggle).
-- **Agentic run viewer** — run timeline over SSE (catch-up + reconcile-on-drop),
-  inline ask-user, Markdown final answer, cancel.
+  toggle). The turn is a **persistent, resumable session**: it keeps running
+  server-side when you navigate away or reload, and reattaches on return
+  (seed-then-tail + reconcile), with a "working" indicator on the conversation
+  row + a global return-to-it bar.
+- **Agentic run viewer** — run timeline over SSE (catch-up + reconcile-on-drop,
+  resumes the live tail on return), inline ask-user, Markdown final answer, cancel.
 - **Voice** — a browser voice client (LiveKit `livekit-client`) wired to the
   `/v1/voice/token` flow: an Identity-Orb call surface, plus a **persistent call
   experience** — the call lives in an app-level session above the router, so it

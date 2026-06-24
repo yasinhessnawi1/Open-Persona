@@ -20,8 +20,10 @@ import { Sidebar } from "@/components/shell/sidebar";
 import { MiniCallBar } from "@/components/voice/mini-call-bar";
 import { ResumeCallPrompt } from "@/components/voice/resume-call-prompt";
 import { SwitchCallDialog } from "@/components/voice/switch-call-dialog";
+import { ActiveWorkBar } from "@/components/work/active-work-bar";
 import { cn } from "@/lib/utils";
 import { CallSessionProvider } from "@/lib/voice/call-session-context";
+import { ActiveWorkProvider } from "@/lib/work/active-work-context";
 import { MobileNav } from "./mobile-nav";
 import type { SidebarData } from "./sidebar-data";
 import { fetchSidebarData } from "./sidebar-fetch";
@@ -59,31 +61,43 @@ export async function AppShell({
     <NotificationProvider>
       <ConfirmProvider>
         <CallSessionProvider>
-          <div
-            className={cn("flex min-h-svh", className)}
-            data-slot="app-shell"
-          >
-            <Sidebar data={data} />
-            <div className="flex min-w-0 flex-1 flex-col">
-              <ShellHeader data={data} />
-              <main className="flex flex-1 flex-col" data-slot="app-shell-main">
-                {children}
-              </main>
-            </div>
-            {/* F2 T23: single toast surface for the auth'd app. */}
-            <ToastProvider />
-            {/* Spec 35 D-35-14: the ⌘K command palette, mounted once for the app. */}
-            <CommandPalette data={data} />
-            {/* Spec V7 D-V7-2: the persistent mini call-bar — hidden until a call is
+          {/* Spec P1 D-P1-v7-indicator: the chat/run "active work" session — the
+              additive sibling of the voice CallSessionProvider (voice mechanics
+              untouched). Tracks in-progress detached chat turns so the
+              conversation row + the global ActiveWorkBar advertise resumable work. */}
+          <ActiveWorkProvider>
+            <div
+              className={cn("flex min-h-svh", className)}
+              data-slot="app-shell"
+            >
+              <Sidebar data={data} />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <ShellHeader data={data} />
+                <main
+                  className="flex flex-1 flex-col"
+                  data-slot="app-shell-main"
+                >
+                  {children}
+                </main>
+              </div>
+              {/* F2 T23: single toast surface for the auth'd app. */}
+              <ToastProvider />
+              {/* Spec 35 D-35-14: the ⌘K command palette, mounted once for the app. */}
+              <CommandPalette data={data} />
+              {/* Spec V7 D-V7-2: the persistent mini call-bar — hidden until a call is
                 active; binds the hoisted session, never owns a Room. */}
-            <MiniCallBar />
-            {/* Spec V7 D-V7-4: the end-and-switch confirm — shown only when a call is
+              <MiniCallBar />
+              {/* Spec P1 D-P1-v7-indicator: the global "working — return to it" bar,
+                alongside the call pill (additive). Hidden unless a chat turn runs. */}
+              <ActiveWorkBar />
+              {/* Spec V7 D-V7-4: the end-and-switch confirm — shown only when a call is
                 requested while a different one is active. */}
-            <SwitchCallDialog />
-            {/* Spec V7 D-V7-3: the resume-after-reload prompt — shown only when a
+              <SwitchCallDialog />
+              {/* Spec V7 D-V7-3: the resume-after-reload prompt — shown only when a
                 recent call is found in sessionStorage on load. */}
-            <ResumeCallPrompt />
-          </div>
+              <ResumeCallPrompt />
+            </div>
+          </ActiveWorkProvider>
         </CallSessionProvider>
       </ConfirmProvider>
     </NotificationProvider>

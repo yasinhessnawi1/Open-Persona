@@ -7,6 +7,7 @@ RLS-scoped via ``get_current_user``. The per-request loop builder comes from
 
 from __future__ import annotations
 
+import json
 from datetime import datetime  # noqa: TC003 — used in cast() at runtime
 from typing import Any, cast
 
@@ -14,8 +15,10 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import StreamingResponse
 
 from persona_api.auth import AuthenticatedUser, get_current_user
+from persona_api.errors import TurnNotActiveError
 from persona_api.middleware.rate_limit import rate_limit
 from persona_api.schemas import (
+    ActiveTurnResponse,
     ConversationDetail,
     ConversationSummary,
     CreateConversationRequest,
@@ -230,26 +233,35 @@ async def post_message(
         # this turn; the chat flow stays usable rather than hard-erroring.
         document_context = None
 
-    generator = chat_service.stream_chat(
+    # Spec P1 (D-P1-detached-execution): start the turn as a DETACHED background
+    # task + stream its live tail. ``start_chat_turn`` persists the user message +
+    # an in-progress assistant row, launches the worker (which checkpoints,
+    # finalizes, and bills on clean completion — D-P1-billing-contract), and
+    # returns the live handle. A client disconnect mid-stream no longer cancels
+    # the turn; it keeps running and is re-tailable on return (T4). One-active-turn
+    # is enforced here: a 409 (TurnAlreadyActiveError) raises cleanly BEFORE the
+    # SSE response starts, never mid-stream.
+    handle = await chat_service.start_chat_turn(
         rls_engine=request.app.state.rls_engine,
+        sink=request.app.state.chat_turn_sink,
+        registry=request.app.state.chat_turn_registry,
         loop_builder=request.app.state.build_conversation_loop,
         owner_id=user.id,
         conversation_id=conversation_id,
         user_message=body.content,
         channel=body.channel,
-        credits_policy=request.app.state.credits_policy,
-        credits_per_turn=request.app.state.config.credits_per_turn,
         title_builder=getattr(request.app.state, "title_builder", None),
         images=list(body.images) if body.images else None,
         turn_has_image=turn_has_image,
         document_context=document_context,
-        # Image-workspace cascade: thread the workspace root so stream_chat can
+        # Image-workspace cascade: thread the workspace root so the turn can
         # resolve the uploaded image bytes for the model + sandbox.
         workspace_root=getattr(request.app.state, "workspace_root", None),
-        # Spec K2 (T8d): the durable job queue for off-critical-path synthesis at
-        # the turn boundary (None until composed → safe no-op).
-        job_queue=getattr(request.app.state, "job_queue", None),
     )
+    # Spec K2 (T8d): off-critical-path synthesis is enqueued at the turn boundary
+    # by the detached worker on clean completion (relocated from the old inline
+    # path into ChatTurnRegistry, which holds app.state.job_queue — D-K2-2 +
+    # D-P1-detached-execution). No call-site wiring needed here.
     # The rate-limit dependency's headers don't auto-merge into a route-built
     # StreamingResponse (FastAPI limitation) — copy them from the stashed
     # decision so X-RateLimit-* appears on the SSE response too.
@@ -257,7 +269,9 @@ async def post_message(
     decision = getattr(request.state, "rate_limit_decision", None)
     if decision is not None:
         headers = decision.headers()
-    return StreamingResponse(generator, media_type="text/event-stream", headers=headers)
+    return StreamingResponse(
+        chat_service.stream_turn(handle), media_type="text/event-stream", headers=headers
+    )
 
 
 def _summary(row: dict[str, object]) -> ConversationSummary:
@@ -275,3 +289,102 @@ def _summary(row: dict[str, object]) -> ConversationSummary:
         last_message_preview=cast("str | None", row.get("last_message_preview")),
         last_message_role=cast("Any", row.get("last_message_role")),
     )
+
+
+# -- Spec P1 reattach surface (mirrors the /runs/{id}/events + /cancel shape) ---
+
+
+def _coerce_stream_events(value: object) -> list[dict[str, object]]:
+    """Coerce the ``stream_events`` JSON column to a list of dicts (sqlite ↦ str)."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        loaded = json.loads(value)
+        return list(loaded) if isinstance(loaded, list) else []
+    return list(value) if isinstance(value, list) else []
+
+
+@router.get("/conversations/{conversation_id}/active-turn", response_model=ActiveTurnResponse)
+async def read_active_turn(
+    conversation_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),  # noqa: ARG001 — RLS via contextvar
+) -> ActiveTurnResponse:
+    """The in-progress assistant turn for a conversation, for reattach-on-return (P1, T4).
+
+    The web client calls this on return to detect a live turn and seed the partial
+    (content + the tool/text interleave in ``stream_events``) before resubscribing
+    to the live tail. 404 (``TurnNotActiveError``) when no turn is in flight — the
+    client then reconciles via the conversation history. RLS-scoped → 404 if the
+    conversation isn't the caller's.
+    """
+    chat_service.get_conversation(
+        rls_engine=request.app.state.rls_engine, conversation_id=conversation_id
+    )
+    row = chat_service.get_active_turn(
+        rls_engine=request.app.state.rls_engine, conversation_id=conversation_id
+    )
+    if row is None:
+        raise TurnNotActiveError("no active turn", context={"conversation_id": conversation_id})
+    return ActiveTurnResponse(
+        message_id=str(row["id"]),
+        streaming_status=str(row["streaming_status"]),
+        content=str(row["content"]),
+        stream_events=_coerce_stream_events(row.get("stream_events")),
+    )
+
+
+@router.get("/conversations/{conversation_id}/active-turn/events")
+async def stream_active_turn_events(
+    conversation_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),  # noqa: ARG001 — RLS via contextvar
+) -> StreamingResponse:
+    """Resubscribe to a live turn's SSE tail (reattach) — the SAME ``stream_turn``
+    generator the originating POST streams (P1, T4; don't fork the transport).
+
+    RLS-scoped ownership pre-check → 404 if the conversation isn't the caller's.
+    404 (``TurnNotActiveError``) if no live turn is registered in-process (it
+    finished / was interrupted / never started) — checked BEFORE the SSE response
+    starts, so the client gets a clean 404 (then reconciles) rather than a
+    half-open stream.
+    """
+    chat_service.get_conversation(
+        rls_engine=request.app.state.rls_engine, conversation_id=conversation_id
+    )
+    registry = getattr(request.app.state, "chat_turn_registry", None)
+    handle = registry.get(conversation_id) if registry is not None else None
+    if handle is None:
+        raise TurnNotActiveError("no active turn", context={"conversation_id": conversation_id})
+    return StreamingResponse(chat_service.stream_turn(handle), media_type="text/event-stream")
+
+
+@router.post(
+    "/conversations/{conversation_id}/active-turn/cancel",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def cancel_active_turn(
+    conversation_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, str]:
+    """Explicitly cancel a live chat turn (mirrors ``/runs/{id}/cancel``; P1, T4).
+
+    Flips the turn's task cancel (``ChatTurnRegistry.request_cancel``): the worker
+    finalizes the partial as ``cancelled`` and does NOT bill (D-P1-billing-contract).
+    RLS-scoped → 404 if the conversation isn't the caller's; 404 if no live turn.
+    """
+    chat_service.get_conversation(
+        rls_engine=request.app.state.rls_engine, conversation_id=conversation_id
+    )
+    registry = getattr(request.app.state, "chat_turn_registry", None)
+    cancelled = registry.request_cancel(conversation_id) if registry is not None else False
+    if not cancelled:
+        raise TurnNotActiveError("no active turn", context={"conversation_id": conversation_id})
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action="conversation.turn.cancel",
+        target=conversation_id,
+    )
+    return {"status": "cancelling"}

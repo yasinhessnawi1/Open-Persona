@@ -1,29 +1,32 @@
-"""Conversation lifecycle + SSE chat (spec 08, T08, KEYSTONE 1).
+"""Conversation lifecycle + detached chat turns (spec 08 T08 + spec P1 T2b, KEYSTONE 1).
 
-The chat pathway: load the persona's conversation, drive
-``ConversationLoop.turn`` (spec 05), stream its ``StreamChunk``s as SSE events,
-and — only AFTER the final chunk — persist the new messages (incl. the
-``channel`` passthrough, D-08-3), the compacted conversation state, the
-``turn_log`` (T12), and the credits deduction (T12).
+CRUD for conversations + the chat-turn entry points. Spec P1 reshaped the turn
+from inline-streaming (persist-after-final) into a **detached, resumable
+session** (D-P1-detached-execution):
 
-The persist-after-final discipline is load-bearing (research §3, D-05-12):
-persistence runs in the normal flow after the generator's final yield, NEVER in
-a ``finally`` — a client disconnect cancels the async generator mid-stream, and
-a ``finally`` would persist a half-finished turn (state corruption). The async
-generator simply suspends; persistence is skipped.
+- :func:`start_chat_turn` — persist the user message + an in-progress assistant
+  row at turn START (``MessagesTurnSink.open_turn``), resolve images/documents,
+  build the loop, and launch the turn as a detached background task via the
+  ``ChatTurnRegistry``. A client disconnect no longer cancels the turn.
+- :func:`stream_turn` — stream the live tail (events + chunks + the terminal
+  ``done`` / ``error`` frame) from the turn's in-process queue. The SAME
+  generator serves the originating POST and every reattach (T4).
+
+The worker (``background.chat_turn_worker``) owns the during-turn checkpointing,
+the terminal finalize, and the credits deduct on clean completion (the D-08-6
+revision — bill regardless of client presence, D-P1-billing-contract). The old
+persist-in-the-generator hazard is gone: persistence + billing live in the
+detached task, so a mid-stream disconnect never loses the turn or skips the bill.
 
 The ``ConversationLoop`` is built per-request by the runtime factory (T10),
-which this service receives as an injected ``loop_builder`` so it stays testable
-with a scripted backend.
+injected as ``loop_builder`` so the flow stays testable with a scripted backend.
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Literal, cast
 
 from persona.errors import PersonaError, PersonaNotFoundError
@@ -35,13 +38,7 @@ from persona_api.db.models import conversations as conversations_t
 from persona_api.db.models import messages as messages_t
 from persona_api.db.models import personas as personas_t
 from persona_api.errors import ConversationNotFoundError
-from persona_api.sandbox import (
-    SandboxRequestContext,
-    reset_sandbox_request_context,
-    set_sandbox_request_context,
-)
 from persona_api.services import document_service, image_service
-from persona_api.services.synthesis_trigger import enqueue_conversation_synthesis
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -55,10 +52,12 @@ if TYPE_CHECKING:
     from persona_runtime.prompt import DocumentContext
     from sqlalchemy import Connection, Engine
 
+    from persona_api.background.chat_turn_worker import ChatTurnHandle, ChatTurnRegistry
     from persona_api.editions import CreditsPolicy
     from persona_api.jobs.queue import JobQueue
     from persona_api.schemas import ChannelContext
     from persona_api.schemas import ImageRef as ImageRefSchema
+    from persona_api.services.chat_turn_sink import MessagesTurnSink
 
     # The runtime factory (T10) builds a ConversationLoop for a persona under the
     # current request's RLS scope, given the persona_id.
@@ -70,8 +69,10 @@ __all__ = [
     "delete_conversation",
     "get_conversation",
     "list_conversations",
+    "get_active_turn",
     "set_title",
-    "stream_chat",
+    "start_chat_turn",
+    "stream_turn",
 ]
 
 _log = get_logger("api.chat")
@@ -225,6 +226,30 @@ def _truncate_preview(content: str | None) -> str | None:
     return trimmed[: LAST_MESSAGE_PREVIEW_MAX_LEN - 1].rstrip() + "…"
 
 
+def get_active_turn(*, rls_engine: Engine, conversation_id: str) -> dict[str, object] | None:
+    """Return the in-progress (streaming) assistant message for a conversation, or None.
+
+    The reattach seed (Spec P1, D-P1-reattach-frontend): the live turn's assistant
+    row — ``content`` (accumulated partial) + ``stream_events`` (the tool/text
+    interleave checkpoint) + ``streaming_status``. RLS-scoped, so a conversation
+    that isn't the caller's yields ``None`` (the route pre-checks ownership for a
+    clean conversation-404). ``None`` when no turn is running (all messages
+    terminal). The partial-unique index guarantees at most one ``running`` row.
+    """
+    with rls_engine.begin() as conn:
+        row = (
+            conn.execute(
+                select(messages_t).where(
+                    messages_t.c.conversation_id == conversation_id,
+                    messages_t.c.streaming_status == "running",
+                )
+            )
+            .mappings()
+            .first()
+        )
+    return dict(row) if row is not None else None
+
+
 def get_conversation(*, rls_engine: Engine, conversation_id: str) -> dict[str, object]:
     """Return a conversation + its full message history (RLS-scoped → 404)."""
     with rls_engine.begin() as conn:
@@ -291,224 +316,132 @@ def _sse(event: str, data: dict[str, object]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
 
-async def stream_chat(
+async def start_chat_turn(
     *,
     rls_engine: Engine,
+    sink: MessagesTurnSink,
+    registry: ChatTurnRegistry,
     loop_builder: LoopBuilder,
     owner_id: str,
     conversation_id: str,
     user_message: str,
     channel: ChannelContext | None,
-    credits_policy: CreditsPolicy,
-    credits_per_turn: int = 1,
     title_builder: Callable[[str], Awaitable[str]] | None = None,
     images: list[ImageRefSchema] | None = None,
     turn_has_image: bool = False,
     document_context: DocumentContext | None = None,
     workspace_root: Path | None = None,
-    job_queue: JobQueue | None = None,
-) -> AsyncIterator[bytes]:
-    """Drive ConversationLoop.turn and stream SSE; persist after the final yield.
+) -> ChatTurnHandle:
+    """Persist the turn at START + launch it detached; return the live handle (P1, T2b).
 
-    Yields SSE frames (``chunk`` / ``done``). After the loop's final chunk — and
-    ONLY on clean completion (a client disconnect cancels this generator and
-    skips persistence) — the new messages, compaction state, channel, turn_log
-    (the loop wrote it), and the credits deduction are committed (D-08-6: a
-    failed/cancelled turn deducts nothing).
+    The chat turn is now a **persistent, resumable session** (D-P1-detached-execution):
 
-    On the FIRST turn of a conversation (no prior messages), an optional
-    ``title_builder`` (the small tier) generates a short title from the first
-    user message — best-effort: a failure leaves the default title untouched.
+    1. Reject early if a turn is already streaming for this conversation (→ 409,
+       block-don't-queue, D-P1-one-active-turn) — BEFORE any DB write, so the
+       partial-unique index never has to fire.
+    2. Persist the user message + an in-progress assistant row (``open_turn``),
+       so a reload mid-turn refetches both (acceptance #2).
+    3. Resolve the turn's images / documents (request scope — needs
+       ``workspace_root``) and build the loop, exactly as the inline path did.
+    4. Launch the detached task via the registry; a client disconnect no longer
+       cancels it. The worker drives the loop, checkpoints, finalizes, and bills
+       on clean completion (D-P1-billing-contract); the request streams the live
+       tail via :func:`stream_turn`.
 
-    Granular turn events (``tool_calling`` / ``tool_result`` as tools dispatch,
-    plus the router's ``tier``) are surfaced via the loop's ``on_event``
-    callback and emitted as SSE frames IN ORDER, interleaved with the text
-    chunks, before the terminal ``done`` event. These reuse the SAME
-    :class:`RunEvent` shapes as the run-viewer stream — one event vocabulary
-    covers both (closes the gap spec 09 found).
+    Raises :class:`~persona_api.errors.TurnAlreadyActiveError` (→ 409),
+    :class:`~persona_api.errors.ConversationNotFoundError` (→ 404), etc. cleanly
+    BEFORE the SSE response starts — never mid-stream.
     """
-    # Load the conversation under the RLS scope (its own short transaction).
+    if registry.get(conversation_id) is not None:
+        from persona_api.errors import TurnAlreadyActiveError  # noqa: PLC0415
+
+        raise TurnAlreadyActiveError(
+            "a turn is already running for this conversation",
+            context={"conversation_id": conversation_id},
+        )
+
     with rls_engine.begin() as conn:
         conversation = _load_conversation(conn, conversation_id)
         prior_msg_count = len(conversation.messages)
     persona_id = conversation.persona_id
     is_first_turn = prior_msg_count == 0
 
-    # Spec 12 T10: bind the per-request sandbox context for ``code_execution``.
-    # The runtime factory reads the contextvar inside the tool factory closures
-    # so we don't thread (owner_id, conversation_id) through every loop-builder
-    # signature. The contextvar stays bound for the entire stream (including
-    # loop.turn dispatches, where code_execution actually fires) and is reset
-    # in the finally regardless of completion / cancellation.
-    _sandbox_ctx_token = set_sandbox_request_context(
-        SandboxRequestContext(owner_id=owner_id, conversation_id=conversation_id)
+    # Resolve images/documents + stage docs for the host file tools (request
+    # scope — needs workspace_root). The detached worker binds the sandbox
+    # contextvar for code_execution; these resolve bytes by path, no contextvar.
+    turn_images = _resolve_turn_images(
+        workspace_root=workspace_root, owner_id=owner_id, persona_id=persona_id, images=images
     )
-    try:
-        loop = await loop_builder(persona_id)
+    turn_documents = _resolve_turn_documents(
+        workspace_root=workspace_root,
+        owner_id=owner_id,
+        persona_id=persona_id,
+        conversation_id=conversation_id,
+    )
+    _stage_documents_for_file_read(
+        workspace_root=workspace_root,
+        owner_id=owner_id,
+        persona_id=persona_id,
+        documents=turn_documents,
+    )
 
-        # Image-workspace cascade (Part 1): resolve the inbound image refs to
-        # runtime-layer TurnImage carriers (workspace_path + media_type + bytes)
-        # so loop.turn can route them to BOTH the model (multimodal user
-        # message) and the sandbox (deferred input files). Bytes come from the
-        # existing upload-storage resolver under the per-(owner, persona)
-        # workspace. ``images`` still flows separately to ``_persist_turn`` for
-        # the messages.images JSONB column (unchanged).
-        turn_images = _resolve_turn_images(
-            workspace_root=workspace_root,
-            owner_id=owner_id,
-            persona_id=persona_id,
-            images=images,
-        )
+    loop = await loop_builder(persona_id)
+    assistant_message_id = sink.open_turn(
+        conversation_id=conversation_id, user_message=user_message, channel=channel, images=images
+    )
 
-        # Document-workspace cascade: stage the conversation's attached documents'
-        # ORIGINAL bytes into the sandbox input mount so file_read /
-        # code_execution can read the ACTUAL uploaded document (not just the
-        # document_context synopsis, and not a stale file from another context).
-        turn_documents = _resolve_turn_documents(
-            workspace_root=workspace_root,
-            owner_id=owner_id,
-            persona_id=persona_id,
-            conversation_id=conversation_id,
-        )
-        # file_read is a HOST-side tool scoped to ``<workspace_root>/<owner_id>/
-        # <persona_id>`` (runtime_factory._build_file_sandbox_root_provider) — a
-        # DIFFERENT subtree from the conversation-scoped document store
-        # (``<workspace_root>/persona_<id>/conversations/<conv>/documents/``).
-        # Staging onto ``deferred_input_files`` only reaches the REMOTE E2B
-        # sandbox (where ``code_execution`` runs), never file_read's host root,
-        # so ``file_read("uploads/<name>")`` 404'd. Mirror each staged document
-        # into the file_read scoped root at ``uploads/<filename>`` so BOTH tools
-        # read the SAME relative path. Per-(owner, persona) isolation is intact:
-        # we only ever write under THIS request's scoped root, and only THIS
-        # conversation's attached documents.
-        _stage_documents_for_file_read(
-            workspace_root=workspace_root,
-            owner_id=owner_id,
-            persona_id=persona_id,
-            documents=turn_documents,
-        )
+    # Auto-title the first turn from its first user message (best-effort, small
+    # tier) on the detached completion path — never delays / breaks the turn.
+    on_complete: Callable[[], Awaitable[None]] | None = None
+    if is_first_turn and title_builder is not None:
+        _title_builder = title_builder
 
-        # The loop fires on_event from INSIDE loop.turn, between/around chunk
-        # yields. A tool-heavy round emits NO text chunks, so a callback that only
-        # buffered would leave tool_calling/tool_result stuck until the next chunk
-        # — the UI froze through multi-tool turns. Bridge the callback into this
-        # generator via a queue: the loop runs in a pump task and every event /
-        # chunk lands on the queue as it fires, so the consumer flushes each the
-        # instant it arrives, interleaved in true emission order. `tier` is
-        # captured for `done` (Spec 31 D-31-1: the routing summary rides the tier
-        # event; None on rule-based turns).
-        tier = "frontier"  # fallback; replaced by the router's real choice via on_event
-        routing_summary: dict[str, object] | None = None
-        last_chunk: StreamChunk | None = None
+        async def on_complete() -> None:
+            await _maybe_set_title(rls_engine, conversation_id, user_message, _title_builder)
 
-        queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+    return registry.start(
+        conversation_id=conversation_id,
+        owner_id=owner_id,
+        assistant_message_id=assistant_message_id,
+        loop=loop,
+        conversation=conversation,
+        user_message=user_message,
+        on_complete=on_complete,
+        turn_has_image=turn_has_image,
+        images=turn_images or None,
+        documents=turn_documents or None,
+        document_context=document_context,
+    )
 
-        async def _on_event(event: RunEvent) -> None:
-            await queue.put(("event", event))
 
-        async def _pump() -> None:
-            # Drive the loop in a task so its events reach the queue (and the
-            # client) the moment they fire, not batched at the next chunk. The
-            # sandbox contextvar set above is copied into this task at creation,
-            # so code_execution still resolves (owner_id, conversation_id).
-            # ``turn_has_image`` rides as a keyword for the runtime's T13-T09
-            # vision pre-filter; scripted test loops accept the extra kwargs.
-            try:
-                async for chunk in loop.turn(
-                    conversation,
-                    user_message,
-                    _on_event,
-                    turn_has_image=turn_has_image,
-                    images=turn_images or None,
-                    documents=turn_documents or None,
-                    document_context=document_context,
-                ):
-                    await queue.put(("chunk", chunk))
-                await queue.put(("end", None))
-            except Exception as exc:  # noqa: BLE001 — re-raised on the consumer side
-                await queue.put(("error", exc))
+async def stream_turn(handle: ChatTurnHandle) -> AsyncIterator[bytes]:
+    """Stream a detached turn's live tail as SSE frames (P1, T2b).
 
-        pump_task = asyncio.create_task(_pump())
-        try:
-            while True:
-                kind, item = await queue.get()
-                if kind == "event":
-                    ev = cast("RunEvent", item)
-                    if ev.type == "tier":
-                        tier = str(ev.data.get("tier", tier))
-                        routing_summary = ev.data.get("routing")  # Spec 31; may be None
-                        continue  # tier rides the `done` event, not its own SSE frame
-                    yield _sse(ev.type, ev.data)
-                elif kind == "chunk":
-                    chunk = cast("StreamChunk", item)
-                    last_chunk = chunk
-                    if chunk.delta:
-                        yield _sse("chunk", {"delta": chunk.delta, "is_final": chunk.is_final})
-                elif kind == "error":
-                    raise cast("BaseException", item)
-                else:  # "end" — loop.turn completed cleanly
-                    break
-        finally:
-            # Client disconnect (GeneratorExit) or a loop error stops the pump so
-            # it can't outlive the request. Cancellation here never reaches the
-            # persist-after-final below (only the clean `end` break does), so the
-            # D-08-6 "cancelled turn deducts nothing" contract holds.
-            if not pump_task.done():
-                pump_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await pump_task
+    Drains the handle's event queue — granular events + text chunks + the
+    terminal ``done`` (clean completion) or ``error`` frame — translating each to
+    an SSE frame in true emission order, exactly like the old inline stream. The
+    SAME generator serves the originating POST and every reattach
+    (``GET …/active-turn/events``, T4): a client disconnect just stops draining;
+    the detached turn keeps running and is re-tailable on return.
 
-        # ---- persist-after-final (only reached on clean completion) ----
-        usage = last_chunk.usage if last_chunk is not None else None
-        _persist_turn(
-            rls_engine=rls_engine,
-            conversation=conversation,
-            prior_msg_count=prior_msg_count,
-            channel=channel,
-            images=images,
-            tier=tier,
-        )
-        # Auto-title the conversation from its first user message (best-effort, small
-        # tier). Failure leaves the default title — never breaks the turn.
-        if is_first_turn and title_builder is not None:
-            await _maybe_set_title(rls_engine, conversation_id, user_message, title_builder)
-        # Deduct credits per successful turn (after the stream completes — D-08-6).
-        credits_policy.deduct(
-            rls_engine=rls_engine, user_id=owner_id, amount=credits_per_turn, reason="chat_turn"
-        )
-        # Spec K2 (T8d): enqueue off-critical-path synthesis at the turn boundary.
-        # Additive + no-op without a queue; the durable job re-reads the marker and
-        # synthesises the delta (D-K2-2). NEVER blocks/affects the reply already sent.
-        enqueue_conversation_synthesis(
-            job_queue,
-            owner_id=owner_id,
-            conversation_id=conversation_id,
-            persona_id=persona_id,
-            message_count=prior_msg_count + 1,
-        )
-        done: dict[str, object] = {
-            "usage": (
-                {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens}
-                if usage is not None
-                else {}
-            ),
-            "tier": tier,  # the router's real choice for this turn (D-08 gap fix)
-            "format_hints": {},  # D-08-3: the API echoes empty; connectors populate (spec 12)
-        }
-        # Spec 31 — SEPARATE, additive routing (D-31-1) + budget (D-31-2) fields.
-        # `routing` rode the tier event; `budget` is read post-turn so the
-        # session spend includes the turn just completed (D-31-X-session-spend).
-        if routing_summary is not None:
-            done["routing"] = routing_summary
-        # `loop` is duck-typed (scripted test loops implement only `turn`); guard
-        # the budget read so non-ConversationLoop builders stay back-compatible.
-        snapshot_fn = getattr(loop, "budget_snapshot", None)
-        budget = snapshot_fn() if callable(snapshot_fn) else None
-        if budget is not None:
-            done["budget"] = budget
-        yield _sse("done", done)
-    finally:
-        reset_sandbox_request_context(_sandbox_ctx_token)
+    Note: the turn's persistence + billing happen in the worker, NOT here — so a
+    disconnect mid-drain never loses the turn or skips the bill (the D-08-6
+    revision; the inline path's persist-in-the-generator hazard is gone).
+    """
+    while True:
+        item = await handle.events.get()
+        if item is None:  # end-of-stream sentinel
+            break
+        kind, payload = item
+        if kind == "event":
+            ev = cast("RunEvent", payload)
+            yield _sse(ev.type, ev.data)
+        elif kind == "chunk":
+            chunk = cast("StreamChunk", payload)
+            if chunk.delta:
+                yield _sse("chunk", {"delta": chunk.delta, "is_final": chunk.is_final})
+        elif kind in ("done", "error"):
+            yield _sse(kind, cast("dict[str, object]", payload))
 
 
 def _resolve_turn_images(
@@ -737,100 +670,6 @@ def _stage_documents_for_file_read(
                 path=sf.path,
                 exc_type=type(exc).__name__,
             )
-
-
-def _persist_turn(
-    *,
-    rls_engine: Engine,
-    conversation: Conversation,
-    prior_msg_count: int,
-    channel: ChannelContext | None,
-    images: list[ImageRefSchema] | None = None,
-    tier: str | None = None,
-) -> None:
-    """Insert the new messages + update compaction state (one RLS-scoped txn).
-
-    The loop appended the user message + assistant response to ``conversation``
-    in place (D-S05-4). We persist only the messages beyond ``prior_msg_count``,
-    tagging the FIRST new (user) message with the ``channel`` passthrough and —
-    if the inbound POST carried image refs (spec 13 T20, D-13-X-now option c) —
-    the ``images`` JSONB column as ``[{"workspace_path", "media_type"}, ...]``
-    in caller order (criterion #11).
-
-    Spec 35 (D-35-2): the router's ``tier`` for this turn is written onto the
-    ASSISTANT row(s) only (``tier_used``), so the per-message tier chip survives
-    a reload. Non-assistant rows persist ``tier_used=NULL``.
-    """
-    new_messages = conversation.messages[prior_msg_count:]
-    channel_json = channel.model_dump() if channel is not None else None
-    images_json: list[dict[str, str]] | None = (
-        [{"workspace_path": img.workspace_path, "media_type": img.media_type} for img in images]
-        if images
-        else None
-    )
-    now = datetime.now(UTC)
-    with rls_engine.begin() as conn:
-        for i, msg in enumerate(new_messages):
-            is_first_user_msg = i == 0 and msg.role == "user"
-            # Assign an EXPLICIT, strictly-increasing created_at per row instead
-            # of leaning on the column's ``now()`` server default. Postgres'
-            # ``now()`` is constant for the whole transaction, so every message
-            # in one persisted turn would otherwise tie to the same instant —
-            # leaving "the latest message" ambiguous (the LIST preview window in
-            # list_conversations orders by created_at desc). A per-index
-            # microsecond offset preserves the true user→assistant→tool insertion
-            # order so the preview reflects the most recent turn deterministically.
-            conn.execute(
-                insert(messages_t).values(
-                    id=f"msg_{uuid.uuid4().hex}",
-                    conversation_id=conversation.conversation_id,
-                    role=msg.role,
-                    content=_persisted_content(msg.content),
-                    created_at=now + timedelta(microseconds=i),
-                    # Only the user message carries the inbound channel context.
-                    channel=channel_json if is_first_user_msg else None,
-                    # Only the first user message carries the inbound image refs
-                    # (assistant + tool messages persist images=NULL — the response
-                    # itself never carries inbound image refs).
-                    images=images_json if is_first_user_msg else None,
-                    # Spec 35 D-35-2: the routing tier rides the assistant row(s)
-                    # only; user/tool rows persist NULL.
-                    tier_used=tier if msg.role == "assistant" else None,
-                )
-            )
-        conn.execute(
-            update(conversations_t)
-            .where(conversations_t.c.id == conversation.conversation_id)
-            .values(
-                compacted_summary=conversation.compacted_summary,
-                compacted_up_to=conversation.compacted_up_to,
-                updated_at=now,
-            )
-        )
-
-
-def _persisted_content(content: object) -> str:
-    """Reduce a ``ConversationMessage.content`` to the TEXT column shape.
-
-    The DB ``messages.content`` column is ``TEXT``. The runtime widened
-    :class:`ConversationMessage.content` to ``str | list[MessageContent]``
-    (Spec 13 T03), but at the API persistence boundary we collapse the
-    list form back to the text body — image refs are persisted on the
-    sibling ``images`` JSONB column (D-13-X-now option c). For a list
-    payload we concatenate the :class:`TextContent` blocks (in order)
-    and ignore image blocks; for a bare ``str`` we pass through.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        # Lazy import: the dominant call path (text-only) never touches this
-        # branch, so we avoid the import cost at module load.
-        from persona.schema.content import TextContent  # noqa: PLC0415
-
-        return "".join(block.text for block in content if isinstance(block, TextContent))
-    # Defensive fallback — should never fire under ConversationMessage's
-    # ``extra="forbid"`` validation contract.
-    return str(content)
 
 
 async def _maybe_set_title(

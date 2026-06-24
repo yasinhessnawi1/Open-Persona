@@ -328,6 +328,83 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/conversations/{conversation_id}/active-turn": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read Active Turn
+     * @description The in-progress assistant turn for a conversation, for reattach-on-return (P1, T4).
+     *
+     *     The web client calls this on return to detect a live turn and seed the partial
+     *     (content + the tool/text interleave in ``stream_events``) before resubscribing
+     *     to the live tail. 404 (``TurnNotActiveError``) when no turn is in flight — the
+     *     client then reconciles via the conversation history. RLS-scoped → 404 if the
+     *     conversation isn't the caller's.
+     */
+    get: operations["read_active_turn_v1_conversations__conversation_id__active_turn_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/conversations/{conversation_id}/active-turn/events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Stream Active Turn Events
+     * @description Resubscribe to a live turn's SSE tail (reattach) — the SAME ``stream_turn``
+     *     generator the originating POST streams (P1, T4; don't fork the transport).
+     *
+     *     RLS-scoped ownership pre-check → 404 if the conversation isn't the caller's.
+     *     404 (``TurnNotActiveError``) if no live turn is registered in-process (it
+     *     finished / was interrupted / never started) — checked BEFORE the SSE response
+     *     starts, so the client gets a clean 404 (then reconciles) rather than a
+     *     half-open stream.
+     */
+    get: operations["stream_active_turn_events_v1_conversations__conversation_id__active_turn_events_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/conversations/{conversation_id}/active-turn/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Cancel Active Turn
+     * @description Explicitly cancel a live chat turn (mirrors ``/runs/{id}/cancel``; P1, T4).
+     *
+     *     Flips the turn's task cancel (``ChatTurnRegistry.request_cancel``): the worker
+     *     finalizes the partial as ``cancelled`` and does NOT bill (D-P1-billing-contract).
+     *     RLS-scoped → 404 if the conversation isn't the caller's; 404 if no live turn.
+     */
+    post: operations["cancel_active_turn_v1_conversations__conversation_id__active_turn_cancel_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/personas/{persona_id}/runs": {
     parameters: {
       query?: never;
@@ -918,6 +995,30 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /**
+     * ActiveTurnResponse
+     * @description The in-progress assistant turn for a conversation (Spec P1 reattach surface).
+     *
+     *     Returned by ``GET /conversations/{id}/active-turn`` so the web client detects
+     *     a live turn on return and seeds the partial — the accumulated ``content`` plus
+     *     the tool/text interleave in ``stream_events`` (the persisted checkpoint shape)
+     *     — before resubscribing to the live tail at ``…/active-turn/events``. A 404
+     *     means there is no active turn (all messages are terminal). ``stream_events``
+     *     is the DB checkpoint shape, NOT the core ``ConversationMessage`` model (the
+     *     byte-for-byte dump corpus is untouched).
+     */
+    ActiveTurnResponse: {
+      /** Message Id */
+      message_id: string;
+      /** Streaming Status */
+      streaming_status: string;
+      /** Content */
+      content: string;
+      /** Stream Events */
+      stream_events?: {
+        [key: string]: unknown;
+      }[];
+    };
     /**
      * ArtifactItem
      * @description A single workspace artifact in the F5 list view.
@@ -2365,6 +2466,101 @@ export interface operations {
         };
         content: {
           "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_active_turn_v1_conversations__conversation_id__active_turn_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        conversation_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ActiveTurnResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  stream_active_turn_events_v1_conversations__conversation_id__active_turn_events_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        conversation_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": unknown;
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  cancel_active_turn_v1_conversations__conversation_id__active_turn_cancel_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        conversation_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: string;
+          };
         };
       };
       /** @description Validation Error */

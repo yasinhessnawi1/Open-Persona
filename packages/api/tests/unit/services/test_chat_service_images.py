@@ -119,14 +119,35 @@ class _CapturingLoop:
         yield StreamChunk(delta="", is_final=True)
 
 
-class _NoopCredits:
-    def deduct(self, **_kwargs: object) -> None: ...
+class _FakeSink:
+    """A Postgres-free ChatTurnSink: open_turn returns an id; the rest no-op."""
+
+    def open_turn(self, **_kwargs: object) -> str:
+        return "msg_assistant"
+
+    def checkpoint(self, **_kwargs: object) -> None: ...
+
+    def finalize(self, **_kwargs: object) -> None: ...
+
+
+class _FakeConn:
+    def __enter__(self) -> _FakeConn:
+        return self
+
+    def __exit__(self, *_a: object) -> None: ...
+
+
+class _FakeEngine:
+    def begin(self) -> _FakeConn:
+        return _FakeConn()
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_forwards_resolved_images_to_loop(
+async def test_start_chat_turn_forwards_resolved_images_to_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from persona_api.background.chat_turn_worker import ChatTurnRegistry
+
     ref = image_service.upload(
         workspace_root=tmp_path,
         owner_id="user_1",
@@ -138,44 +159,32 @@ async def test_stream_chat_forwards_resolved_images_to_loop(
 
     captured = _CapturingLoop()
 
-    # Stub the DB-coupled helpers so the unit stays Postgres-free.
+    # Stub the conversation load so the unit stays Postgres-free; the turn's
+    # persistence rides a fake sink.
     monkeypatch.setattr(
         chat_service,
         "_load_conversation",
         lambda _conn, _cid: Conversation(conversation_id="c1", persona_id="astrid", messages=[]),
     )
-    monkeypatch.setattr(chat_service, "_persist_turn", lambda **_kwargs: None)
-
-    class _FakeConn:
-        def __enter__(self) -> _FakeConn:
-            return self
-
-        def __exit__(self, *_a: object) -> None: ...
-
-    class _FakeEngine:
-        def begin(self) -> _FakeConn:
-            return _FakeConn()
 
     async def _build_loop(_pid: str) -> _CapturingLoop:
         return captured
 
-    frames = [
-        frame
-        async for frame in chat_service.stream_chat(
-            rls_engine=_FakeEngine(),  # type: ignore[arg-type]
-            loop_builder=_build_loop,  # type: ignore[arg-type]
-            owner_id="user_1",
-            conversation_id="c1",
-            user_message="what is this?",
-            channel=None,
-            credits_policy=_NoopCredits(),  # type: ignore[arg-type]
-            images=[body_image],
-            turn_has_image=True,
-            workspace_root=tmp_path,
-        )
-    ]
+    handle = await chat_service.start_chat_turn(
+        rls_engine=_FakeEngine(),  # type: ignore[arg-type]
+        sink=_FakeSink(),  # type: ignore[arg-type]
+        registry=ChatTurnRegistry(sink=_FakeSink()),  # type: ignore[arg-type]
+        loop_builder=_build_loop,  # type: ignore[arg-type]
+        owner_id="user_1",
+        conversation_id="c1",
+        user_message="what is this?",
+        channel=None,
+        images=[body_image],
+        turn_has_image=True,
+        workspace_root=tmp_path,
+    )
+    await handle.task
 
-    assert frames  # produced SSE output
     assert captured.images_seen is not None
     assert len(captured.images_seen) == 1
     assert captured.images_seen[0].workspace_path == ref.workspace_path

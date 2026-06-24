@@ -299,14 +299,35 @@ class _CapturingLoop:
         yield StreamChunk(delta="", is_final=True)
 
 
-class _NoopCredits:
-    def deduct(self, **_kwargs: object) -> None: ...
+class _FakeSink:
+    """A Postgres-free ChatTurnSink: open_turn returns an id; the rest no-op."""
+
+    def open_turn(self, **_kwargs: object) -> str:
+        return "msg_assistant"
+
+    def checkpoint(self, **_kwargs: object) -> None: ...
+
+    def finalize(self, **_kwargs: object) -> None: ...
+
+
+class _FakeConn:
+    def __enter__(self) -> _FakeConn:
+        return self
+
+    def __exit__(self, *_a: object) -> None: ...
+
+
+class _FakeEngine:
+    def begin(self) -> _FakeConn:
+        return _FakeConn()
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_forwards_resolved_documents_to_loop(
+async def test_start_chat_turn_forwards_resolved_documents_to_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from persona_api.background.chat_turn_worker import ChatTurnRegistry
+
     _write_document(tmp_path)
     captured = _CapturingLoop()
 
@@ -315,36 +336,23 @@ async def test_stream_chat_forwards_resolved_documents_to_loop(
         "_load_conversation",
         lambda _conn, _cid: Conversation(conversation_id=_CONV, persona_id=_PERSONA, messages=[]),
     )
-    monkeypatch.setattr(chat_service, "_persist_turn", lambda **_kwargs: None)
-
-    class _FakeConn:
-        def __enter__(self) -> _FakeConn:
-            return self
-
-        def __exit__(self, *_a: object) -> None: ...
-
-    class _FakeEngine:
-        def begin(self) -> _FakeConn:
-            return _FakeConn()
 
     async def _build_loop(_pid: str) -> _CapturingLoop:
         return captured
 
-    frames = [
-        frame
-        async for frame in chat_service.stream_chat(
-            rls_engine=_FakeEngine(),  # type: ignore[arg-type]
-            loop_builder=_build_loop,  # type: ignore[arg-type]
-            owner_id=_OWNER,
-            conversation_id=_CONV,
-            user_message="summarise the doc",
-            channel=None,
-            credits_policy=_NoopCredits(),  # type: ignore[arg-type]
-            workspace_root=tmp_path,
-        )
-    ]
+    handle = await chat_service.start_chat_turn(
+        rls_engine=_FakeEngine(),  # type: ignore[arg-type]
+        sink=_FakeSink(),  # type: ignore[arg-type]
+        registry=ChatTurnRegistry(sink=_FakeSink()),  # type: ignore[arg-type]
+        loop_builder=_build_loop,  # type: ignore[arg-type]
+        owner_id=_OWNER,
+        conversation_id=_CONV,
+        user_message="summarise the doc",
+        channel=None,
+        workspace_root=tmp_path,
+    )
+    await handle.task
 
-    assert frames
     assert captured.documents_seen is not None
     assert len(captured.documents_seen) == 1
     sf = captured.documents_seen[0]

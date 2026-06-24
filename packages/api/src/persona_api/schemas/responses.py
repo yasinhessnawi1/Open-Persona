@@ -369,6 +369,24 @@ class RunListResponse(_Output):
     items: list[RunSummary] = Field(default_factory=list)
 
 
+class ActiveTurnResponse(_Output):
+    """The in-progress assistant turn for a conversation (Spec P1 reattach surface).
+
+    Returned by ``GET /conversations/{id}/active-turn`` so the web client detects
+    a live turn on return and seeds the partial — the accumulated ``content`` plus
+    the tool/text interleave in ``stream_events`` (the persisted checkpoint shape)
+    — before resubscribing to the live tail at ``…/active-turn/events``. A 404
+    means there is no active turn (all messages are terminal). ``stream_events``
+    is the DB checkpoint shape, NOT the core ``ConversationMessage`` model (the
+    byte-for-byte dump corpus is untouched).
+    """
+
+    message_id: str
+    streaming_status: str
+    content: str
+    stream_events: list[dict[str, object]] = Field(default_factory=list)
+
+
 # -- credits / usage (§5.5) -------------------------------------------------
 
 

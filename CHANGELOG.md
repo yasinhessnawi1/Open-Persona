@@ -11,6 +11,51 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Persistent & resumable sessions — turns + runs survive navigation (2026-06-24)
+
+> Close-out of `persistent-resumable-sessions`. A chat turn or an agentic run keeps
+> running server-side when you navigate away, reload, or close the tab; it persists
+> its progress incrementally and, on return, is re-fetched and re-rendered — resuming
+> the live tail if it is still running. **The persona never stops mid-work just because
+> you left.** The chat/run sibling of the persistent-voice experience. Zero new
+> dependency; one additive migration.
+
+#### Added
+- **Detached chat turns** — a chat turn now runs as a background task (a
+  `ChatTurnRegistry`/`ChatTurnHandle` mirroring the agentic-run worker), so a client
+  disconnect (navigate / reload / tab-close) **no longer cancels it**. Exactly **one
+  active turn per conversation** — a second send while one runs is **blocked** (HTTP
+  409), backstopped by a DB partial-unique index.
+- **Incremental checkpoint persistence** — the user message + an in-progress assistant
+  row are persisted at turn START, then checkpointed (throttled — never per-token) as
+  the turn streams, so a reload never shows less than what happened.
+- **Chat reattach surface** — `GET /v1/conversations/{id}/active-turn` (the seed),
+  `GET …/active-turn/events` (resubscribe to the live tail — the same SSE generator the
+  POST streams, never a fork), and `POST …/active-turn/cancel`. The web chat reattaches
+  on return (seed-then-tail + reconcile-on-end) and aborts the fetch — not the server
+  turn — on navigate-away.
+- **Run reattach hardened** — `runs.steps` confirmed as the durable floor (the full
+  event-log is persisted per event); the run view re-fetches + resumes the live tail on
+  return, showing steps that occurred while away.
+- **A startup restart sweep** reconciles any chat turn / run left in-flight by a process
+  restart to a terminal state (chat → `interrupted`, run → `error`) — the honest
+  single-worker cross-restart story.
+- **"Active work" indicators** — a subtle "working" pulse on the conversation row plus a
+  global "return to it" bar (the additive chat/run sibling of the persistent-call
+  mini-bar), advertising the resumable work; a poll clears the indicator when a turn
+  finishes while you are away.
+
+#### Changed
+- **Honest billing (revises the credits-on-disconnect rule)** — a turn that **completes
+  while you are away is billed** (it ran); an **explicit cancel, an error, or a
+  restart-interrupt is not** (no partial billing). The deduct fires on the detached
+  completion path, not the request connection; the pre-flight 402 stays at the route top.
+
+#### Fixed
+- **Community (SQLite) second-chat-turn 500** — SQLite datetimes now read back UTC-aware,
+  fixing a tz-naive `created_at` collision with the persist-at-start path (found during the
+  community operator pass).
+
 ### Connector framework — the trunk for messaging-platform reach (2026-06-24)
 
 > Close-out of `connector-framework` (the new `persona-connectors` package, the 5th

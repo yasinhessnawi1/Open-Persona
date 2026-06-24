@@ -688,6 +688,16 @@
     "voicesUnavailable": "Voice selection is unavailable right now.",
     "voicesError": "Couldn’t load voices."
   },
+  "work": {
+    "indicator": {
+      "active": "Working",
+      "return": "Return to the conversation working with {name}"
+    },
+    "bar": {
+      "label": "{count, plural, one {# conversation working} other {# conversations working}}",
+      "return": "Return to a working conversation"
+    }
+  },
   "confirm": {
     "cancel": "Cancel",
     "confirm": "Confirm",

@@ -195,10 +195,46 @@ messages = Table(
     # in-core ``metadata["originated"]`` marker. NOT NULL DEFAULT false: every
     # historical / solicited row reads false (correct — they were all solicited).
     Column("originated", Boolean, nullable=False, server_default=text("false")),
+    # Spec P1 D-P1-checkpoint / migration `018_add_message_streaming_state`: the
+    # detached-turn streaming lifecycle for THIS assistant row. A chat turn now
+    # runs in a background task and is checkpointed AS it streams; this column
+    # is the persisted lifecycle of the in-progress assistant message:
+    # ``running`` while the turn streams, then a terminal value. **NULL = a
+    # legacy / non-streamed row** (every historical message + every message
+    # written by a non-P1 path) — it renders as a plain final message (clean
+    # degrade, the ``tier_used``/``originated`` nullable-additive precedent).
+    # **DB-persistence state ONLY — never a ``ConversationMessage`` model field**
+    # (the C0 lesson: a top-level model field would break the Spec-13
+    # byte-for-byte dump corpus).
+    Column("streaming_status", Text),
+    # Spec P1 D-P1-checkpoint-scope: the partial event-log (text deltas + tool
+    # events) accumulated as the turn streams — same shape as ``runs.steps`` —
+    # so a reattach-after-gap reconstructs the tool/text interleave, not just the
+    # final text. NULL for legacy / text-only / non-streamed rows. DB-only.
+    Column("stream_events", _json()),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     CheckConstraint("role IN ('system', 'user', 'assistant', 'tool')", name="messages_role_check"),
+    # Spec P1 D-P1-checkpoint: the allowed streaming lifecycle values (NULL =
+    # legacy/non-streamed). ``running`` is the in-flight state; the rest are
+    # terminal (``interrupted`` = reconciled by the restart sweep, D-P1-restart-sweep).
+    CheckConstraint(
+        "streaming_status IS NULL OR streaming_status IN "
+        "('running', 'complete', 'cancelled', 'interrupted', 'error')",
+        name="messages_streaming_status_check",
+    ),
     Index("idx_messages_conversation", "conversation_id"),
     Index("idx_messages_created", "conversation_id", "created_at"),
+    # Spec P1 D-P1-one-active-turn: the DB-level guarantee of EXACTLY ONE active
+    # (streaming) turn per conversation — a partial unique index over the
+    # in-flight rows. Backstops the in-process ``ChatTurnRegistry`` check against
+    # a race. Declared for both dialects (Postgres cloud + SQLite community).
+    Index(
+        "uq_messages_one_streaming_per_conversation",
+        "conversation_id",
+        unique=True,
+        postgresql_where=text("streaming_status = 'running'"),
+        sqlite_where=text("streaming_status = 'running'"),
+    ),
 )
 
 runs = Table(

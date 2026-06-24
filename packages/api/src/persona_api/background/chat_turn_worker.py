@@ -1,0 +1,406 @@
+"""Detached chat-turn worker + in-process event bus (spec P1, T1+T2b, D-P1-detached-execution).
+
+A chat turn executes as a detached ``asyncio.Task`` so a client disconnect
+(navigate / reload / tab close) **no longer cancels it** — the persona keeps
+working until it decides to stop. Mirrors ``RunRegistry`` (``run_worker.py``)
+1:1; the chat-shaped differences:
+
+- the live queue carries ``("event", RunEvent)`` / ``("chunk", StreamChunk)`` /
+  ``("done", payload)`` / ``("error", payload)`` items + a ``None`` sentinel, so
+  the SSE tail interleaves tool events and text deltas in true emission order and
+  ends with the same ``done`` payload shape the old inline ``stream_chat`` sent;
+- the ``tier`` event is **captured into the ``done`` payload** (not a frame),
+  matching the inline contract (the router's real choice rides ``done``);
+- there is **no** ``responses`` queue (no ask-user) and **no** ``CancelToken``
+  (``ConversationLoop.turn`` exposes none — an explicit cancel is a task-level
+  ``cancel()``, D-P1-cancel);
+- the registry is keyed by **``conversation_id``** (one-active-turn — D-P1-one-active-turn).
+
+Persistence is the injected :class:`ChatTurnSink` (``messages``-backed —
+``MessagesTurnSink``). Checkpoints are **throttled** (D-P1-cadence): a tool event
+flushes immediately; text deltas debounce by char-count / wall-time (never
+per-token). On CLEAN completion the worker finalizes, **deducts credits** (the
+D-08-6 revision — bill regardless of client presence, D-P1-billing-contract),
+runs the best-effort ``on_complete`` hook (auto-title), and emits ``done``;
+cancel/error finalize the partial WITHOUT billing. In-process + single-worker
+(D-08-5); a restart loses the task — the checkpointed partial remains, reconciled
+to ``interrupted`` by the startup sweep (D-P1-restart-sweep).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import time
+from typing import TYPE_CHECKING, Protocol
+
+from persona.logging import get_logger
+
+from persona_api.errors import TurnAlreadyActiveError
+from persona_api.middleware.rls_context import current_user_id
+from persona_api.sandbox import (
+    SandboxRequestContext,
+    reset_sandbox_request_context,
+    set_sandbox_request_context,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from persona.backends import StreamChunk
+    from persona.schema.conversation import Conversation
+    from persona_runtime.agentic.events import RunEvent
+    from persona_runtime.loop import ConversationLoop
+    from sqlalchemy import Engine
+
+    from persona_api.editions.credits_policy import CreditsPolicy
+    from persona_api.jobs.queue import JobQueue
+
+_log = get_logger("api.chat_turn_worker")
+
+__all__ = ["ChatTurnHandle", "ChatTurnRegistry", "ChatTurnSink"]
+
+# Throttle knobs (D-P1-cadence): flush a text checkpoint at most this often.
+# Never per-token; a tool event always flushes immediately regardless.
+_CHECKPOINT_CHAR_THRESHOLD = 256
+_CHECKPOINT_INTERVAL_S = 1.0
+
+
+class ChatTurnSink(Protocol):
+    """The persistence seam the worker calls (``MessagesTurnSink`` is the impl).
+
+    Both methods are **sync** (the worker runs them inline, like ``RunRegistry``'s
+    ``_persist_*``). ``finalize``'s ``status`` ∈ {complete, cancelled, error}.
+    """
+
+    def checkpoint(
+        self,
+        *,
+        conversation_id: str,
+        assistant_message_id: str,
+        content: str,
+        events: list[dict[str, object]],
+    ) -> None:
+        """Persist the in-progress partial (throttled cadence is the worker's call)."""
+        ...
+
+    def finalize(
+        self,
+        *,
+        conversation_id: str,
+        assistant_message_id: str,
+        conversation: Conversation,
+        status: str,
+        content: str,
+        events: list[dict[str, object]],
+        tier: str | None = None,
+    ) -> None:
+        """Write the terminal turn (``complete`` finalizes + updates conversation state)."""
+        ...
+
+
+class ChatTurnHandle:
+    """The in-process state of one running chat turn (one per conversation)."""
+
+    def __init__(self, conversation_id: str, owner_id: str, assistant_message_id: str) -> None:
+        self.conversation_id = conversation_id
+        self.owner_id = owner_id
+        self.assistant_message_id = assistant_message_id
+        #: Live tail: events / chunks / done / error in emission order, ``None``-terminated.
+        self.events: asyncio.Queue[tuple[str, object] | None] = asyncio.Queue()
+        self.task: asyncio.Task[None] | None = None
+        #: Accumulating partial response (the checkpoint source of truth).
+        self._content: list[str] = []
+        self.event_log: list[dict[str, object]] = []
+        #: Set by :meth:`ChatTurnRegistry.request_cancel` to distinguish an
+        #: explicit user cancel (→ finalize ``cancelled``) from a shutdown cancel.
+        self.cancel_requested = False
+        # Throttle accounting (D-P1-cadence).
+        self._chars_since_flush = 0
+        self._last_flush = 0.0
+
+    @property
+    def content(self) -> str:
+        return "".join(self._content)
+
+
+class ChatTurnRegistry:
+    """App-scoped registry of in-flight chat turns. Single-worker, in-process (D-08-5).
+
+    Keyed by ``conversation_id`` — the one-active-turn invariant (D-P1-one-active-turn).
+    ``credits_policy`` (+ ``rls_engine`` for its scope) wires the deduct on the
+    detached completion path (D-P1-billing-contract); ``None`` → no billing
+    (the unit-test / community-unmetered shape).
+    """
+
+    def __init__(
+        self,
+        *,
+        sink: ChatTurnSink,
+        rls_engine: Engine | None = None,
+        credits_policy: CreditsPolicy | None = None,
+        credits_per_turn: int = 1,
+        job_queue: JobQueue | None = None,
+    ) -> None:
+        self._sink = sink
+        self._engine = rls_engine
+        self._credits_policy = credits_policy
+        self._credits_per_turn = credits_per_turn
+        # Spec K2 (T8d): off-critical-path synthesis enqueue at the turn boundary.
+        # Relocated from the old inline ``stream_turn`` to the detached worker's
+        # clean-completion path; ``None`` → no-op (D-K2-2).
+        self._job_queue = job_queue
+        self._handles: dict[str, ChatTurnHandle] = {}
+
+    def get(self, conversation_id: str) -> ChatTurnHandle | None:
+        return self._handles.get(conversation_id)
+
+    def start(
+        self,
+        *,
+        conversation_id: str,
+        owner_id: str,
+        assistant_message_id: str,
+        loop: ConversationLoop,
+        conversation: Conversation,
+        user_message: str,
+        on_complete: Callable[[], Awaitable[None]] | None = None,
+        **turn_kwargs: object,
+    ) -> ChatTurnHandle:
+        """Create a handle and launch the turn as a detached ``asyncio.Task``.
+
+        ``on_complete`` is an optional best-effort async hook run AFTER a clean
+        completion (e.g. auto-title); its failure never affects the turn. Raises
+        :class:`TurnAlreadyActiveError` if a turn is already running for this
+        conversation (block, don't queue — D-P1-one-active-turn).
+        """
+        if conversation_id in self._handles:
+            raise TurnAlreadyActiveError(
+                "a turn is already running for this conversation",
+                context={"conversation_id": conversation_id},
+            )
+        handle = ChatTurnHandle(conversation_id, owner_id, assistant_message_id)
+        self._handles[conversation_id] = handle
+        handle.task = asyncio.create_task(
+            self._run_turn(handle, loop, conversation, user_message, on_complete, turn_kwargs)
+        )
+        return handle
+
+    def request_cancel(self, conversation_id: str) -> bool:
+        """Explicit user cancel (mirrors ``/runs/{id}/cancel``): flag + cancel the task.
+
+        Returns ``True`` if a live turn was cancelled. The flag tells ``_run_turn``
+        to finalize ``cancelled`` (vs a shutdown cancel, which does not finalize).
+        """
+        handle = self._handles.get(conversation_id)
+        if handle is None or handle.task is None or handle.task.done():
+            return False
+        handle.cancel_requested = True
+        handle.task.cancel()
+        return True
+
+    async def _run_turn(
+        self,
+        handle: ChatTurnHandle,
+        loop: ConversationLoop,
+        conversation: Conversation,
+        user_message: str,
+        on_complete: Callable[[], Awaitable[None]] | None,
+        turn_kwargs: dict[str, object],
+    ) -> None:
+        """Drive the loop, stream to the queue, checkpoint, finalize, bill, end the stream.
+
+        Runs OUTSIDE any request scope, so it binds the owner's RLS contextvar
+        (else the checkpoint/finalize/deduct writes scope to '' and affect 0 rows)
+        and a per-conversation sandbox context for the file/code tools — the
+        ``run_worker._run`` discipline verbatim. Both are reset in ``finally``.
+        """
+        token = current_user_id.set(handle.owner_id)
+        sandbox_token = set_sandbox_request_context(
+            SandboxRequestContext(owner_id=handle.owner_id, conversation_id=handle.conversation_id)
+        )
+        handle._last_flush = time.monotonic()
+        tier = "frontier"  # fallback; replaced by the router's real choice (tier event)
+        routing: dict[str, object] | None = None
+        last_chunk: StreamChunk | None = None
+        error_message: str | None = None
+
+        async def _on_event(event: RunEvent) -> None:
+            nonlocal tier, routing
+            if event.type == "tier":
+                # The router's tier choice rides the terminal `done` payload — it
+                # is NOT a frame and NOT in the persisted event-log (it lives on
+                # the `tier_used` column via finalize).
+                tier = str(event.data.get("tier", tier))
+                routing = event.data.get("routing")  # Spec 31; may be None
+                return
+            handle.event_log.append(event.model_dump(mode="json"))
+            await handle.events.put(("event", event))
+            self._checkpoint(handle, force=True)  # tool events flush immediately
+
+        status = "complete"
+        try:
+            try:
+                # ``turn_kwargs`` (turn_has_image / images / documents /
+                # document_context) is built + validated by ``start_chat_turn`` and
+                # forwarded opaquely; the worker stays loop-signature-agnostic.
+                async for chunk in loop.turn(conversation, user_message, _on_event, **turn_kwargs):  # type: ignore[arg-type]
+                    last_chunk = chunk
+                    if chunk.delta:
+                        handle._content.append(chunk.delta)
+                        handle.event_log.append({"kind": "text", "delta": chunk.delta})
+                        handle._chars_since_flush += len(chunk.delta)
+                    await handle.events.put(("chunk", chunk))
+                    self._checkpoint(handle, force=False)  # throttled
+            except asyncio.CancelledError:
+                # Explicit user cancel → finalize the partial as ``cancelled`` (no
+                # bill). A shutdown cancel (aclose) is NOT a user cancel: re-raise
+                # so the task ends without a terminal write.
+                if not handle.cancel_requested:
+                    raise
+                status = "cancelled"
+            except Exception as exc:  # noqa: BLE001 — a background task must never crash silently
+                _log.error(
+                    "chat turn {cid} failed: {err}", cid=handle.conversation_id, err=str(exc)
+                )
+                status = "error"
+                error_message = str(exc)
+
+            self._sink.finalize(
+                conversation_id=handle.conversation_id,
+                assistant_message_id=handle.assistant_message_id,
+                conversation=conversation,
+                status=status,
+                content=handle.content,
+                events=handle.event_log,
+                tier=tier,
+            )
+            if status == "complete":
+                self._deduct(handle)
+                self._enqueue_synthesis(handle, conversation)
+                await self._run_on_complete(on_complete, handle)
+                await handle.events.put(
+                    ("done", self._done_payload(loop, last_chunk, tier, routing))
+                )
+            elif status == "error":
+                await handle.events.put(
+                    ("error", {"error": "turn_failed", "message": error_message or "turn failed"})
+                )
+        finally:
+            reset_sandbox_request_context(sandbox_token)
+            current_user_id.reset(token)
+            self._handles.pop(handle.conversation_id, None)
+            await handle.events.put(None)  # end-of-stream sentinel for the SSE tail
+
+    def _checkpoint(self, handle: ChatTurnHandle, *, force: bool) -> None:
+        """Persist the partial — immediately when ``force`` (tool event), else throttled."""
+        now = time.monotonic()
+        if (
+            not force
+            and handle._chars_since_flush < _CHECKPOINT_CHAR_THRESHOLD
+            and (now - handle._last_flush) < _CHECKPOINT_INTERVAL_S
+        ):
+            return
+        self._sink.checkpoint(
+            conversation_id=handle.conversation_id,
+            assistant_message_id=handle.assistant_message_id,
+            content=handle.content,
+            events=handle.event_log,
+        )
+        handle._chars_since_flush = 0
+        handle._last_flush = now
+
+    def _deduct(self, handle: ChatTurnHandle) -> None:
+        """Bill one turn on clean completion (D-P1-billing-contract; D-08-6 revision).
+
+        Fires regardless of client presence (the turn ran), via the owner's bound
+        RLS scope. ``None`` policy/engine → no billing (unit / community-unmetered).
+        """
+        if self._credits_policy is None or self._engine is None:
+            return
+        self._credits_policy.deduct(
+            rls_engine=self._engine,
+            user_id=handle.owner_id,
+            amount=self._credits_per_turn,
+            reason="chat_turn",
+        )
+
+    def _enqueue_synthesis(self, handle: ChatTurnHandle, conversation: Conversation) -> None:
+        """Enqueue off-critical-path conversation synthesis at the turn boundary (K2 T8d).
+
+        Relocated from the old inline ``stream_turn`` persist-after-final block to
+        the detached worker's clean-completion path (D-P1-detached-execution): the
+        K2 turn-end trigger still fires exactly once per completed turn, now
+        regardless of client presence. Additive + no-op without a queue; the
+        durable job re-reads the marker and synthesises the delta (D-K2-2). NEVER
+        blocks/affects the reply already streamed.
+
+        ``message_count`` scopes the idempotency key: ``conversation.messages`` is
+        the prior count (loaded before ``open_turn`` appended the turn), so the
+        completed turn is ``+1`` — mirroring the old ``prior_msg_count + 1``.
+        """
+        from persona_api.services.synthesis_trigger import (  # noqa: PLC0415
+            enqueue_conversation_synthesis,
+        )
+
+        enqueue_conversation_synthesis(
+            self._job_queue,
+            owner_id=handle.owner_id,
+            conversation_id=handle.conversation_id,
+            persona_id=conversation.persona_id,
+            message_count=len(conversation.messages) + 1,
+        )
+
+    async def _run_on_complete(
+        self, on_complete: Callable[[], Awaitable[None]] | None, handle: ChatTurnHandle
+    ) -> None:
+        """Best-effort post-completion hook (auto-title). Never fails the turn."""
+        if on_complete is None:
+            return
+        try:
+            await on_complete()
+        except Exception as exc:  # noqa: BLE001 — the hook (auto-title) is best-effort
+            _log.warning(
+                "chat turn on_complete hook failed cid={cid}: {err}",
+                cid=handle.conversation_id,
+                err=str(exc),
+            )
+
+    @staticmethod
+    def _done_payload(
+        loop: ConversationLoop,
+        last_chunk: StreamChunk | None,
+        tier: str,
+        routing: dict[str, object] | None,
+    ) -> dict[str, object]:
+        """Build the terminal ``done`` payload (parity with the old inline stream_chat)."""
+        usage = last_chunk.usage if last_chunk is not None else None
+        done: dict[str, object] = {
+            "usage": (
+                {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens}
+                if usage is not None
+                else {}
+            ),
+            "tier": tier,
+            "format_hints": {},  # D-08-3: the API echoes empty; connectors populate
+        }
+        if routing is not None:
+            done["routing"] = routing
+        snapshot_fn = getattr(loop, "budget_snapshot", None)
+        budget = snapshot_fn() if callable(snapshot_fn) else None
+        if budget is not None:
+            done["budget"] = budget
+        return done
+
+    async def aclose(self) -> None:
+        """Cancel all in-flight turn tasks on shutdown (D-08-5: lost, but checkpointed).
+
+        Shutdown cancellation is NOT a user cancel — the tasks end without a
+        terminal finalize; the startup sweep (D-P1-restart-sweep) reconciles the
+        ``running`` rows to ``interrupted`` on next boot.
+        """
+        for handle in list(self._handles.values()):
+            if handle.task is not None and not handle.task.done():
+                handle.task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await handle.task

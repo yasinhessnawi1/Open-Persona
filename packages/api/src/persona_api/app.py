@@ -34,6 +34,8 @@ from persona_runtime.errors import TierNotConfiguredError
 from persona_runtime.openrouter_subscription import resolve_openrouter_subscription
 from persona_runtime.tier import tier_registry_from_env
 
+from persona_api.background.chat_turn_worker import ChatTurnRegistry
+from persona_api.background.restart_sweep import reconcile_in_flight_on_startup
 from persona_api.background.run_worker import RunRegistry
 from persona_api.config import APIConfig, Edition
 from persona_api.db.community import (
@@ -71,6 +73,7 @@ from persona_api.routes import (
 )
 from persona_api.sandbox import HostedSandbox, SandboxPool, SandboxPoolConfig
 from persona_api.services import persona_service
+from persona_api.services.chat_turn_sink import MessagesTurnSink
 from persona_api.services.runtime_factory import RuntimeFactory
 from persona_api.services.turn_log_writer import PostgresTurnLogWriter
 
@@ -298,6 +301,29 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.run_registry = run_registry
 
+    # Detached chat-turn registry (Spec P1 — D-P1-detached-execution): a chat turn
+    # now runs in a background task (survives navigation/reload) and is billed on
+    # clean completion regardless of client presence (the D-08-6 revision,
+    # D-P1-billing-contract). The ``MessagesTurnSink`` persists at-start +
+    # checkpoint + finalize; the registry owns the credits deduct. ``None`` when
+    # there is no DB engine (the chat path needs one anyway). Cancelled on
+    # shutdown (S08-4 single worker; the startup sweep reconciles orphaned
+    # ``running`` rows on next boot — T3, D-P1-restart-sweep).
+    chat_turn_sink = MessagesTurnSink(rls_engine) if rls_engine is not None else None
+    chat_turn_registry = (
+        ChatTurnRegistry(
+            sink=chat_turn_sink,
+            rls_engine=rls_engine,
+            credits_policy=app.state.credits_policy,
+            credits_per_turn=config.credits_per_turn,
+            job_queue=app.state.job_queue,
+        )
+        if chat_turn_sink is not None and rls_engine is not None
+        else None
+    )
+    app.state.chat_turn_sink = chat_turn_sink
+    app.state.chat_turn_registry = chat_turn_registry
+
     # Hosted sandbox + pool (spec 12 T08/T09; D-12-12/D-12-17). Built BEFORE
     # the runtime factory so the factory can compose the ``code_execution``
     # tool when the pool is present. Gated on E2B_API_KEY — dev environments
@@ -378,11 +404,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.build_agentic_loop = runtime_factory.build_agentic_loop
             app.state.title_builder = runtime_factory.build_title  # auto-title (small tier)
 
+    # Restart sweep (Spec P1, D-P1-restart-sweep): BEFORE serving, reconcile any
+    # chat turn / run left non-terminal by a previous process's death (their
+    # in-process tasks didn't survive — D-08-5 single worker). Runs on the
+    # RLS-bypassing engine (admin on cloud / the community engine on sqlite) so it
+    # sees every tenant's rows; idempotent. Makes "viewable, not resumable" honest
+    # and stops a reattach from spinning on a dead turn/run.
+    _sweep_engine = admin_engine if admin_engine is not None else rls_engine
+    if _sweep_engine is not None:
+        reconcile_in_flight_on_startup(engine=_sweep_engine)
+
     try:
         yield
     finally:
         if run_registry is not None:
             await run_registry.aclose()  # cancel in-flight run tasks (S08-2)
+        if chat_turn_registry is not None:
+            await chat_turn_registry.aclose()  # cancel in-flight chat turns (D-P1-restart-sweep)
         if runtime_factory is not None:
             await runtime_factory.aclose()  # tier_registry.aclose() + MCP disconnect (D-05-4)
         if sandbox_pool is not None:

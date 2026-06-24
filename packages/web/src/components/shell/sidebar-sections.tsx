@@ -21,6 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ActiveChatIndicator } from "@/components/work/active-chat-indicator";
 import { personaIdentityStyle } from "@/lib/persona-identity";
 import { cn } from "@/lib/utils";
 import type { SidebarConversation, SidebarPersona } from "./sidebar-data";
@@ -189,7 +190,15 @@ export function MessagesList({
                   >
                     {title}
                   </span>
-                  <RelativeTime iso={c.updated_at} format={format} />
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {/* Spec P1 D-P1-v7-indicator: a "working" pulse while this
+                        conversation has an in-progress detached turn. */}
+                    <ActiveChatIndicator
+                      conversationId={c.id}
+                      personaName={c.persona?.name}
+                    />
+                    <RelativeTime iso={c.updated_at} format={format} />
+                  </span>
                 </span>
                 <span className="truncate type-caption normal-case tracking-normal text-muted-foreground">
                   {brief}

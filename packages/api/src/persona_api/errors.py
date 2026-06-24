@@ -50,6 +50,8 @@ __all__ = [
     "RateLimitExceededError",
     "RefinementLimitError",
     "RunNotFoundError",
+    "TurnAlreadyActiveError",
+    "TurnNotActiveError",
     "register_exception_handlers",
 ]
 
@@ -86,6 +88,31 @@ class ConversationNotFoundError(PersonaError):
 
 class RunNotFoundError(PersonaError):
     """Raised when a run is not visible to the current user (→ 404)."""
+
+
+class TurnAlreadyActiveError(PersonaError):
+    """Raised when a chat turn is already running for the conversation (→ 409).
+
+    Spec P1 (D-P1-one-active-turn): exactly one active chat turn per
+    conversation. A second
+    ``POST /messages`` while a turn is in flight is **blocked** (not queued) so
+    the standard chat UX (composer disabled while the persona answers) is
+    honest. ``context`` carries ``conversation_id``. Backstopped at the DB by the
+    partial-unique index on ``messages(conversation_id) WHERE
+    streaming_status='running'``.
+    """
+
+
+class TurnNotActiveError(PersonaError):
+    """Raised when a conversation has no live chat turn to reattach to (→ 404; spec P1).
+
+    The reattach surface (``GET …/active-turn``, ``…/active-turn/events``,
+    ``…/active-turn/cancel``) returns 404 when no turn is in flight — the turn
+    finished, was interrupted, or never started. The web client treats this as
+    "reconcile via the conversation history" rather than tailing. ``context``
+    carries ``conversation_id``. Mirrors the runs ``RunNotFoundError("run is not
+    active")`` signal.
+    """
 
 
 class RateLimitExceededError(PersonaError):
@@ -194,6 +221,27 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content=_body("run_not_found", exc.message or "run not found", exc.context),
+        )
+
+    @app.exception_handler(TurnNotActiveError)
+    async def _turn_not_active_404(_: Request, exc: TurnNotActiveError) -> JSONResponse:
+        # Spec P1 reattach: no live turn to reattach to → the client reconciles
+        # via the conversation history instead of tailing.
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=_body("turn_not_active", exc.message or "no active turn", exc.context),
+        )
+
+    @app.exception_handler(TurnAlreadyActiveError)
+    async def _turn_conflict_409(_: Request, exc: TurnAlreadyActiveError) -> JSONResponse:
+        # Spec P1 D-P1-one-active-turn: a turn is already running for this
+        # conversation — block (don't queue) so the client disables the composer
+        # while the persona answers.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=_body(
+                "turn_already_active", exc.message or "a turn is already running", exc.context
+            ),
         )
 
     @app.exception_handler(MCPServerNotFoundError)
