@@ -246,6 +246,9 @@ async def post_message(
         # Image-workspace cascade: thread the workspace root so stream_chat can
         # resolve the uploaded image bytes for the model + sandbox.
         workspace_root=getattr(request.app.state, "workspace_root", None),
+        # Spec K2 (T8d): the durable job queue for off-critical-path synthesis at
+        # the turn boundary (None until composed → safe no-op).
+        job_queue=getattr(request.app.state, "job_queue", None),
     )
     # The rate-limit dependency's headers don't auto-merge into a route-built
     # StreamingResponse (FastAPI limitation) — copy them from the stashed

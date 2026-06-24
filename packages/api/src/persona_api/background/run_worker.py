@@ -37,6 +37,7 @@ from persona_api.sandbox import (
     reset_sandbox_request_context,
     set_sandbox_request_context,
 )
+from persona_api.services.synthesis_trigger import enqueue_run_synthesis
 
 if TYPE_CHECKING:
     from persona_runtime.agentic.events import RunEvent
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from persona_runtime.agentic.run import Run
     from sqlalchemy import Engine
 
+    from persona_api.jobs.queue import JobQueue
     from persona_api.services.within_runtime_origination import WithinRuntimeOriginator
 
 _log = get_logger("api.run_worker")
@@ -78,10 +80,14 @@ class RunRegistry:
         self,
         rls_engine: Engine,
         *,
+        job_queue: JobQueue | None = None,
         origination: WithinRuntimeOriginator | None = None,
     ) -> None:
         self._engine = rls_engine
         self._handles: dict[str, RunHandle] = {}
+        # Spec K2 (T8d): durable queue for off-critical-path synthesis at run-end
+        # (None until composed → safe no-op). Additive to the registry.
+        self._job_queue = job_queue
         # Optional within-runtime origination (Spec C0, T7). ``None`` → no
         # origination (existing behaviour, byte-unchanged — criterion 10); when
         # injected, a completed run originates its conclusion as a delivered
@@ -150,6 +156,14 @@ class RunRegistry:
             # Persist by the API's run_id (the DB row), NOT run.id — the loop
             # assigns its own internal id, distinct from the API's row id.
             self._persist_final(handle.run_id, run)
+            # Spec K2 (T8d): a completed agentic run feeds synthesis (D-06-8 — what
+            # the run revealed about the user enters the graph, criterion 12).
+            enqueue_run_synthesis(
+                self._job_queue,
+                owner_id=handle.owner_id,
+                run_id=handle.run_id,
+                persona_id=run.persona_id,
+            )
             # Within-runtime origination (Spec C0, T7, criterion 7): a completed
             # run originates its conclusion as a delivered message, pushed inline
             # on this run's open stream BEFORE the end sentinel. Best-effort — a

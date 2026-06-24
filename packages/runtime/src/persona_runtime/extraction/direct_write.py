@@ -1,0 +1,152 @@
+"""The direct-write capability — ``record_user_fact`` (Spec K2, T7; D-K2-1).
+
+A Spec-03 ``AsyncTool`` available to all personas by default: the persona invokes
+it mid-interaction to record an explicit, discrete, durable fact about the user
+(the way a good assistant jots a note). The persona's in-context judgement IS the
+extraction — so the tool does NO LLM work; it builds one ``KnowledgeCandidate``
+and runs ONE inline ``GraphStore.merge`` (canonicalise → extend-vs-create → link →
+index-sync). A single merge is tens of ms, so the write is fire-and-forget from
+the turn's perspective — it never blocks or slows the reply (criterion 10). The
+immediacy is the point (the next persona, minutes later, should know the fact);
+enqueuing would reintroduce the gap the direct path exists to close.
+
+Grounding rides for free: the persona is asserting the user conveyed the fact, so
+the fact itself is the provenance grounding (``source = persona_self``). Entity
+threading and the emergent understanding are synthesis's job (T8) — the direct
+write is for the discrete fact, now.
+
+The ``@tool`` decorator's envelope turns any body exception into
+``ToolResult(is_error=True)`` (D-03-5), so a merge failure surfaces as an error
+result and never crashes the live turn.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+from persona.graph.models import NodeKind, NodeProvenance
+from persona.graph.protocol import KnowledgeCandidate
+from persona.logging import get_logger
+from persona.schema.chunks import WriteSource
+from persona.schema.tools import ToolResult
+from persona.tools.protocol import tool
+from persona.wellbeing import WellbeingCategory
+
+from persona_runtime.extraction.means_guard import contains_self_harm_means
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from persona.graph.protocol import GraphStore
+    from persona.tools.protocol import AsyncTool
+
+__all__ = ["make_record_user_fact_tool"]
+
+_logger = get_logger("extraction.direct_write")
+
+_CONCEPT_NAME_WORDS = 8
+_CONCEPT_NAME_CHARS = 64
+
+# The behavioural surface (K2-R-3) — the model reads this as the tool description.
+_GUIDANCE = """\
+Record a single explicit, durable fact the user stated about themselves — a \
+preference, an allergy, a relationship, a job change, a goal. Record it ONCE, \
+SILENTLY, in the user's own words. Do not narrate that you are saving it. Do not \
+record passing task mechanics, transient state, or anything you inferred rather \
+than were told. For a sensitive disclosure set ``category``; never record \
+self-harm methods or means — record only the care-relevant fact.
+
+Args:
+    fact: The durable fact, in the user's own framing.
+    category: For a sensitive disclosure, one of self_harm, disordered_eating, \
+mental_health_crisis, abuse_victimisation, substance_addiction; otherwise omit.
+"""
+
+
+def _concept_name(fact: str) -> str:
+    """Derive a short concept label from the fact (no LLM — keep it fast)."""
+    label = " ".join(fact.split()[:_CONCEPT_NAME_WORDS])
+    return label[:_CONCEPT_NAME_CHARS]
+
+
+def _coerce_category(category: str | None) -> WellbeingCategory | None:
+    """Map a category string to the enum; an unknown value is dropped (untagged)."""
+    if category is None:
+        return None
+    try:
+        return WellbeingCategory(category)
+    except ValueError:
+        _logger.warning("unknown direct-write category dropped to untagged", category=category)
+        return None
+
+
+def make_record_user_fact_tool(
+    *,
+    graph_store: GraphStore,
+    owner_provider: Callable[[], str | None],
+    persona_id: str | None = None,
+) -> AsyncTool:
+    """Build the ``record_user_fact`` tool bound to a graph store + owner context.
+
+    Args:
+        graph_store: The user-scoped graph store the write merges into.
+        owner_provider: Resolves the current owner (user) id at DISPATCH time
+            (the toolbox is built once; the owner is per-request). ``None`` ⇒ the
+            write fails closed.
+        persona_id: The persona recording the fact (→ provenance).
+    """
+
+    @tool(name="record_user_fact", description=_GUIDANCE)
+    async def record_user_fact(fact: str, category: str | None = None) -> ToolResult:
+        owner_id = owner_provider()
+        if not owner_id:
+            return ToolResult(
+                tool_name="record_user_fact",
+                content="No user context for the write.",
+                is_error=True,
+            )
+        if not fact.strip():
+            return ToolResult(
+                tool_name="record_user_fact",
+                content="Nothing to record: the fact is empty.",
+                is_error=True,
+            )
+        wellbeing = _coerce_category(category)
+        # Structural means backstop (D-K2-7): self-harm method/means must never
+        # enter the graph. Best-effort deterministic scan — reject the write
+        # (record the struggle without the means) rather than store specifics.
+        if contains_self_harm_means(fact, category=wellbeing.value if wellbeing else None):
+            _logger.warning(
+                "direct write rejected: self-harm means specifics", persona_id=persona_id
+            )
+            return ToolResult(
+                tool_name="record_user_fact",
+                content=(
+                    "Not recorded: record only the care-relevant fact, never the "
+                    "method or means. The specifics must not be stored."
+                ),
+                is_error=True,
+            )
+        candidate = KnowledgeCandidate(
+            concept_name=_concept_name(fact),
+            content=fact,
+            node_kind=NodeKind.FACT,
+            wellbeing_category=wellbeing.value if wellbeing is not None else None,
+            provenance=NodeProvenance(
+                source=WriteSource.PERSONA_SELF,
+                persona_id=persona_id,
+                written_at=datetime.now(UTC),
+                grounding=fact,
+                reason="direct write",
+            ),
+        )
+        # One fast inline merge — the body raising is enveloped to is_error by the
+        # decorator (D-03-5), so a write failure never crashes the live turn.
+        outcome = graph_store.merge(owner_id, candidate)
+        return ToolResult(
+            tool_name="record_user_fact",
+            content=f"Noted. (graph node {outcome.node_id})",
+        )
+
+    return record_user_fact

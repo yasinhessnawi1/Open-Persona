@@ -41,6 +41,7 @@ from persona_api.sandbox import (
     set_sandbox_request_context,
 )
 from persona_api.services import document_service, image_service
+from persona_api.services.synthesis_trigger import enqueue_conversation_synthesis
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
     from sqlalchemy import Connection, Engine
 
     from persona_api.editions import CreditsPolicy
+    from persona_api.jobs.queue import JobQueue
     from persona_api.schemas import ChannelContext
     from persona_api.schemas import ImageRef as ImageRefSchema
 
@@ -304,6 +306,7 @@ async def stream_chat(
     turn_has_image: bool = False,
     document_context: DocumentContext | None = None,
     workspace_root: Path | None = None,
+    job_queue: JobQueue | None = None,
 ) -> AsyncIterator[bytes]:
     """Drive ConversationLoop.turn and stream SSE; persist after the final yield.
 
@@ -472,6 +475,16 @@ async def stream_chat(
         # Deduct credits per successful turn (after the stream completes — D-08-6).
         credits_policy.deduct(
             rls_engine=rls_engine, user_id=owner_id, amount=credits_per_turn, reason="chat_turn"
+        )
+        # Spec K2 (T8d): enqueue off-critical-path synthesis at the turn boundary.
+        # Additive + no-op without a queue; the durable job re-reads the marker and
+        # synthesises the delta (D-K2-2). NEVER blocks/affects the reply already sent.
+        enqueue_conversation_synthesis(
+            job_queue,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            persona_id=persona_id,
+            message_count=prior_msg_count + 1,
         )
         done: dict[str, object] = {
             "usage": (

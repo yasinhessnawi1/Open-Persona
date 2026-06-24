@@ -49,9 +49,18 @@ __all__ = [
 # Tables that exist only in the cloud relational store — never part of the
 # community SQLite store. ``memory_chunks``' vectors live in Chroma in community;
 # the Spec K0 graph tables carry pgvector ``Vector`` + ``tsvector`` columns
-# (Postgres-only) and the graph is a cloud feature, so they are excluded too.
+# (Postgres-only) and the graph is a cloud feature, so they are excluded too. Spec
+# K2's ``synthesis_markers`` is the graph-synthesis idempotency surface — useless
+# without the graph, so it is cloud-only as well.
 _CLOUD_ONLY_TABLES = frozenset(
-    {"memory_chunks", "graph_nodes", "graph_edges", "graph_entities", "graph_node_entities"}
+    {
+        "memory_chunks",
+        "graph_nodes",
+        "graph_edges",
+        "graph_entities",
+        "graph_node_entities",
+        "synthesis_markers",
+    }
 )
 
 

@@ -703,3 +703,38 @@ graph_node_entities = Table(
     Index("ix_gne_entity", "owner_id", "entity_id"),
     Index("ix_gne_node", "owner_id", "node_id"),
 )
+
+
+# Spec K2 (T8) — the per-interaction synthesis idempotency marker (D-K2-X-migration-
+# placeholder). Channel-agnostic (web chat / agentic run / voice) so all three
+# synthesis feeders share one high-water-mark surface. ``synthesised_up_to`` mirrors
+# ``conversations.compacted_up_to``: synthesis processes only content past it, then
+# advances it in the same owner-scoped txn — the second idempotency line behind A0's
+# idempotency key (criterion 8). Created with its RLS ENTIRELY in its own migration
+# (the 009/011/012 template); deliberately NOT in ``db/rls._POLICIES``.
+synthesis_markers = Table(
+    "synthesis_markers",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    # 'conversation' | 'agentic_run' | 'voice' — the channel-agnostic discriminator.
+    Column("interaction_kind", Text, nullable=False),
+    # conversation_id | run_id | voice-session-id — the source interaction's id.
+    Column("interaction_id", Text, nullable=False),
+    # High-water-mark of synthesised progress (mirrors conversations.compacted_up_to).
+    Column("synthesised_up_to", Integer, nullable=False, server_default=text("0")),
+    Column("synthesised_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "interaction_kind IN ('conversation', 'agentic_run', 'voice')",
+        name="synthesis_markers_kind_check",
+    ),
+    # One marker per (owner, kind, interaction) — the compare-and-set anchor.
+    UniqueConstraint(
+        "owner_id",
+        "interaction_kind",
+        "interaction_id",
+        name="uq_synthesis_markers_owner_kind_interaction",
+    ),
+    Index("idx_synthesis_markers_owner", "owner_id"),
+)
