@@ -41,6 +41,8 @@ from persona_api.jobs.queue import JobQueue
 from persona_api.middleware.rls_context import make_rls_engine
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy import Engine
 
     from persona_api.config import APIConfig
@@ -324,7 +326,12 @@ class Worker:
         self._rls_engine.dispose()
 
 
-def build_worker(config: APIConfig, registry: JobRegistry) -> Worker:
+def build_worker(
+    config: APIConfig,
+    registry: JobRegistry,
+    *,
+    scheduler_tick_builder: Callable[[Engine, Engine], SchedulerTick] | None = None,
+) -> Worker:
     """Compose a :class:`Worker` from config — the worker's composition root.
 
     Mirrors the api lifespan's engine wiring: the cross-tenant **dispatch** engine
@@ -333,6 +340,12 @@ def build_worker(config: APIConfig, registry: JobRegistry) -> Worker:
     ``app_database_url`` (falling back to ``database_url``). Fail-fast if no DSN
     is configured — a worker with no database is a misconfiguration, not a
     degraded mode.
+
+    ``scheduler_tick_builder`` is A1's additive composition seam (D-A1-X-worker-
+    additive): a callback receiving ``(dispatch_engine, rls_engine)`` that returns
+    the leader-gated :class:`SchedulerTick`. ``None`` (a plain A0 worker) wires no
+    tick — the worker behaves exactly as A0 shipped. The builder is invoked AFTER
+    the engines are created, so the tick shares the worker's two engines.
     """
     dispatch_url = config.worker_dispatch_database_url or config.database_url
     if not dispatch_url:
@@ -350,16 +363,24 @@ def build_worker(config: APIConfig, registry: JobRegistry) -> Worker:
         )
     dispatch_engine = create_db_engine(dispatch_url)
     rls_engine = make_rls_engine(config.effective_app_database_url)
+    scheduler_tick = (
+        scheduler_tick_builder(dispatch_engine, rls_engine)
+        if scheduler_tick_builder is not None
+        else None
+    )
     _log.info(
         "worker composition root built",
         dispatch_role_dedicated=bool(config.worker_dispatch_database_url),
         rls_role_superuser_fallback=not bool(config.app_database_url),
         registered_types=len(registry.types()),
+        scheduler_tick_wired=scheduler_tick is not None,
     )
     return Worker(
         dispatch_engine=dispatch_engine,
         rls_engine=rls_engine,
         registry=registry,
+        scheduler_tick=scheduler_tick,
+        scheduler_tick_interval_seconds=config.scheduler_tick_interval_seconds,
         concurrency=config.worker_concurrency,
         poll_interval_seconds=config.worker_poll_interval_seconds,
         poll_jitter_seconds=config.worker_poll_jitter_seconds,

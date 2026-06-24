@@ -294,8 +294,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             edition=config.edition,
             audit_root=app.state.audit_root,
         )
+    # Spec K2 (T8d): thread the durable ``job_queue`` so a completed agentic run
+    # enqueues synthesis (the producer was inert — ``job_queue=None`` — until now).
+    # ``None`` queue keeps the producer a no-op (the community / no-dispatch path).
     run_registry = (
-        RunRegistry(rls_engine, origination=within_runtime_originator)
+        RunRegistry(
+            rls_engine,
+            job_queue=app.state.job_queue,
+            origination=within_runtime_originator,
+        )
         if rls_engine is not None
         else None
     )
@@ -403,6 +410,37 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.build_conversation_loop = runtime_factory.build_conversation_loop
             app.state.build_agentic_loop = runtime_factory.build_agentic_loop
             app.state.title_builder = runtime_factory.build_title  # auto-title (small tier)
+            # Spec K2 (T8d): expose the graph store on the factory so the
+            # ``record_user_fact`` direct-write tool can merge into the user's
+            # graph per request (the request-path graph wiring). Built once on the
+            # RLS engine; owner-scoped per request via the checkout listener.
+            runtime_factory.enable_graph_writes(audit_root=app.state.audit_root)
+
+    # Spec K2 (T8d): the CONSUMER. Single-process deploy (D-08-5) ⇒ the durable A0
+    # worker + A1 scheduler tick run as an in-process background task. Composes the
+    # synthesis handler on the wired ``synthesis_tier`` (the eval-re-run gate's
+    # tier, NOT frontier) + A1's leader-gated tick, then runs the claim→execute
+    # loop alongside the API. Gated on ``in_process_worker`` (the orchestrator's
+    # activation flag) AND the presence of an RLS engine + tier registry — keyless /
+    # community boots keep the producers' enqueues no-op-consumed.
+    in_process_worker = None
+    _worker_tier_registry = getattr(app.state, "tier_registry", None)
+    if (
+        config.in_process_worker
+        and rls_engine is not None
+        and runtime_factory is not None
+        and _worker_tier_registry is not None
+    ):
+        from persona_api.background.worker_root import start_in_process_worker
+
+        in_process_worker = start_in_process_worker(
+            config=config,
+            rls_engine=rls_engine,
+            embedder=app.state.embedder,
+            tier_registry=_worker_tier_registry,
+            audit_root=app.state.audit_root,
+        )
+    app.state.in_process_worker = in_process_worker
 
     # Restart sweep (Spec P1, D-P1-restart-sweep): BEFORE serving, reconcile any
     # chat turn / run left non-terminal by a previous process's death (their
@@ -417,6 +455,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if in_process_worker is not None:
+            await in_process_worker.aclose()  # drain the synthesis/job loop (K2 T8d)
         if run_registry is not None:
             await run_registry.aclose()  # cancel in-flight run tasks (S08-2)
         if chat_turn_registry is not None:

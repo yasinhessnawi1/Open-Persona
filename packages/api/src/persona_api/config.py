@@ -190,6 +190,28 @@ class APIConfig(BaseSettings):
     # The orchestrator flips this at close-out once the worker is deployed.
     avatar_via_queue: bool = Field(default=False, validation_alias="PERSONA_API_AVATAR_VIA_QUEUE")
 
+    # Spec K2 (T8d) — the synthesis-pipeline activation flags. The deploy is a
+    # single uvicorn process (D-08-5), so the durable A0 worker + A1 scheduler tick
+    # run as an IN-PROCESS background task started in the lifespan worker root
+    # (``background.worker_root``), not a separate machine. OFF (default) keeps the
+    # producer enqueues no-op-consumed (the pre-activation state); ON composes the
+    # consumer (synthesis + avatar handlers + the scheduler tick) and runs the
+    # claim→execute loop alongside the API. The orchestrator flips this on the
+    # wired tier once the eval re-run gate is green.
+    in_process_worker: bool = Field(default=False, validation_alias="PERSONA_API_IN_PROCESS_WORKER")
+    # The tier the synthesis extractor + entity judge run on (D-K2-3). The hard
+    # pre-live gate #2 re-runs the extraction corpus eval on THIS tier (NOT the
+    # frontier/sonnet tier). ``small`` by default (cheap reflection pass).
+    synthesis_tier: str = Field(default="small", validation_alias="PERSONA_API_SYNTHESIS_TIER")
+    # On-by-default ``record_user_fact`` direct-write tool (D-K2-1). The persona's
+    # per-persona ``tools`` allow-list is still the final gate inside
+    # ``build_default_toolbox``; this flag only governs whether the tool is COMPOSED
+    # into the toolbox at all. ON by default — the means-redaction backstop is
+    # structural (direct_write.py + synthesizer.py both run ``contains_self_harm_means``).
+    record_user_fact_enabled: bool = Field(
+        default=True, validation_alias="PERSONA_API_RECORD_USER_FACT_ENABLED"
+    )
+
     # Auth (D-08-4). Secrets never logged.
     jwt_secret: SecretStr | None = Field(default=None, repr=False)
     jwt_public_key: SecretStr | None = Field(default=None, repr=False)

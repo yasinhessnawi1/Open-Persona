@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from persona.graph.protocol import GraphStore
     from persona.imagegen import ImageBackend
     from persona.sandbox.result import SandboxFile
     from persona.stores.backend import Backend
@@ -184,6 +185,40 @@ class RuntimeFactory:
         self._intelligent_router = self._build_intelligent_router(
             tier_registry, self._latency_tracker
         )
+        # Spec K2 (T8d) — the user-scoped graph store for the ``record_user_fact``
+        # direct-write tool (D-K2-1). ``None`` until ``enable_graph_writes`` composes
+        # it (the lifespan calls it once an RLS engine is present). Built once on the
+        # RLS engine; owner-scoped per request via the checkout listener. ``None`` ⇒
+        # the tool is absent (graceful-absence shape — like sandbox_pool / image).
+        self._graph_store: GraphStore | None = None
+        # Whether to compose the on-by-default ``record_user_fact`` tool when a
+        # graph store is present (the per-persona allow-list is still the final gate).
+        self._record_user_fact_enabled = (
+            getattr(api_config, "record_user_fact_enabled", True)
+            if api_config is not None
+            else True
+        )
+
+    def enable_graph_writes(self, *, audit_root: Path) -> None:
+        """Compose the user-scoped graph store for ``record_user_fact`` (Spec K2 T8d).
+
+        Built once on the RLS engine: the checkout listener scopes every connection
+        to the request owner via the ``current_user_id`` contextvar, so the single
+        shared store is owner-correct per request without a per-request rebuild. The
+        ``record_user_fact`` tool's ``owner_provider`` reads the same contextvar at
+        DISPATCH time, so an unbound (non-request) call fails closed. Idempotent.
+        """
+        if self._graph_store is not None:
+            return
+        from persona.audit import JSONLAuditLogger
+        from persona.graph import build_graph_store
+
+        self._graph_store = build_graph_store(
+            engine=self._engine,
+            embedder=self._embedder,
+            audit_logger=JSONLAuditLogger(audit_root),
+        )
+        _logger.info("graph writes enabled (record_user_fact composed into toolboxes)")
 
     @staticmethod
     def _build_intelligent_router(
@@ -400,6 +435,27 @@ class RuntimeFactory:
                 )
             else:
                 extra.append(make_text_summarize_tool(backend=small_backend))
+        # Spec K2 (T8d / D-K2-1) — the on-by-default ``record_user_fact`` direct-write
+        # tool. Composed when a graph store is wired (``enable_graph_writes``); the
+        # persona's ``tools`` allow-list (inside ``build_default_toolbox``) is still
+        # the final gate on whether it is advertised. The owner is resolved at
+        # DISPATCH time from the RLS ``current_user_id`` contextvar (the same one the
+        # checkout listener scopes the merge connection to), so a non-request call
+        # fails closed. The structural means-redaction backstop
+        # (``contains_self_harm_means``) is inside the tool — a self-harm-means write
+        # is rejected, never stored (D-K2-7).
+        if self._graph_store is not None and self._record_user_fact_enabled:
+            from persona_runtime.extraction.direct_write import make_record_user_fact_tool
+
+            from persona_api.middleware.rls_context import current_user_id
+
+            extra.append(
+                make_record_user_fact_tool(
+                    graph_store=self._graph_store,
+                    owner_provider=current_user_id.get,
+                    persona_id=persona.persona_id,
+                )
+            )
         # Spec 27 (D-27-3) — lazily spawn the built-in MCP servers THIS persona
         # references (mcp:<server>:) and hand their loopback URLs to the factory.
         # A persona that uses no built-in MCP spawns nothing.
