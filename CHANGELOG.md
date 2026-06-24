@@ -11,6 +11,54 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Connector framework — the trunk for messaging-platform reach (2026-06-24)
+
+> Close-out of `connector-framework` (the new `persona-connectors` package, the 5th
+> uv workspace member). The shared framework that makes a persona reachable on
+> messaging platforms — the trunk all per-platform adapters (Telegram/Discord/Slack/
+> WhatsApp/SMS/email) plug into. Product model unchanged: **my persona, reachable by
+> me** — an authenticated extension of the user's own account, isolated exactly as on
+> the web (Spec 08 ownership/RLS). **Framework-complete**; a persona becomes reachable
+> on a platform when the first adapter (Telegram) lands. Zero new dependency.
+
+#### Added
+- **`persona-connectors`** — a separate long-lived process (the 3rd, after api +
+  voice) that reuses persona-api's reply-producing chat flow + the C0 delivery
+  boundary in-process (the `run_worker.py` pattern), under the `current_user_id`
+  RLS contextvar. The **owned surface** (`persona_connectors.domain`) is
+  import-decoupled from persona-api — enforced by an executable AST guard — so the
+  framework contracts can extract to persona-core later without a reshape.
+- **The `Connector` protocol + normalisation contracts** (`domain`) — a provider-
+  independent `NormalisedInbound` (the six-platform-intersection core + optional
+  capabilities + a `raw` passthrough), a semantic outbound identity tag (reusing
+  C0's `PersonaIdentityTag`), and a per-connector `Capabilities` descriptor +
+  render-tier ladder. Designed to the email/SMS floor so all six platforms fit; each
+  adapter (C2–C5) is thin.
+- **The identity-mapping security spine** — a one-time link token (sha256-at-rest)
+  binds a platform identity to a Persona user; thereafter every inbound resolves
+  through a live binding and Spec 08 RLS scopes the rest. Adversarially tested:
+  cross-tenant access impossible, a partial-active UNIQUE blocks identity hijack,
+  an unlinked identity gets a link-instruction and zero access.
+- **The per-persona parallel-conversation model** — each persona keeps its own
+  conversation per user per channel; naming a persona foregrounds it and *suspends*
+  (never ends) the previously-active one, so in-flight work survives switching;
+  re-naming the active persona is a no-op. The atomic `SELECT … FOR UPDATE` flip
+  serialises concurrent switches. `/new` and the idle-timeout are the only operations
+  that end a conversation, per-persona-per-channel.
+- **Name-parsing / persona addressing** — sticky-active-pointer-first, precision-over-
+  recall: leading/trailing-position only, a vocative comma required for trailing,
+  exact Unicode-aware whole-word matching (stdlib `re`, no new dependency).
+- **Two additive connector migrations** (`connector_link_tokens` + `connector_identities`;
+  `connector_channels` + `connector_conversations`), all owner-scoped under RLS, with
+  **no column added to `conversations`** (an additive FK only). The idle sweep is
+  served by a `(status, last_activity_at)` index.
+
+#### Not yet (the co-developed Telegram-adapter leg)
+- The end-to-end inbound→reply flow wiring, the concrete outbound `MessageDeliverer`
+  delivering name-tagged messages through C0, the web-app linking-handshake endpoint,
+  and the live-platform integration land with the first adapter (Telegram) — the
+  framework ships every shared piece they compose.
+
 ### Scheduling — the clock (2026-06-23)
 
 - A durable, RLS-scoped **schedule** entity (RRULE-class recurrence — daily/weekly/

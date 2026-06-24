@@ -11,16 +11,18 @@ dependencies = [
     "persona-runtime",
     "persona-api",
     "persona-voice",
+    "persona-connectors",
 ]
 
 [tool.uv.workspace]
-members = ["packages/core", "packages/runtime", "packages/api", "packages/voice"]
+members = ["packages/core", "packages/runtime", "packages/api", "packages/voice", "packages/connectors"]
 
 [tool.uv.sources]
 persona-core = { workspace = true }
 persona-runtime = { workspace = true }
 persona-api = { workspace = true }
 persona-voice = { workspace = true }
+persona-connectors = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -126,7 +128,7 @@ python_version = "3.11"
 # `persona_runtime.*`, and `persona_api.*` imports across workspace boundaries.
 # Setting this here means every `uv run mypy <pkg>` invocation picks it up
 # without per-call MYPYPATH gymnastics (closes LF-12-3).
-mypy_path = "packages/core/src:packages/runtime/src:packages/api/src:packages/voice/src"
+mypy_path = "packages/core/src:packages/runtime/src:packages/api/src:packages/voice/src:packages/connectors/src"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -266,7 +268,7 @@ ignore_missing_imports = true
 # already in the workspace via deepgram/livekit.
 
 [tool.pytest.ini_options]
-testpaths = ["packages/core/tests", "packages/runtime/tests", "packages/api/tests", "packages/voice/tests"]
+testpaths = ["packages/core/tests", "packages/runtime/tests", "packages/api/tests", "packages/voice/tests", "packages/connectors/tests"]
 markers = [
     "integration: marks tests that require external services (Docker, real DB)",
     "external: marks tests that call real external APIs (Anthropic, OpenAI)",

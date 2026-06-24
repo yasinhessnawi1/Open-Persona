@@ -704,6 +704,172 @@ graph_node_entities = Table(
     Index("ix_gne_node", "owner_id", "node_id"),
 )
 
+# --- Connector framework (Spec C1, the connector_identity_linking migration) ---
+# The identity-mapping security spine: a one-time link token binds a platform
+# identity to a Persona user; thereafter every inbound resolves through a live
+# active binding (D-C1-5). Both tables are owner-scoped + RLS like every tenant
+# table (the connector process connects as the persona_app non-superuser role, so
+# a missed scope fails CLOSED). Declared here (split-home) so a fresh-install 001
+# create_all makes them; the migration adds them to a deployed DB. RLS-policy
+# lifecycle is owned by the migration, NOT persona_api.db.rls._POLICIES (the
+# 009/011/012 self-contained discipline).
+
+# The one-time link handshake token. The PLAINTEXT token is the bearer capability
+# handed to the user (and presented on the platform); only its sha256 hex is
+# stored (``token_hash``) — a DB leak must not yield usable tokens (the BYO-Fernet
+# at-rest posture). Redemption hashes the presented token and looks up by hash.
+# Issued by the authenticated owner (RLS-scoped write); redeemed by an
+# unauthenticated platform event (cross-tenant read by the unguessable hash via
+# the dispatch engine, then owner-scoped — the A0-worker pre-auth pattern).
+connector_link_tokens = Table(
+    "connector_link_tokens",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("token_hash", Text, nullable=False),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    # Opaque platform key (D-08-3) — never branched on.
+    Column("platform", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'pending'")),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("consumed_at", DateTime(timezone=True)),
+    CheckConstraint(
+        "status IN ('pending', 'consumed', 'expired')",
+        name="connector_link_tokens_status_check",
+    ),
+    # The capability lookup key — the unguessable hash is unique (single-use is
+    # enforced by the status transition pending→consumed, not by the constraint).
+    UniqueConstraint("token_hash", name="uq_connector_link_tokens_token_hash"),
+    Index("idx_connector_link_tokens_owner", "owner_id"),
+)
+
+# The platform-identity ↔ Persona-user binding (the security spine). Resolution
+# reads this cross-tenant by (platform, platform_identity) via the dispatch engine
+# (pre-auth — the inbound sender is not yet an authenticated owner), then scopes
+# everything downstream to the resolved owner. The partial-active unique index
+# enforces "one ACTIVE owner per platform identity" while keeping revoked rows for
+# audit and allowing re-link after unlink (D-C1-5).
+connector_identities = Table(
+    "connector_identities",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("platform", Text, nullable=False),
+    # Opaque string — allows a composite identity (e.g. Slack's (team_id, user_id)).
+    Column("platform_identity", Text, nullable=False),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'active'")),
+    Column("linked_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("revoked_at", DateTime(timezone=True)),
+    CheckConstraint(
+        "status IN ('active', 'revoked')",
+        name="connector_identities_status_check",
+    ),
+    # PARTIAL unique: one ACTIVE binding per platform identity. A full unique would
+    # block re-link-after-unlink forever; this allows revoked rows to remain (audit)
+    # while guaranteeing at most one active owner — the cross-user-breach guard.
+    Index(
+        "uq_connector_identities_active",
+        "platform",
+        "platform_identity",
+        unique=True,
+        postgresql_where=text("status = 'active'"),
+        sqlite_where=text("status = 'active'"),
+    ),
+    Index("idx_connector_identities_owner", "owner_id"),
+)
+
+# --- Connector conversation state (Spec C1, the connector_conversation_state migration) ---
+# The per-persona parallel-conversation model (§3, the agentic-future linchpin):
+# each persona has at most one active conversation per user per channel; naming a
+# persona foregrounds it and SUSPENDS (never ends) the previously-active one. Two
+# additive owner-scoped tables; both under RLS. The state-machine LOGIC
+# (foreground/suspend/resume/never-reset) is a later task — these are the records.
+
+# The active-persona pointer: which persona is foregrounded for this (owner,
+# platform, channel). One row per channel — the row a switch locks with
+# ``SELECT … FOR UPDATE`` to serialise the flip (D-C1-2; the advisory lock is
+# txn-scoped and cannot hold state, so the pointer is a durable row).
+connector_channels = Table(
+    "connector_channels",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    # Opaque platform key (D-08-3) + the platform conversation key.
+    Column("platform", Text, nullable=False),
+    Column("channel_key", Text, nullable=False),
+    # The foregrounded persona; NULL before any persona is named on this channel.
+    Column("active_persona_id", Text),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # Tenant-consistent persona reference (matches the conversations table pattern).
+    # NULL active_persona_id ⇒ MATCH SIMPLE skips the check (no active persona yet).
+    ForeignKeyConstraint(
+        ["active_persona_id", "owner_id"],
+        ["personas.id", "personas.owner_id"],
+        ondelete="SET NULL",
+        name="fk_connector_channels_active_persona",
+    ),
+    # One pointer row per (owner, platform, channel) — the FOR UPDATE flip target.
+    UniqueConstraint(
+        "owner_id", "platform", "channel_key", name="uq_connector_channels_owner_platform_channel"
+    ),
+    Index("idx_connector_channels_owner", "owner_id"),
+)
+
+# Per-persona parallel conversations: one row per (owner, platform, channel,
+# persona), each pointing at a real ``conversations`` row. Multiple rows per
+# channel = the parallel model (Astrid's conversation and Kai's both persist).
+# ``status`` carries suspend/resume/ended; ``last_activity_at`` is the idle timer.
+connector_conversations = Table(
+    "connector_conversations",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("platform", Text, nullable=False),
+    Column("channel_key", Text, nullable=False),
+    Column("persona_id", Text, nullable=False),
+    # Additive FK to the real conversation — NO column added to ``conversations``
+    # (K2 reads that table; keep it untouched). Single-column FK (conversations has
+    # no (id, owner_id) composite unique); owner scoping is via this table's RLS.
+    Column(
+        "conversation_id",
+        Text,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("status", Text, nullable=False, server_default=text("'active'")),
+    Column("last_activity_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "status IN ('active', 'suspended', 'ended')",
+        name="connector_conversations_status_check",
+    ),
+    ForeignKeyConstraint(
+        ["persona_id", "owner_id"],
+        ["personas.id", "personas.owner_id"],
+        ondelete="CASCADE",
+        name="fk_connector_conversations_persona",
+    ),
+    # The per-persona-parallel invariant: at most one conversation row per persona
+    # per (owner, platform, channel).
+    UniqueConstraint(
+        "owner_id",
+        "platform",
+        "channel_key",
+        "persona_id",
+        name="uq_connector_conversations_owner_platform_channel_persona",
+    ),
+    # 1:1 routing-slot guard: a link row is the current slot for exactly one
+    # conversation (resume reuses the same row; /new reassigns conversation_id on
+    # the one slot — history stays in conversations/messages). UNIQUE so a T6
+    # state-machine bug can never double-link two slots to one conversation.
+    UniqueConstraint("conversation_id", name="uq_connector_conversations_conversation"),
+    Index("idx_connector_conversations_owner", "owner_id"),
+    # The idle-timeout sweep (Spec C1 T8): end live slots idle past the cutoff —
+    # ``WHERE status IN ('active','suspended') AND last_activity_at < cutoff``.
+    Index("idx_connector_conversations_idle", "status", "last_activity_at"),
+)
+
 
 # Spec K2 (T8) — the per-interaction synthesis idempotency marker (D-K2-X-migration-
 # placeholder). Channel-agnostic (web chat / agentic run / voice) so all three

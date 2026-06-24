@@ -1,0 +1,84 @@
+[project]
+name = "persona-connectors"
+version = "0.1.0"
+description = "Connector framework for persona-core — makes a persona reachable on messaging platforms (the trunk all per-platform adapters plug into)."
+readme = "README.md"
+requires-python = ">=3.11"
+# PolyForm-Noncommercial-1.0.0 — matches persona-api's tier. Verified against
+# the on-disk sibling LICENSE files (the governing convention): persona-core /
+# persona-runtime / persona-voice ship MIT (the open engine); persona-api ships
+# PolyForm-Noncommercial-1.0.0 (the application layer). persona-connectors
+# DEPENDS ON persona-api (C1-D-1: it reuses the in-process chat machinery + C0
+# delivery via the run_worker.py pattern), so it joins the application layer and
+# carries persona-api's source-available noncommercial license, not the MIT
+# engine license. (LICENSE copied verbatim from packages/api/LICENSE.)
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Yasin Hessnawi", email = "yasinhessnawi1@gmail.com" },
+]
+keywords = [
+    "ai",
+    "persona",
+    "connectors",
+    "messaging",
+    "telegram",
+    "chatbot",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Communications :: Chat",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    # Direct persona-core store access + the shared frozen contracts (C1-D-6:
+    # NormalisedInbound / Capabilities live in persona-core) + the extracted
+    # JWT verifier (persona.auth.jwt_verifier, V1 D-V1-X-jwt-verifier-extraction)
+    # for resolving the authenticated identity.
+    "persona-core[postgres]",
+    # C1 drives the turn-based chat loop (ConversationLoop.turn) to produce a
+    # reply — unlike voice, which deferred persona-runtime to V5.
+    "persona-runtime",
+    # C1-D-1 (the deliberate departure from V1's no-api-dep): persona-connectors
+    # reuses persona-api's reply-producing chat flow + C0's DeliveryRouter
+    # in-process, following the run_worker.py pattern (a separate long-lived
+    # process that imports api services + sets the current_user_id RLS
+    # contextvar). The owned surface (Connector protocol, the parallel-
+    # conversation model, name-parsing, linking) stays import-decoupled from
+    # persona-api so a future extract-to-core is a dependency swap, not a
+    # reshape (the reversibility guarantee). The api-coupling lives ONLY in
+    # persona_connectors.composition.
+    "persona-api",
+]
+
+[project.urls]
+Homepage = "https://github.com/yasinhessnawi1/Open-Persona"
+Repository = "https://github.com/yasinhessnawi1/Open-Persona"
+Issues = "https://github.com/yasinhessnawi1/Open-Persona/issues"
+Changelog = "https://github.com/yasinhessnawi1/Open-Persona/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/persona_connectors"]
+include = [
+    "src/persona_connectors/py.typed",
+]
+
+[tool.uv.sources]
+persona-core = { workspace = true }
+persona-runtime = { workspace = true }
+persona-api = { workspace = true }
