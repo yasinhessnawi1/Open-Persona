@@ -27,10 +27,20 @@ listener enabling ``PRAGMA foreign_keys=ON`` — SQLite enforces foreign keys
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ColumnDefault, MetaData, create_engine, event, insert, select
-from sqlalchemy.engine import Engine
+from sqlalchemy import (
+    ColumnDefault,
+    DateTime,
+    MetaData,
+    TypeDecorator,
+    create_engine,
+    event,
+    insert,
+    select,
+)
+from sqlalchemy.engine import Dialect, Engine
 from sqlalchemy.sql.schema import DefaultClause
 
 from persona_api.db.models import metadata as _canonical_metadata
@@ -69,6 +79,31 @@ def _new_uuid() -> str:
     return str(uuid.uuid4())
 
 
+class _SqliteUTCDateTime(TypeDecorator[datetime]):
+    """Return tz-aware UTC datetimes from SQLite (community parity with cloud).
+
+    SQLite has no native timezone type, so ``DateTime(timezone=True)`` silently
+    stores/returns NAIVE datetimes — which trips the project's tz-aware validators
+    (e.g. ``ConversationMessage.created_at``) the moment a prior row is read back,
+    a community-only divergence from cloud's TIMESTAMPTZ. The codebase writes
+    UTC-aware datetimes everywhere, so attach UTC on read and normalise any aware
+    input to UTC on write. ``impl = DateTime`` keeps the emitted DDL identical.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, _dialect: Dialect) -> datetime | None:
+        if value is not None and value.tzinfo is not None:
+            return value.astimezone(UTC)
+        return value
+
+    def process_result_value(self, value: datetime | None, _dialect: Dialect) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+
 def build_community_metadata() -> MetaData:
     """The SQLite-viable community view of the schema (Spec 33, D-33-7).
 
@@ -90,6 +125,11 @@ def build_community_metadata() -> MetaData:
                 # function. Generate it client-side instead (D-33-X-uuid-dialect-aware).
                 column.server_default = None
                 column.default = ColumnDefault(_new_uuid)
+            # SQLite ignores DateTime(timezone=True) and returns naive datetimes,
+            # which trip the tz-aware validators on read. Wrap so community reads
+            # come back UTC-aware, matching cloud's TIMESTAMPTZ (the 4th transform).
+            if isinstance(column.type, DateTime):
+                column.type = _SqliteUTCDateTime()
     return target
 
 

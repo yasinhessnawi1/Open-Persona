@@ -8,6 +8,7 @@ store works through a real route — all in a temp dir, no external services.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 import pytest
@@ -141,3 +142,29 @@ def test_community_owner_is_seeded(community_client: TestClient) -> None:
     with engine.connect() as conn:
         ids = conn.execute(select(users.c.id)).scalars().all()
     assert "local-owner" in ids
+
+
+def test_community_datetime_reads_back_tz_aware(community_client: TestClient) -> None:
+    """Community SQLite datetime columns must read back UTC-aware.
+
+    Regression for the 2nd-chat-turn 500: ``DateTime(timezone=True)`` returns NAIVE
+    on SQLite, which trips the tz-aware validators (``ConversationMessage.created_at``)
+    the moment a prior row is loaded — community-only (cloud TIMESTAMPTZ is aware).
+    The community metadata wraps datetime columns so reads come back UTC-aware.
+    """
+    from datetime import datetime
+
+    from persona_api.db.community import build_community_metadata
+    from sqlalchemy import insert, select
+
+    users = build_community_metadata().tables["users"]
+    engine = community_client.app.state.rls_engine
+    with engine.begin() as conn:
+        conn.execute(
+            insert(users).values(
+                id="tz-probe", email="tz@probe.local", created_at=datetime.now(UTC)
+            )
+        )
+        got = conn.execute(select(users.c.created_at).where(users.c.id == "tz-probe")).scalar_one()
+    assert got.tzinfo is not None, "community SQLite created_at must read back tz-aware, not naive"
+    assert got.utcoffset() == datetime.now(UTC).utcoffset(), "should be UTC"

@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from persona.errors import (
@@ -366,16 +367,20 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ValidationError)
     async def _pydantic_422(_: Request, exc: ValidationError) -> JSONResponse:
         # Invalid persona YAML / request body → structured 422 (acceptance #2).
+        # jsonable_encoder so a non-JSON-native value in errors() (e.g. a datetime
+        # in the offending `input`) can't turn the intended 422 into a 500.
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"error": "validation_error", "detail": exc.errors(include_url=False)},
+            content=jsonable_encoder(
+                {"error": "validation_error", "detail": exc.errors(include_url=False)}
+            ),
         )
 
     @app.exception_handler(RequestValidationError)
     async def _request_422(_: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"error": "validation_error", "detail": exc.errors()},
+            content=jsonable_encoder({"error": "validation_error", "detail": exc.errors()}),
         )
 
     @app.exception_handler(PersonaError)
