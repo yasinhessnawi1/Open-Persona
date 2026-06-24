@@ -53,8 +53,6 @@ if TYPE_CHECKING:
     from sqlalchemy import Connection, Engine
 
     from persona_api.background.chat_turn_worker import ChatTurnHandle, ChatTurnRegistry
-    from persona_api.editions import CreditsPolicy
-    from persona_api.jobs.queue import JobQueue
     from persona_api.schemas import ChannelContext
     from persona_api.schemas import ImageRef as ImageRefSchema
     from persona_api.services.chat_turn_sink import MessagesTurnSink

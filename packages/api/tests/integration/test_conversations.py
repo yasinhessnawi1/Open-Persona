@@ -834,9 +834,7 @@ def test_active_turn_endpoints_are_rls_scoped(client: tuple[TestClient, str, str
             c.get(f"/v1/conversations/{conv}/active-turn", headers=_auth(other)).status_code == 404
         )
         assert (
-            c.post(
-                f"/v1/conversations/{conv}/active-turn/cancel", headers=_auth(other)
-            ).status_code
+            c.post(f"/v1/conversations/{conv}/active-turn/cancel", headers=_auth(other)).status_code
             == 404
         )
     finally:

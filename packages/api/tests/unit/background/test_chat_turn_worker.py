@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from persona.backends.types import StreamChunk, TokenUsage
 from persona.schema.conversation import Conversation
-from persona_api.background.chat_turn_worker import ChatTurnRegistry
+from persona_api.background.chat_turn_worker import ChatTurnHandle, ChatTurnRegistry
 from persona_api.errors import TurnAlreadyActiveError
 from persona_api.middleware.rls_context import current_user_id
 from persona_api.sandbox import get_sandbox_request_context
@@ -68,7 +68,9 @@ class _ScriptedLoop:
             await on_event(RunEvent.tier("frontier"))
         for i, delta in enumerate(self._deltas):
             is_final = i == len(self._deltas) - 1
-            yield StreamChunk(delta=delta, is_final=is_final, usage=self._usage if is_final else None)
+            yield StreamChunk(
+                delta=delta, is_final=is_final, usage=self._usage if is_final else None
+            )
 
 
 class _RecordingSink:
@@ -116,18 +118,20 @@ class _RecordingCredits:
 def _registry(
     sink: _RecordingSink,
     *,
-    credits: _RecordingCredits | None = None,
+    recording_credits: _RecordingCredits | None = None,
     credits_per_turn: int = 1,
 ) -> ChatTurnRegistry:
     return ChatTurnRegistry(
         sink=sink,
         rls_engine=object(),  # the recording credits double ignores it
-        credits_policy=credits,
+        credits_policy=recording_credits,
         credits_per_turn=credits_per_turn,
     )
 
 
-def _start(reg: ChatTurnRegistry, loop: object, *, on_complete: object | None = None) -> Any:
+def _start(
+    reg: ChatTurnRegistry, loop: object, *, on_complete: object | None = None
+) -> ChatTurnHandle:
     return reg.start(
         conversation_id=_CONV,
         owner_id=_OWNER,
@@ -139,7 +143,7 @@ def _start(reg: ChatTurnRegistry, loop: object, *, on_complete: object | None = 
     )
 
 
-def _drain(handle: Any) -> list[object]:
+def _drain(handle: ChatTurnHandle) -> list[object]:
     items: list[object] = []
     while not handle.events.empty():
         items.append(handle.events.get_nowait())
@@ -229,11 +233,14 @@ async def test_loop_error_emits_error_frame_no_done_and_finalizes_error() -> Non
 
 @pytest.mark.asyncio
 async def test_deduct_fires_once_on_clean_completion() -> None:
-    credits = _RecordingCredits()
-    handle = _start(_registry(_RecordingSink(), credits=credits, credits_per_turn=7), _ScriptedLoop(["ok"]))
+    recording_credits = _RecordingCredits()
+    handle = _start(
+        _registry(_RecordingSink(), recording_credits=recording_credits, credits_per_turn=7),
+        _ScriptedLoop(["ok"]),
+    )
     await handle.task
     # D-P1-billing-contract: bill on clean completion (regardless of presence).
-    assert credits.deducts == [(_OWNER, 7, "chat_turn")]
+    assert recording_credits.deducts == [(_OWNER, 7, "chat_turn")]
 
 
 @pytest.mark.asyncio
@@ -243,10 +250,10 @@ async def test_deduct_not_fired_on_error() -> None:
             raise RuntimeError("boom")
             yield  # pragma: no cover
 
-    credits = _RecordingCredits()
-    handle = _start(_registry(_RecordingSink(), credits=credits), _BoomLoop())
+    recording_credits = _RecordingCredits()
+    handle = _start(_registry(_RecordingSink(), recording_credits=recording_credits), _BoomLoop())
     await handle.task
-    assert credits.deducts == []  # error = no bill (D-08-6 unchanged for errors)
+    assert recording_credits.deducts == []  # error = no bill (D-08-6 unchanged for errors)
 
 
 @pytest.mark.asyncio
@@ -261,13 +268,13 @@ async def test_deduct_not_fired_on_user_cancel() -> None:
             await release.wait()
             yield StreamChunk(delta="never", is_final=True)  # pragma: no cover
 
-    credits = _RecordingCredits()
-    reg = _registry(_RecordingSink(), credits=credits)
+    recording_credits = _RecordingCredits()
+    reg = _registry(_RecordingSink(), recording_credits=recording_credits)
     handle = _start(reg, _BlockingLoop())
     await started.wait()
     reg.request_cancel(_CONV)
     await handle.task
-    assert credits.deducts == []  # explicit cancel = no bill, no partial billing
+    assert recording_credits.deducts == []  # explicit cancel = no bill, no partial billing
 
 
 @pytest.mark.asyncio
