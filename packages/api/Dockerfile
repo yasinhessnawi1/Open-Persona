@@ -1,8 +1,9 @@
 # Open Persona — `persona-api` production image (Spec 11, T10)
 #
 # Single uvicorn worker (S08-4 / D-08-5): the in-process agentic-run event bus
-# and the in-memory rate limiter require it. Migrations are run manually
-# (spec 07, §7) — NOT on container start — to keep deploys explicit.
+# and the in-memory rate limiter require it. Migrations run once per deploy via
+# the fly.toml release_command (packages/api/release.py) — NOT on container
+# start (Spec 07 §7) and not by hand; a release failure aborts the deploy.
 
 # ---------- builder ----------
 FROM python:3.12-slim AS builder

@@ -21,8 +21,13 @@ kill_timeout = "30s"
   # the full workspace tree.
 
 [deploy]
-  # Migrations are NOT auto-run on startup (spec 07 §7). FLY_DEPLOY.md spells
-  # out the explicit `flyctl ssh console -C "alembic upgrade head"` step.
+  # Auto-migrate on every deploy: release_command runs `alembic upgrade head` +
+  # the persona_app grants (packages/api/release.py) in a temp VM BEFORE the new
+  # version is promoted; a non-zero exit ABORTS the deploy, so code never ships
+  # against an un-migrated DB. This is a once-per-deploy step (NOT on container
+  # start — Spec 07 §7's concern), replacing the easy-to-forget manual §4b step
+  # that 500'd every conversation page when `messages.originated` was missing.
+  release_command = "python packages/api/release.py"
   strategy = "rolling"
 
 [env]
