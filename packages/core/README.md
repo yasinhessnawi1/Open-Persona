@@ -39,6 +39,14 @@ you can drive from Python or the terminal. It ships:
   instant; fall-back fold → fire once), the missed-fire policy decision, and the
   `schedule_id + fire_time` idempotency-key/handoff contract (the durable store +
   the single-leader tick live in `persona-api`).
+- a **task contract** (`persona.tasks`) — the durable entity *above* runs: the
+  frozen `TaskCheckpoint` (conclusions/intent/pointers, size-bounded — never
+  transcripts) + the `Task` state machine
+  (`defined → active → waiting(…) → … → completed | failed | cancelled`), the cost
+  ledger + the monotonic checkpoint-sequence idempotency anchor, the A4-authored
+  `Contract`, the pure context-reconstruction ordering, the leg box, the
+  resume-trigger seam, and the outcome reports (the leg executor + the durable
+  stores live in `persona-runtime` / `persona-api`).
 
 ## Install
 

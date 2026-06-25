@@ -22,6 +22,7 @@ __all__ = [
     "BrokenVersionChainError",
     "CalculatorError",
     "ChannelUnreachableError",
+    "CheckpointTooLargeError",
     "CreditsExhaustedError",
     "DuplicateJobTypeError",
     "InvalidRecurrenceRuleError",
@@ -46,6 +47,9 @@ __all__ = [
     "SkillManifestError",
     "SkillNameCollisionError",
     "StoreNotFoundError",
+    "TaskLegFailedError",
+    "TaskNotFoundError",
+    "TaskStateError",
     "ToolExecutionError",
     "ToolNotAllowedError",
     "UnknownDocumentFormatError",
@@ -423,4 +427,44 @@ class ScheduleStateError(PersonaError):
     Spec A1. E.g. recording a fire against a one-time schedule that has already
     completed, or otherwise driving a schedule through a transition its current
     state forbids. ``context`` carries the schedule id and the rejected operation.
+    """
+
+
+class TaskNotFoundError(PersonaError):
+    """Raised when a task (or one of its checkpoints) is not found for the owner.
+
+    Spec A2. RLS-scoped: a cross-tenant id is indistinguishable from a missing one
+    (both raise this — no existence oracle). ``context`` carries the ``task_id``.
+    """
+
+
+class TaskStateError(PersonaError):
+    """Raised when an illegal operation is attempted on a task's lifecycle state.
+
+    Spec A2. E.g. completing a task that never started, resuming a task that is not
+    waiting, or any transition the state machine forbids. ``context`` carries the
+    rejected ``from``/``to`` states (or the offending operation).
+    """
+
+
+class TaskLegFailedError(PersonaError):
+    """Raised when a task leg's run failed — a TRANSIENT signal for the job to retry.
+
+    Spec A2. A single leg error is not terminal: the handler raises this so A0 re-delivers
+    (the leg made no durable progress — no checkpoint was appended, so the head is
+    unadvanced and the retry re-runs the same leg). Only A0's exhaustion (dead-letter after
+    the retry cap) is terminal; the task→FAILED/``waiting(on_user)`` reaction to a dead-letter
+    is A3/T9. ``context`` carries the ``task_id``.
+    """
+
+
+class CheckpointTooLargeError(PersonaError):
+    """Raised when a task checkpoint's accumulating core exceeds its token budget.
+
+    Spec A2 (D-A2-1, the architectural lock). The checkpoint's bounded fields
+    (``progress_conclusions`` + ``decisions`` + ``lessons``) must stay *intent,
+    not history*; a write that still exceeds the budget after reflect-and-compact
+    raises this at the boundary rather than persisting an unbounded, ossifying
+    checkpoint. ``context`` carries the task/leg/sequence ids plus the offending
+    ``token_count`` and the ``token_budget`` it breached.
     """

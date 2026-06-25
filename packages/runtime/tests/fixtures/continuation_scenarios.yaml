@@ -1,0 +1,56 @@
+# Continuation evaluation scenario suite (Spec A2, T11 / A2-R-2).
+#
+# The judged gate behind criterion 2 — the direction's core quality evidence. Each scenario is
+# a multi-leg mission with TWO planted artifacts delivered through the production
+# reconstruction chain (contract → checkpoint → last-N → retrieval → trigger), never as a
+# transcript:
+#
+#   established_conclusion   a firm early-leg conclusion in the checkpoint. A coherent later
+#                            leg BUILDS on it; re-deriving it = AMNESIA.
+#   injected_fresh_fact      new knowledge surfaced (retrieval/trigger) at `injected_leg` that
+#                            INVALIDATES a standing plan-step. A coherent leg incorporates it;
+#                            executing the stale step = OSSIFICATION (only when F was provably
+#                            in the reconstructed context — the honesty clause).
+#   invalidated_plan_step    the standing step the fresh fact invalidates.
+#
+# Prior art: LongMemEval knowledge-updates, ClawArena belief-revision, ProEvolve stale-replay.
+
+scenarios:
+  - id: research-vector-store
+    mission: research
+    contract_goal: >-
+      Recommend ONE self-hosted vector store for a 50M-chunk persona index, under the stated
+      budget, with a pgvector-compatible migration path.
+    established_conclusion: >-
+      Pinecone is excluded — it is managed-only and violates the self-hosted constraint.
+    injected_fresh_fact: >-
+      A new benchmark shows pgvector's HNSW build time on 50M vectors is ~9 hours, exceeding
+      the contract's 2-hour maintenance-window requirement.
+    invalidated_plan_step: Write up pgvector as the recommendation.
+    injected_leg: 3
+
+  - id: monitoring-competitor-pricing
+    mission: monitoring
+    contract_goal: >-
+      Weekly, check three competitors' pricing pages; maintain a running positioning summary;
+      raise an alert ONLY on a material change (>15% or a tier restructure).
+    established_conclusion: >-
+      Baseline established in week 1: Competitor B has no free tier.
+    injected_fresh_fact: >-
+      Week 3: Competitor B has launched a free tier (a tier restructure, contradicting the
+      week-1 baseline).
+    invalidated_plan_step: Run the silent weekly price-diff and stay quiet (no >15% move).
+    injected_leg: 3
+
+  - id: preparation-release-cut
+    mission: preparation
+    contract_goal: >-
+      Prepare the v0.4 release: aggregate merged PRs into a changelog, write the migration
+      guide, and prepare (not push) the release branch. No breaking changes in a minor release.
+    established_conclusion: >-
+      PR #412 (auth refactor) is the only schema-touching change; the migration guide covers it.
+    injected_fresh_fact: >-
+      PR #427, merged since leg 1, introduces a breaking API rename — which under the
+      no-breaking-changes-in-a-minor rule means v0.4 cannot ship as a minor as planned.
+    invalidated_plan_step: Cut the v0.4 release branch as a minor.
+    injected_leg: 3

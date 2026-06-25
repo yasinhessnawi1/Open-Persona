@@ -1,0 +1,214 @@
+"""Task continuation — disposition → state machine + the resume seam (Spec A2, T8).
+
+Turns a leg's :class:`~persona_runtime.legs.LegOutcome` into the task's next move, and owns
+the resume path. The three continuations:
+
+- **CONTINUE (immediate)** — more work now: the task stays ``active`` and the next leg is
+  enqueued immediately (rides A0; the A2-R-4 key dedups a double-enqueue).
+- **CONTINUE + ``resume_at`` → ``waiting(until_time)``** — a "re-check in 4h" leg: the task goes
+  ``waiting(until_time)`` and the next leg is enqueued with ``scheduled_at = resume_at`` (rides
+  A0's ``scheduled_at``, the same mechanism A1's tick uses). Dormant: a queued-not-claimed job
+  + a state row — no leg running, no box, no held connection.
+- **COMPLETED** — the leg reached ``[FINAL]``: the task completes (the completion report is T9).
+
+A leg **FAILED** raises :class:`~persona.errors.TaskLegFailedError` so A0 re-delivers (transient;
+the leg appended nothing, so the head is unadvanced and the retry re-runs it). Exhaustion is
+A0's dead-letter; the task→FAILED reaction is A3/T9.
+
+**``waiting(on_user)``** is A3/A4-driven (an approval / a question — the leg poses something):
+:meth:`wait_on_user` parks the task at **zero cost** (a state row, NO job). The reply/event
+arrives later → :meth:`resume` enqueues the next leg carrying the trigger into its
+reconstruction. ``EventTrigger`` stays the reserved seam (no producer in v1, D-A2-5); the
+reply-injection is the defined ``UserReply`` path.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from persona.errors import TaskLegFailedError
+from persona.logging import get_logger
+from persona.tasks import (
+    ScheduledFire,
+    TaskState,
+    WaitKind,
+    build_cancellation_summary,
+    build_stuck_report,
+)
+from persona_runtime.legs import LegDisposition
+
+from persona_api.tasks.handler import TASK_LEG_JOB_TYPE, enqueue_task_leg
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from persona.tasks import (
+        CancellationSummary,
+        ResumeTrigger,
+        StuckReport,
+        TaskCheckpoint,
+    )
+    from persona_runtime.legs import LegOutcome
+
+    from persona_api.jobs.queue import JobQueue
+    from persona_api.tasks.store import CheckpointStore, TaskStore
+
+__all__ = ["TaskContinuation"]
+
+_log = get_logger("api.tasks.continuation")
+
+
+class TaskContinuation:
+    """Applies a leg outcome to the task lifecycle + owns the resume / failure / cancel paths."""
+
+    def __init__(
+        self,
+        *,
+        task_store: TaskStore,
+        queue: JobQueue,
+        checkpoint_store: CheckpointStore | None = None,
+    ) -> None:
+        self._tasks = task_store
+        self._queue = queue
+        self._checkpoints = checkpoint_store
+
+    def apply(self, owner_id: str, outcome: LegOutcome, *, now: datetime) -> None:
+        """Drive the task's next move from a leg outcome.
+
+        ``outcome.task`` is the post-append task (head advanced) for CONTINUE/COMPLETED.
+
+        Raises:
+            TaskLegFailedError: On a FAILED leg (so A0 re-delivers — transient).
+        """
+        task = outcome.task
+        if outcome.disposition == LegDisposition.COMPLETED:
+            self._tasks.complete(owner_id, task.id, now=now)
+            _log.info("task completed", task_id=task.id)
+            return
+        if outcome.disposition == LegDisposition.FAILED:
+            raise TaskLegFailedError("task leg failed; retry", context={"task_id": task.id})
+        # CONTINUE — another leg follows this checkpoint.
+        predecessor = task.head_checkpoint_seq
+        if outcome.resume_at is not None:
+            self._tasks.begin_wait(owner_id, task.id, WaitKind.UNTIL_TIME, now=now)
+            self._enqueue_next(owner_id, task.id, predecessor, outcome.resume_at)
+            _log.info("task waiting(until_time)", task_id=task.id)
+        else:
+            self._enqueue_next(owner_id, task.id, predecessor, now)  # immediate continuation
+
+    def wait_on_user(self, owner_id: str, task_id: str, *, now: datetime) -> None:
+        """Park the task on the user at ZERO cost (a state row, no job). A3/A4 drive this.
+
+        The leg posed an approval/question (C0 delivers it); the task is dormant until
+        :meth:`resume` is called with the reply. No job is enqueued — that is the zero-cost.
+        """
+        self._tasks.begin_wait(owner_id, task_id, WaitKind.ON_USER, now=now)
+        _log.info("task waiting(on_user)", task_id=task_id)
+
+    def resume(
+        self,
+        owner_id: str,
+        task_id: str,
+        trigger: ResumeTrigger,
+        *,
+        now: datetime,  # noqa: ARG002 — kept for call-site symmetry; transition is at pickup
+    ) -> None:
+        """The resume seam (TaskResumer) — a reply/fire/event arrived; enqueue the next leg.
+
+        Enqueues a leg carrying ``trigger`` into its reconstruction (the reply lands in the
+        next leg's trigger context). The handler performs the ``waiting → active`` transition
+        when it picks the job up (one resume point). ``now`` is accepted for symmetry; the
+        durable transition happens at pickup.
+        """
+        task = self._tasks.get(owner_id, task_id)
+        enqueue_task_leg(
+            self._queue,
+            owner_id=owner_id,
+            task_id=task_id,
+            predecessor_seq=task.head_checkpoint_seq,
+            trigger=trigger,
+        )
+        _log.info("task resume enqueued", task_id=task_id, trigger=trigger.kind)
+
+    # --- failure (A0 dead-letter → waiting(on_user)) + cancellation ---------
+
+    def react_to_dead_leg(
+        self, owner_id: str, task_id: str, cause: str, *, now: datetime
+    ) -> StuckReport | None:
+        """React to A0's REAL dead-letter (jobs.state='dead'): park the task on the user.
+
+        Failure-after-retries is NOT a silent terminal — the task transitions
+        ``active → waiting(on_user)`` with an honest :class:`StuckReport` (the dead job's
+        ``last_error`` as the real cause + where it stood). A3 voices it; the user can resume
+        or cancel; A3's reminder/auto-pause keeps it from haunting (no zombie). **Idempotent**:
+        a dead job processed twice (or for an already-parked/terminal task) is a no-op — the
+        ``active``-only guard is the single check (no second exhaustion derivation).
+
+        Returns the :class:`StuckReport`, or ``None`` if the task was not active (no-op).
+        """
+        task = self._tasks.get(owner_id, task_id)
+        if task.state != TaskState.ACTIVE:
+            return None  # already reacted / waiting / terminal — idempotent
+        checkpoint = self._latest_checkpoint(owner_id, task_id)
+        report = build_stuck_report(task, checkpoint, cause=cause, now=now)
+        self._tasks.begin_wait(owner_id, task_id, WaitKind.ON_USER, now=now)
+        _log.info("task stuck → waiting(on_user)", task_id=task_id, cause=cause)
+        return report
+
+    def sweep_dead_legs(
+        self, dead_letter_queue: JobQueue, *, now: datetime, limit: int = 50
+    ) -> int:
+        """Read A0's dead-letter queue and react to each dead ``task_leg`` job.
+
+        The cross-tenant read of ``dead_letters()`` is the worker's (a privileged queue); the
+        per-task reaction is owner-scoped. Returns the number of tasks parked.
+        """
+        reacted = 0
+        for job in dead_letter_queue.dead_letters(limit=limit):
+            if job.type != TASK_LEG_JOB_TYPE:
+                continue
+            task_id = str(job.payload.get("task_id", ""))
+            if not task_id:
+                continue
+            cause = job.last_error or "leg failed after retries"
+            if self.react_to_dead_leg(job.owner_id, task_id, cause, now=now) is not None:
+                reacted += 1
+        return reacted
+
+    def cancel(self, owner_id: str, task_id: str, *, now: datetime) -> CancellationSummary:
+        """User-initiated cancel → a clean terminal state + an honest where-things-stood.
+
+        The latest checkpoint is the durable where-it-stood (finalised at the prior leg end);
+        the task lands ``cancelled``. A leg in flight finishes its box and its append no-ops
+        against the now-terminal task (cancel wins; no corruption) — the cooperative mid-leg
+        ``CancelToken`` trip is the executor's ``external_cancel`` seam (T6), wired by the
+        worker's cancel signal at deploy.
+        """
+        task = self._tasks.get(owner_id, task_id)
+        summary = build_cancellation_summary(
+            task, self._latest_checkpoint(owner_id, task_id), now=now
+        )
+        self._tasks.cancel(owner_id, task_id, now=now)
+        _log.info("task cancelled", task_id=task_id)
+        return summary
+
+    def _latest_checkpoint(self, owner_id: str, task_id: str) -> TaskCheckpoint | None:
+        return (
+            self._checkpoints.get_latest(owner_id, task_id)
+            if self._checkpoints is not None
+            else None
+        )
+
+    def _enqueue_next(
+        self, owner_id: str, task_id: str, predecessor: int | None, fire_time: datetime
+    ) -> None:
+        """Enqueue the next leg (immediate if ``fire_time`` is now; scheduled if future)."""
+        trigger = ScheduledFire(schedule_id=f"self:{task_id}", fire_time=fire_time)
+        enqueue_task_leg(
+            self._queue,
+            owner_id=owner_id,
+            task_id=task_id,
+            predecessor_seq=predecessor,
+            trigger=trigger,
+            scheduled_at=fire_time,
+        )

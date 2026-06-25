@@ -11,6 +11,42 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### The autonomous task model (2026-06-25)
+
+- The **task** — a durable entity *above* runs. Spec 06's agentic loop executes minutes
+  of work in one session; a **task** spans hours or days through **many** such sessions
+  (**legs**), *waits* between them (on time, on the user, on the world), and **resumes as a
+  coherent continuation, not an amnesiac restart**. A leg is one agentic run executed as one
+  durable job, **boxed** (steps + per-leg budget + a wall-clock bound inside the worker's
+  drain) so any disruption — a deploy, a wait, a cancel — degrades to the same cheap
+  operation: *finish the box, write the checkpoint, stop.*
+- The thing that carries between legs is the **checkpoint** — durable working state recording
+  *progress (conclusions), intent (plan + next step), pointers (workspace artifacts), open
+  questions* — **never transcripts**. It is size-bounded (a 2000-token budget), so a long task
+  reflect-and-compacts rather than bloating. Every leg reconstructs context in a fixed order —
+  **contract → checkpoint → last-N leg summaries → live retrieval → the leg's trigger** — so it
+  holds yesterday's conclusions against today's knowledge.
+- `persona-core` `persona.tasks`: the frozen `TaskCheckpoint` + size-bound; the `Task` entity +
+  state machine (`defined → active → waiting(until_time|on_user|on_event) → … → completed |
+  failed | cancelled`, `paused` overlay) + the cost ledger + the monotonic checkpoint-sequence
+  idempotency anchor; the `Contract`; the pure context-reconstruction ordering; the leg box; the
+  resume-trigger seam; and the outcome reports (completion / stuck / cancellation — distinct
+  types, so a failure is never rendered as a success).
+- `persona-runtime` `persona_runtime.legs`: the leg executor (composes the **unmodified**
+  agentic loop, enforces the box at a step boundary, writes the checkpoint), milestone-grained
+  episodic distillation (no per-leg memory spam), and the production checkpoint distiller.
+- `persona-api` `persona_api.tasks`: the RLS-scoped, audited task + checkpoint stores (the
+  atomic compare-and-set append — at-least-once becomes effectively-once at the task layer); the
+  task-leg job handler (a leg as a durable job, additive in the worker); self-continuation,
+  `waiting(on_user)` + resume, completion, failure-after-retries → `waiting(on_user)` with an
+  honest stuck-report (from the durable dead-letter queue), and cancellation.
+- The **continuation evaluation** — a judged scenario suite (research / monitoring / preparation
+  missions, each with a planted established-conclusion and an injected fresh fact that
+  invalidates a standing plan-step) scored coherent-continuation vs amnesia vs ossification, the
+  direction's core quality evidence.
+- New migration: `tasks` + `task_checkpoints` (RLS-scoped; the `UNIQUE(task_id, checkpoint_seq)`
+  compare-and-set anchor). No new dependencies. The agentic loop is unmodified.
+
 ### Community edition hardening — boots keyless gracefully (2026-06-25)
 
 > The community edition (SQLite + Chroma, no Clerk, no required model key) assumed

@@ -42,6 +42,13 @@ the CLI for local use, the tests in CI. The loop itself is stateless per request
   step-history compaction at the tier budget, a cancel-token boundary, and an
   authoritative terminal status (`completed` / `max_steps_reached` / `cancelled` /
   `error`).
+- **`persona_runtime.legs`** — the **leg executor** for the autonomous task model: one
+  leg is one bounded run of the **unmodified** `AgenticLoop`, book-ended by context
+  reconstruction and a checkpoint write. It enforces the leg box (a wall-clock trip at
+  a step boundary, never mid-step), writes the checkpoint through a sink port (the api's
+  compare-and-set append), distils episodic memory at **milestone** granularity (no
+  per-leg spam), and uses the token-bounded `CompactingCheckpointWriter` so a many-leg
+  task never overflows the checkpoint budget.
 - **`TurnLog`** + `JSONLTurnLogWriter` / `MemoryTurnLogWriter` — per-turn telemetry
   (model, tokens, cost, routing decision, latency, fallback), durable to JSONL or
   held in memory for tests.

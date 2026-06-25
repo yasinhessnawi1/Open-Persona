@@ -81,6 +81,16 @@ identical across editions — community just feeds them a constant.
   (`fire-late-once` within a grace window / `skip-and-note`) that never
   burst-replays, and one `AuditEvent` per mutation. Scheduler knobs are
   `PERSONA_SCHEDULER_*` env vars.
+- **The autonomous task model** — RLS-scoped, audited `tasks` + `task_checkpoints`
+  tables and the durable stores (`persona_api.tasks`): a task spans days through
+  many bounded **legs**, each a leg-job hosted additively in the worker. The
+  checkpoint append is an atomic **compare-and-set** (`UNIQUE(task_id,
+  checkpoint_seq)` + `head IS NOT DISTINCT FROM :predecessor`), so a re-delivered
+  leg is a clean no-op — at-least-once becomes effectively-once *at the task layer*.
+  Self-continuation rides the worker's `scheduled_at`; `waiting(on_user)` parks the
+  task at zero cost until a reply resumes it; failure-after-retries reads the
+  durable **dead-letter** queue and parks the task `waiting(on_user)` with an honest
+  stuck-report; cancel/pause land cleanly.
 
 The **api** runs as a single uvicorn worker by design — its in-process run event
 bus and in-memory rate limiter assume one worker. The **job worker** is a separate

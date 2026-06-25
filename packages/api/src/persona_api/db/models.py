@@ -940,3 +940,92 @@ synthesis_markers = Table(
     ),
     Index("idx_synthesis_markers_owner", "owner_id"),
 )
+
+# The autonomous task model (Spec A2). A ``task`` is the durable entity above runs;
+# it spans days through many bounded agentic legs, each executed as an A0 job. Both
+# tables are owner-scoped + RLS like every tenant table (the leg handler sets the
+# owner GUC at job-execution top — D-A0-X-rls-chokepoint — and operates RLS-as-owner;
+# no ``job_dispatcher`` grant, matching synthesis_markers). Low-volume entity tables
+# (one row per task; one append per leg) → default autovacuum, no queue reloptions.
+tasks = Table(
+    "tasks",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("persona_id", Text, ForeignKey("personas.id", ondelete="CASCADE"), nullable=False),
+    # The frozen, A4-authored Contract (goal/scope/criteria/bounds). Written once at
+    # create, never updated by any leg path — immutability is app-enforced (only A4's
+    # amendment flow writes it; out of scope here). Stored whole as JSONB.
+    Column("contract_json", _json(), nullable=False),
+    Column("state", Text, nullable=False, server_default=text("'defined'")),
+    Column("paused", Boolean, nullable=False, server_default=text("false")),
+    # Set iff state='waiting' (the wait kind); enforced by tasks_wait_kind_iff_waiting.
+    Column("wait_kind", Text),
+    # The cost ledger (A2 accounts what A0 meters; A3 enforces against the SUM, A6 shows
+    # per-kind). BigInteger: a multi-day task can accumulate past Integer's ceiling.
+    Column("ledger_model_micros", BigInteger, nullable=False, server_default=text("0")),
+    Column("ledger_sandbox_micros", BigInteger, nullable=False, server_default=text("0")),
+    Column("ledger_external_micros", BigInteger, nullable=False, server_default=text("0")),
+    # The latest committed checkpoint sequence — the CAS target (NULL before leg one).
+    Column("head_checkpoint_seq", Integer),
+    # Linkage points A4/A6 consume.
+    Column("conversation_id", Text, ForeignKey("conversations.id", ondelete="SET NULL")),
+    Column("run_ids", _json(), nullable=False, server_default=text("'[]'")),
+    Column("workspace_id", Text),
+    Column("schedule_id", Text, ForeignKey("schedules.id", ondelete="SET NULL")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("schema_version", Text, nullable=False, server_default=text("'1.0'")),
+    CheckConstraint(
+        "state IN ('defined','active','waiting','completed','failed','cancelled')",
+        name="tasks_state_check",
+    ),
+    CheckConstraint(
+        "wait_kind IS NULL OR wait_kind IN ('until_time','on_user','on_event')",
+        name="tasks_wait_kind_check",
+    ),
+    # Defence-in-depth: the T2 model_validator invariant (wait_kind set iff WAITING)
+    # holds even for a direct SQL write (mirrors schedules' XOR check).
+    CheckConstraint(
+        "(wait_kind IS NOT NULL) = (state = 'waiting')",
+        name="tasks_wait_kind_iff_waiting",
+    ),
+    CheckConstraint(
+        "ledger_model_micros >= 0 AND ledger_sandbox_micros >= 0 AND ledger_external_micros >= 0",
+        name="tasks_ledger_nonneg",
+    ),
+    CheckConstraint(
+        "head_checkpoint_seq IS NULL OR head_checkpoint_seq >= 0",
+        name="tasks_head_seq_nonneg",
+    ),
+    Index("idx_tasks_owner", "owner_id"),
+    Index("idx_tasks_persona", "persona_id"),
+    # Find runnable/resumable tasks (the worker + A6).
+    Index("idx_tasks_active", "state", postgresql_where=text("state IN ('active','waiting')")),
+    # Resolve a schedule fire → its task.
+    Index("idx_tasks_schedule", "schedule_id", postgresql_where=text("schedule_id IS NOT NULL")),
+)
+
+# Append-only checkpoint sequence per task — the durable half of A2-R-4. The
+# UNIQUE(task_id, checkpoint_seq) is the compare-and-set anchor: a re-delivered leg's
+# duplicate (task_id, seq) INSERT no-ops via ON CONFLICT, while the tasks.head CAS
+# (UPDATE ... WHERE head_checkpoint_seq IS NOT DISTINCT FROM :predecessor) advances
+# exactly once. The composite UNIQUE (task_id leading) also serves the latest-checkpoint
+# read (WHERE task_id=? ORDER BY checkpoint_seq DESC LIMIT 1) — no extra index.
+task_checkpoints = Table(
+    "task_checkpoints",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("task_id", Text, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("checkpoint_seq", Integer, nullable=False),
+    # The frozen TaskCheckpoint (conclusions/decisions/lessons/plan/next_step/open
+    # questions/pointers/cursor) — read whole at reconstruction, never sub-field-queried.
+    Column("checkpoint_json", _json(), nullable=False),
+    Column("content_hash", Text, nullable=False),
+    Column("schema_version", Text, nullable=False, server_default=text("'1.0'")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint("checkpoint_seq >= 0", name="task_checkpoints_seq_nonneg"),
+    UniqueConstraint("task_id", "checkpoint_seq", name="uq_task_checkpoints_task_seq"),
+    Index("idx_task_checkpoints_owner", "owner_id"),
+)
