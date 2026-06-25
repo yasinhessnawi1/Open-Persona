@@ -17,8 +17,13 @@ jobs:
       - run: uv sync --all-packages
       - run: uv run ruff check
       - run: uv run ruff format --check
-      # Match the local check matrix exactly: strict on core+runtime, standard on api.
-      - run: uv run mypy packages/core/src packages/runtime/src --strict
+      # Match the local check matrix exactly: strict on the MIT/PolyForm engine
+      # packages (core + runtime + voice + connectors), standard on api.
+      # Strict tiers come from the canonical per-spec gates: every V2 task ran
+      # `mypy --strict ... packages/voice/src`, and C1/C2 close-out ran
+      # `mypy --strict packages/connectors/src`. api stays standard
+      # (`mypy packages/api/src`) per its run-local + close-out convention.
+      - run: uv run mypy packages/core/src packages/runtime/src packages/voice/src packages/connectors/src --strict
       - run: uv run mypy packages/api/src
 
   test:

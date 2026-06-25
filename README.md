@@ -180,6 +180,22 @@ uv run lint-imports                    # the MIT-engine ↛ PolyForm-app boundar
 cd packages/web && pnpm check:clerk-free   # the community bundle stays Clerk-free
 ```
 
+To verify the tree is green the way CI sees it (same tools, flags, order) before
+you push or after a merge, run the CI mirror:
+
+```bash
+./scripts/ci-local.sh                  # full: lint + types + unit + integration + web
+./scripts/ci-local.sh --fast           # quick: lint + types + collect-only + unit (defers integration + web)
+./scripts/ci-local.sh --no-integration # skip the Postgres leg (loudly reported)
+```
+
+Integration runs against a disposable `persona_test` DB on `:5436` (never the dev
+`persona` DB — the fixtures `DROP SCHEMA`). Install it as an opt-in pre-push hook:
+
+```bash
+ln -sf ../../scripts/pre-push.hook .git/hooks/pre-push   # runs --fast on push; bypass with `git push --no-verify`
+```
+
 For all environment variables (provider keys, Postgres URLs, voice credentials,
 feature toggles), copy `.env.example` to `.env` and fill in what you need — each
 section is grouped by package with the minimum set documented.

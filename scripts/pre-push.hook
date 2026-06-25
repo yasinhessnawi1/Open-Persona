@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Git pre-push hook (opt-in) — runs the SAME ci-local.sh (one source of truth).
+# =============================================================================
+#
+# INSTALL (from the repo root):
+#   ln -sf ../../scripts/pre-push.hook .git/hooks/pre-push
+#   # or copy:  cp scripts/pre-push.hook .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+#
+# BYPASS (emergency only — pushes WITHOUT running the checks):
+#   git push --no-verify
+#
+# MODE
+#   Defaults to --fast (lint + types + collect-only + unit; DEFERS integration
+#   + web to keep the push snappy). The summary still states what it skipped, so
+#   you are never falsely reassured. To run the FULL suite on push instead:
+#       export CI_LOCAL_HOOK_MODE=full
+#   (or edit HOOK_ARGS below). Full mode runs integration if the dev Postgres
+#   _test DB is reachable, else loudly skips it.
+# =============================================================================
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT="$REPO_ROOT/scripts/ci-local.sh"
+
+if [[ ! -x "$SCRIPT" ]]; then
+  echo "pre-push: $SCRIPT not found or not executable; skipping (run 'chmod +x scripts/ci-local.sh')." >&2
+  exit 0
+fi
+
+case "${CI_LOCAL_HOOK_MODE:-fast}" in
+  full) HOOK_ARGS=() ;;
+  *)    HOOK_ARGS=(--fast) ;;
+esac
+
+echo "pre-push: running scripts/ci-local.sh ${HOOK_ARGS[*]:-(full)} (bypass with: git push --no-verify)"
+"$SCRIPT" "${HOOK_ARGS[@]}"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  echo "pre-push: ci-local checks FAILED — push aborted. Fix, or bypass with 'git push --no-verify'." >&2
+fi
+exit $rc
