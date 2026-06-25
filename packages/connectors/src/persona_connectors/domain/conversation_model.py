@@ -24,8 +24,10 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict
 
 __all__ = [
+    "ChannelRef",
     "ConversationStateStore",
     "FlipPlan",
+    "ForegroundRef",
     "ForegroundResult",
     "NoOp",
     "Switch",
@@ -60,6 +62,54 @@ class Switch(BaseModel):
 
 # A foreground decision is either a no-op (re-name active) or a switch.
 FlipPlan = NoOp | Switch
+
+
+class ChannelRef(BaseModel):
+    """A connector channel a conversation belongs to (Spec C2 GAP-A, D-C2-X-gap-a-resolve-channel).
+
+    The reverse of the routing slot: given a Persona ``conversation_id``, *which*
+    platform channel does it live on? A C0-originated message carries only the
+    internal ``conversation_id`` (:class:`~persona.schema.origination.OriginatedMessage`),
+    but a connector's outbound (:class:`~persona_connectors.domain.normalise.NormalisedOutbound`)
+    needs the platform ``conversation_key`` to deliver — this value type bridges
+    that gap, returned by :meth:`ConversationStateStore.resolve_channel`.
+
+    Surfaced co-developing C2 (the first real adapter) against C1: the framework
+    owns the ``connector_conversations`` mapping, so the reverse lookup belongs in
+    the framework, not hand-rolled in each adapter (criterion 10 / C2-R-3).
+
+    Attributes:
+        platform: The opaque platform key (e.g. ``"telegram"``) — the deliverer key.
+        channel_key: The platform conversation key to deliver to (e.g. a Telegram
+            ``chat.id``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    platform: str
+    channel_key: str
+
+
+class ForegroundRef(BaseModel):
+    """The persona currently in the foreground of a channel + its live conversation.
+
+    The read primitive the inbound flow needs for the **no-name / continuation**
+    case (Spec C2 T-flow, gated with :class:`ChannelRef`): a message with no persona
+    name routes to the *active* persona (C1-D-4 sticky pointer), so the flow must
+    read who that is. CQS-clean: a read, symmetric with
+    :meth:`ConversationStateStore.resolve_channel` — the routing *decision*
+    (:func:`~persona_connectors.domain.routing.decide_route`) and the foreground
+    *flip* (:meth:`ConversationStateStore.foreground`) stay separate.
+
+    Attributes:
+        persona_id: The channel's currently-active (foregrounded) persona.
+        conversation_id: That persona's live conversation to drive the turn on.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    persona_id: str
+    conversation_id: str
 
 
 class ForegroundResult(BaseModel):
@@ -120,5 +170,50 @@ class ConversationStateStore(Protocol):
         suspends the previously-active persona's conversation (never ends it) and
         resumes the named persona's suspended conversation intact, or starts a fresh
         one — then points the channel at the named persona.
+        """
+        ...
+
+    def apply_new(self, *, owner_id: str, platform: str, channel_key: str) -> str | None:
+        """``/new``: end the active persona's conversation and start a fresh one (§3).
+
+        Per-persona-per-channel — only the *active* persona's slot is reset; the old
+        conversation persists as history. Returns the new conversation id, or
+        ``None`` when no persona is active. Owner-scoped + pointer-locked. (Declared
+        on the port so the inbound flow's ``/new`` command can call it through the
+        :class:`ConversationStateStore` abstraction — the concrete impl predates the
+        flow.)
+        """
+        ...
+
+    def current_foreground(
+        self, *, owner_id: str, platform: str, channel_key: str
+    ) -> ForegroundRef | None:
+        """Read the channel's active persona + its live conversation, or ``None``.
+
+        The no-name / continuation read: a message that names no persona routes to
+        the active persona (C1-D-4), so the flow reads who that is and which
+        conversation to continue. Returns ``None`` when no persona is foregrounded
+        (the channel's pointer is unset) — the flow then auto-foregrounds a sole
+        persona or replies with the list-and-instructions (C1-D-7). Owner-scoped
+        (RLS, like :meth:`resolve_channel`). A read (CQS) — never mutates.
+        """
+        ...
+
+    def resolve_channel(self, *, conversation_id: str) -> ChannelRef | None:
+        """Resolve which connector channel a ``conversation_id`` belongs to (GAP-A).
+
+        The reverse of :meth:`foreground`: maps a Persona ``conversation_id`` back
+        to its :class:`ChannelRef` ``(platform, channel_key)`` so a C0-originated
+        message (which carries only the ``conversation_id``) can be lowered to a
+        :class:`~persona_connectors.domain.normalise.NormalisedOutbound` and sent.
+        Returns ``None`` when the conversation has no connector channel (e.g. a
+        web-only conversation) — the deliverer maps that to ``pending`` (never a
+        silent drop, D-C1-X-platform-rejection).
+
+        **Owner-scoping is the caller's responsibility** (the RLS-through-connector
+        pattern, D-C1-X-rls-spine): this is a read scoped by the ambient
+        ``current_user_id`` GUC, so the caller sets the owner scope (from the
+        originated message's owner) BEFORE calling. It fails closed — no scope (or a
+        different owner's scope) → no rows → ``None``, never a cross-tenant leak.
         """
         ...

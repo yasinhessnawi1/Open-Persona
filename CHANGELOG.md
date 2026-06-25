@@ -11,6 +11,14 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Telegram — reach your persona on Telegram (2026-06-25)
+
+> Close-out of `telegram-adapter` — the **first concrete connector**, co-developed with the framework to prove it. A persona is now reachable on **Telegram**: message the bot by name and the shared flow drives a reply; link your Telegram account from the web with a one-time deep link; switch personas, `/new`, idle boundaries all work over a real chat. Deliberately **thin** — Telegram's protocol surface only; everything else (routing, persona selection, the conversation model, identity mapping, C0 delivery) is the framework's, *used* not reimplemented. **Zero new dependency** (the Bot API over `httpx`; webhook over FastAPI/uvicorn — all already in the lock).
+
+#### Added
+- **Telegram connector** (`persona_connectors.telegram`) — implements C1's `Connector` + C0's `MessageDeliverer` for Telegram. Inbound Telegram updates → C1's normalised shape (tz-aware UTC, `from.id`→identity, `chat.id`→channel); outbound persona replies rendered with an **HTML bold name tag** and split on natural boundaries at Telegram's 4096-char cap (UTF-16-aware, never mid-word/mid-surrogate); non-text (voice/photo/sticker) declined gracefully; a "typing…" working indicator on slow turns. **Account linking** via the `t.me/<bot>?start=<token>` deep link (single-use, short-TTL, opaque token — reusing the framework's bind, adversarially tested). **The runnable service** (`python -m persona_connectors`): long-poll (dev) or webhook (prod) transport, the authenticated linking issue route, and the periodic idle sweep.
+- **Security:** webhook updates validated by a constant-time secret-token check **before** parsing, fail-closed on an unset secret (mandatory); the bot token a `SecretStr`, never logged; **ownership over the platform holds exactly as on the web** — a Telegram identity reaches only its linked user's personas (C1 identity-mapping + RLS, proven cross-tenant on real Postgres).
+- **Framework co-development (criterion 10):** five small additive C1 corrections surfaced + made *in the framework* (not worked around in the adapter), so C3–C5 inherit them — the `conversation_id→channel` and active-persona reverse reads, the `apply_new` port-completion, the platform-agnostic routing decision (`decide_route`), and an idle-timer fix so an actively-used chat is never swept mid-conversation.
 ### Graph write paths — every interaction extends the shared memory (2026-06-25)
 
 > Close-out of `graph-write-paths` (Spec K2). How the shared knowledge graph (K0)

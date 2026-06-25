@@ -53,3 +53,55 @@ def test_database_url_defaults_empty() -> None:
     """No DB configured by default — the composition root tolerates absence (T1)."""
     config = ConnectorConfig()
     assert config.database_url == ""
+
+
+# --- Telegram adapter (Spec C2 T1) ---
+
+
+def test_telegram_credentials_default_to_none() -> None:
+    """No Telegram configured by default — token/secret absent until set (D-C2-X-credential)."""
+    config = ConnectorConfig()
+    assert config.telegram_bot_token is None
+    assert config.telegram_webhook_secret is None
+
+
+def test_telegram_bot_token_is_a_secret() -> None:
+    """The bot token is a SecretStr — never rendered in repr/str/logs (D-C2-X-credential)."""
+    config = ConnectorConfig(telegram_bot_token="123456:SECRET-BOT-TOKEN")  # noqa: S106 — test literal
+    assert config.telegram_bot_token is not None
+    # SecretStr masks the value everywhere except an explicit get_secret_value().
+    assert "SECRET-BOT-TOKEN" not in repr(config.telegram_bot_token)
+    assert "SECRET-BOT-TOKEN" not in str(config)
+    assert config.telegram_bot_token.get_secret_value() == "123456:SECRET-BOT-TOKEN"
+
+
+def test_telegram_webhook_secret_is_a_secret() -> None:
+    """The webhook secret is a SecretStr too (validate-before-parse uses it — D-C2-2)."""
+    config = ConnectorConfig(telegram_webhook_secret="hook-secret-abc")  # noqa: S106 — test literal
+    assert config.telegram_webhook_secret is not None
+    assert "hook-secret-abc" not in str(config)
+    assert config.telegram_webhook_secret.get_secret_value() == "hook-secret-abc"
+
+
+def test_telegram_transport_defaults_to_longpoll() -> None:
+    """D-C2-1: long-poll is the zero-infra dev default (no public endpoint needed)."""
+    config = ConnectorConfig()
+    assert config.telegram_transport == "longpoll"
+
+
+def test_telegram_transport_accepts_webhook() -> None:
+    """D-C2-1: webhook is the prod transport."""
+    config = ConnectorConfig(telegram_transport="webhook")
+    assert config.telegram_transport == "webhook"
+
+
+def test_telegram_transport_rejects_unknown_mode() -> None:
+    """An unknown transport is a misconfiguration — fail fast at the boundary."""
+    with pytest.raises(ValueError):  # noqa: PT011 — pydantic raises ValidationError (a ValueError)
+        ConnectorConfig(telegram_transport="carrier-pigeon")
+
+
+def test_telegram_api_base_url_default() -> None:
+    """The Bot API base defaults to the public host (overridable for tests/local server)."""
+    config = ConnectorConfig()
+    assert config.telegram_api_base_url == "https://api.telegram.org"

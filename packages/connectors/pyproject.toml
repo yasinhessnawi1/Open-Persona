@@ -60,6 +60,21 @@ dependencies = [
     # reshape (the reversibility guarantee). The api-coupling lives ONLY in
     # persona_connectors.composition.
     "persona-api",
+    # C2 (Telegram adapter, D-C2-X-no-new-dep): the Bot API is plain JSON-over-
+    # HTTPS, so the thin adapter talks to it with httpx directly (rejecting
+    # python-telegram-bot/aiogram, which invert control + duplicate C1's flow).
+    # NOT a new project dependency — httpx is already in the lock via
+    # persona-core[postgres]; this just declares the direct use (dep hygiene).
+    # The webhook transport (D-C2-1) reuses persona-api's FastAPI/uvicorn.
+    "httpx>=0.27,<1",
+    # C2 T7 (webhook transport, D-C2-1/D-C2-2): the connector service runs its own
+    # minimal ASGI app (webhook endpoint + the authenticated linking issue route),
+    # a separate process from persona-api (C1-D-1). FastAPI is already in the lock
+    # via persona-api — declaring the direct use (dep hygiene), not a new dep.
+    "fastapi>=0.111,<1",
+    # The service entry (`python -m persona_connectors`) serves the webhook ASGI app
+    # on uvicorn — already in the lock via persona-api; declaring the direct use.
+    "uvicorn[standard]>=0.30,<1",
 ]
 
 [project.urls]

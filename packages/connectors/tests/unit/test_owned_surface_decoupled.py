@@ -86,3 +86,24 @@ def test_the_composition_root_is_actually_api_coupled() -> None:
     """Sanity: composition.py genuinely imports persona_api (the guard isn't vacuous)."""
     source = (_PKG_DIR / "composition.py").read_text(encoding="utf-8")
     assert _imports_persona_api(source)
+
+
+def test_telegram_adapter_is_api_free() -> None:
+    """The Telegram adapter (Spec C2) is pure platform I/O — it never imports persona_api.
+
+    C2's ``telegram/`` package depends only on C1's owned-surface ports +
+    persona-core contracts + ``httpx``; the api-coupling that wires it to the live
+    service lives in the composition root (C1-D-1). This makes the reversibility
+    ideal a POSITIVE assertion (not just an absence in the allowlist): the whole
+    adapter could move with ``domain/`` in a future extract-to-core.
+    """
+    telegram_dir = _PKG_DIR / "telegram"
+    offenders = [
+        _module_stem(py_file)
+        for py_file in telegram_dir.rglob("*.py")
+        if _imports_persona_api(py_file.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], (
+        f"these telegram/ modules import persona_api, breaking the thin-adapter / "
+        f"reversibility ideal (C2 — keep api-coupling in composition): {offenders}"
+    )

@@ -209,6 +209,12 @@ with unified memory.
   turn-taking + barge-in, and the persona-conditioned reply producer writing voice
   turns to the same episodic store as text. The frontend voice client is the
   remaining piece.
+- **`persona-connectors`** — the framework that makes a persona reachable on
+  messaging platforms, plus the **first adapter: Telegram**. Link your Telegram
+  account from the web, then message your persona by name — switching personas,
+  `/new`, and idle boundaries all work over a real chat, with ownership isolated
+  exactly as on the web. The reference adapter the other platforms follow.
+  **Telegram shipped**; Discord/Slack/WhatsApp/SMS/email follow.
 
 See the [CHANGELOG](CHANGELOG.md) and each package's `CHANGELOG.md` for the
 per-surface history.

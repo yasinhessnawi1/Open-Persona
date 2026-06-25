@@ -29,6 +29,8 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from persona_connectors.domain.conversation_model import (
+    ChannelRef,
+    ForegroundRef,
     ForegroundResult,
     NoOp,
     decide_foreground,
@@ -103,8 +105,22 @@ class PostgresConversationStateStore:
                 named_has_resumable_slot=named_has_resumable,
             )
             if isinstance(plan, NoOp):
-                # Re-naming the active persona: its slot IS the active one — continue it.
+                # Re-naming / continuing the active persona: its slot IS the active one.
                 assert slot is not None  # invariant: active persona always has an active slot
+                # Bump last_activity_at — EVERY foreground call is an inbound message =
+                # activity, so a continuous single-persona chat keeps refreshing the idle
+                # timer and is never swept mid-conversation (the continuation-idle fix;
+                # the resume/fresh-start paths already set it, this closes the no-op gap).
+                conn.execute(
+                    update(connector_conversations)
+                    .where(
+                        connector_conversations.c.owner_id == owner_id,
+                        connector_conversations.c.platform == platform,
+                        connector_conversations.c.channel_key == channel_key,
+                        connector_conversations.c.persona_id == persona_id,
+                    )
+                    .values(last_activity_at=func.now(), updated_at=func.now())
+                )
                 return ForegroundResult(conversation_id=slot.conversation_id, resumed=True)
 
             # A switch: suspend the previously-active persona's conversation (never end it).
@@ -186,6 +202,63 @@ class PostgresConversationStateStore:
                 .values(active_persona_id=persona_id, updated_at=func.now())
             )
             return ForegroundResult(conversation_id=conversation_id, resumed=resumed)
+
+    def current_foreground(
+        self, *, owner_id: str, platform: str, channel_key: str
+    ) -> ForegroundRef | None:
+        """Read the channel's active persona + its live conversation (the no-name read).
+
+        Owner-scoped (RLS engine): reads the channel pointer's ``active_persona_id``,
+        then that persona's ``active`` conversation slot. ``None`` when no persona is
+        foregrounded (pointer unset) or — defensively — its slot isn't live (the idle
+        sweep clears the pointer when it ends a slot, so an active pointer normally
+        implies an active slot). A read (CQS), no ``FOR UPDATE``.
+        """
+        with self._owner_scope(owner_id), self._rls.begin() as conn:
+            active = conn.execute(
+                select(connector_channels.c.active_persona_id).where(
+                    connector_channels.c.owner_id == owner_id,
+                    connector_channels.c.platform == platform,
+                    connector_channels.c.channel_key == channel_key,
+                )
+            ).scalar()
+            if active is None:
+                return None
+            conversation_id = conn.execute(
+                select(connector_conversations.c.conversation_id).where(
+                    connector_conversations.c.owner_id == owner_id,
+                    connector_conversations.c.platform == platform,
+                    connector_conversations.c.channel_key == channel_key,
+                    connector_conversations.c.persona_id == active,
+                    connector_conversations.c.status == "active",
+                )
+            ).scalar()
+        if conversation_id is None:
+            return None
+        return ForegroundRef(persona_id=active, conversation_id=conversation_id)
+
+    def resolve_channel(self, *, conversation_id: str) -> ChannelRef | None:
+        """Reverse-resolve a ``conversation_id`` to its connector channel (GAP-A).
+
+        An owner-scoped read over ``connector_conversations`` — the
+        ``UNIQUE(conversation_id)`` constraint (C1 T5 schema-lock) guarantees ≤1
+        row, so this is a clean single-row lookup. Runs on the **RLS engine**: the
+        caller has already set the owner scope (from the originated message's
+        owner), so the read is confined to that owner — a different owner's
+        ``conversation_id`` (or no scope) matches nothing and yields ``None``
+        (fail-closed, no cross-tenant leak). **No DDL** — a read over existing
+        columns the schema-lock already backs.
+        """
+        with self._rls.begin() as conn:
+            row = conn.execute(
+                select(
+                    connector_conversations.c.platform,
+                    connector_conversations.c.channel_key,
+                ).where(connector_conversations.c.conversation_id == conversation_id)
+            ).first()
+        if row is None:
+            return None
+        return ChannelRef(platform=row.platform, channel_key=row.channel_key)
 
     def apply_new(self, *, owner_id: str, platform: str, channel_key: str) -> str | None:
         """`/new`: end the active persona's conversation and start a fresh one (§3).
