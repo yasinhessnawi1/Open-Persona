@@ -65,6 +65,7 @@ README.md
 !packages/runtime/README.md
 !packages/api/README.md
 !packages/voice/README.md
+!packages/connectors/README.md
 
 # Tests are not needed by the runtime image
 packages/*/tests/
