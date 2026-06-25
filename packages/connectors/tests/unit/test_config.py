@@ -30,8 +30,13 @@ def test_idle_timeout_must_be_positive() -> None:
         ConnectorConfig(idle_timeout_minutes=0)
 
 
-def test_edition_defaults_to_community() -> None:
+def test_edition_defaults_to_community(monkeypatch: pytest.MonkeyPatch) -> None:
     """Zero-infra default (Spec 33): community, single local owner, no auth."""
+    # The edition reads the prefix-less, shared PERSONA_EDITION. The api suite's
+    # session-scoped fixture exports PERSONA_EDITION=cloud and that process-global
+    # var persists into this cross-package full-suite run — so a *default* test
+    # must clear it to actually exercise the default (not the ambient env).
+    monkeypatch.delenv("PERSONA_EDITION", raising=False)
     config = ConnectorConfig()
     assert config.edition == "community"
     assert config.is_cloud is False

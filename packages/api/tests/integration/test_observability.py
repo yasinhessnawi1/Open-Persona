@@ -200,11 +200,16 @@ def test_failed_turn_does_not_deduct(ctx: tuple[TestClient, str, str, Engine]) -
 
     c.app.state.build_conversation_loop = _build_fail  # type: ignore[attr-defined]
     before = c.get("/v1/me/credits", headers=_auth(uid)).json()["balance"]
-    # the loop raises mid-stream; the generator propagates, persist/deduct skipped
-    with pytest.raises(RuntimeError):
-        c.post(f"/v1/conversations/{conv}/messages", json={"content": "hi"}, headers=_auth(uid))
+    # P1 background-worker model: the loop raises mid-stream, but the worker
+    # catches it (a background task never crashes silently), finalizes
+    # status="error" — which skips the deduction — and surfaces the failure as an
+    # ``event: error`` frame. The POST itself returns 200; the failure rides the
+    # stream rather than propagating as an exception.
+    r = c.post(f"/v1/conversations/{conv}/messages", json={"content": "hi"}, headers=_auth(uid))
+    assert r.status_code == 200
+    assert "turn_failed" in r.text  # the failure rode the stream (no silent success)
     after = c.get("/v1/me/credits", headers=_auth(uid)).json()["balance"]
-    assert after == before  # no deduction on failure
+    assert after == before  # no deduction on failure — the invariant
 
 
 def test_audit_log_on_persona_create(ctx: tuple[TestClient, str, str, Engine]) -> None:
