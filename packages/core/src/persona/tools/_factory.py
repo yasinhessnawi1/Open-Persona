@@ -24,7 +24,7 @@ from persona.tools.builtin.regex_match import make_regex_match_tool
 from persona.tools.builtin.text_diff import make_text_diff_tool
 from persona.tools.builtin.web_fetch import make_web_fetch_tool
 from persona.tools.builtin.web_search import make_web_search_tool
-from persona.tools.mcp.client import load_mcp_clients
+from persona.tools.mcp.client import MCPClient, load_mcp_clients
 from persona.tools.toolbox import Toolbox
 
 if TYPE_CHECKING:
@@ -32,13 +32,56 @@ if TYPE_CHECKING:
     from persona.schema.persona import Persona
     from persona.tools._sandbox import SandboxRootProvider
     from persona.tools.audit import ToolAuditLogger
-    from persona.tools.mcp.client import MCPClient
     from persona.tools.protocol import AsyncTool
     from persona.tools.workspace_persister import WorkspacePersister
 
 __all__ = ["build_default_toolbox"]
 
 _logger = get_logger("tools.factory")
+
+#: The server name the Docker MCP Gateway registers under (Spec N1, D-N1-6); its
+#: aggregated tools are prefixed ``mcp:docker:<tool>``.
+_GATEWAY_SERVER_NAME = "docker"
+
+
+def _build_gateway_client(
+    config: PersonaCoreConfig,
+    persona: Persona,
+    audit_logger: ToolAuditLogger | None,
+) -> MCPClient | None:
+    """Build the Docker MCP Gateway client, or ``None`` (Spec N1, D-N1-1/2/5/6).
+
+    Returns ``None`` when no gateway URL is configured (fail-soft) OR the persona's
+    explicit allow-list references no gateway tool — so a gateway a persona can't use
+    is never connected (lazy, mirroring the D-27-3 built-in lazy-spawn discipline). A
+    persona with NO declared tools is the all-allowed dev/CLI path, so it does connect.
+
+    The client is **connect-only, operator-trust**: ``enforce_ssrf=False`` (the gateway
+    URL is operator deployment config, same posture as the ``PERSONA_MCP_SERVERS``
+    channel, D-N1-2), bearer header only when a token is set (D-N1-5 — a ``SecretStr``,
+    never logged). Tools are prefixed ``mcp:docker:`` via ``server_name``.
+
+    Crucially, the returned client's tools are added to the GATED ``mcp_tools`` path by
+    the caller (filtered by the persona's ``tools`` allow-list), NOT auto-allowed like
+    assigned BYO servers — "enable once in Docker, then opt each persona in" (D-N1-6).
+    """
+    url = config.docker_mcp_gateway_url
+    if not url:
+        return None
+    prefix = f"mcp:{_GATEWAY_SERVER_NAME}:"
+    references_gateway = (not persona.tools) or any(t.startswith(prefix) for t in persona.tools)
+    if not references_gateway:
+        return None
+    token = config.docker_mcp_gateway_token
+    headers = {"Authorization": f"Bearer {token.get_secret_value()}"} if token else None
+    return MCPClient(
+        server_name=_GATEWAY_SERVER_NAME,
+        server_url=url,
+        audit_logger=audit_logger,
+        persona_id=persona.persona_id,
+        enforce_ssrf=False,  # operator deployment config — operator-channel posture (D-N1-2)
+        headers=headers,
+    )
 
 
 async def build_default_toolbox(
@@ -156,6 +199,18 @@ async def build_default_toolbox(
         )
         for c in mcp_clients:
             mcp_tools.extend(c.get_tools())
+
+    # Spec N1 (D-N1-1/6) — the Docker MCP Gateway as a 4th MCP source. Connect-only,
+    # streamable-HTTP, operator-trust (enforce_ssrf=False, D-N1-2). Its aggregated tools
+    # are prefixed ``mcp:docker:`` and ride the GATED ``mcp_tools`` path — the persona's
+    # ``tools`` allow-list is the gate, so it is "enable once in Docker, then opt each
+    # persona in," never auto-grant (D-N1-6). Graceful: an unreachable gateway (strict=
+    # False) simply contributes no tools, exactly like any other MCP source.
+    gateway_client = _build_gateway_client(config, persona, tool_audit_logger)
+    if gateway_client is not None:
+        await gateway_client.connect(strict=False)
+        mcp_tools.extend(gateway_client.get_tools())
+        mcp_clients.append(gateway_client)
 
     # Spec 30 (D-30-4/6) — bring-your-own MCP clients (SSRF-pinned, pre-built by
     # the API factory). Connect gracefully; their tool names are auto-allowed

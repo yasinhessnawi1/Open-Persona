@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import pytest
 from persona.tools.mcp.catalog import (
     BUILTIN_MCP_CATALOG,
+    CATALOG_PATH,
+    MCPSecretField,
     MCPServerCatalogEntry,
     authored_server_names,
     default_enabled_server_names,
@@ -97,6 +99,92 @@ def test_entry_is_frozen_and_forbids_extra_fields() -> None:
         MCPServerCatalogEntry.model_validate(
             {"name": "x", "description": "d", "kind": "builtin", "risk": "low", "bogus": 1}
         )
+
+
+# -- N1 (D-N1-3): additive display-metadata fields for the Docker catalog mirror ---
+
+
+def test_actual_builtin_catalog_loads_through_the_extended_model() -> None:
+    """Import-regression (D-N1-3): the REAL bundled ``catalog.toml`` must validate.
+
+    Loads the actual on-disk builtin catalog (not a synthetic fixture) through the
+    extended ``MCPServerCatalogEntry``. Because the model is ``extra="forbid"`` +
+    frozen, any NEW display field added without a default would make every builtin
+    row fail to validate at import — this test catches that for real. Every N1
+    display field MUST be additive-with-default; the builtin rows declare none of
+    them, so they all resolve to their defaults below.
+    """
+    catalog = load_mcp_catalog(CATALOG_PATH)
+    assert catalog.servers, "the bundled catalog must load"
+    for entry in catalog.servers.values():
+        # New mirror fields default cleanly for builtin rows (which set none of them).
+        assert entry.display_name == ""
+        assert entry.icon_url == ""
+        assert entry.image == ""
+        assert entry.source_project == ""
+        assert entry.source_commit == ""
+        assert entry.signed is False
+        assert entry.allow_hosts == ()
+        assert entry.secrets == ()
+        assert entry.server_type == "builtin"
+
+
+def test_entry_accepts_mirror_display_metadata() -> None:
+    """A mirror-shaped entry (Docker ``server.yaml``) round-trips through the model."""
+    entry = MCPServerCatalogEntry.model_validate(
+        {
+            "name": "github-official",
+            "description": "Official GitHub MCP Server.",
+            "kind": "external",
+            "risk": "medium",
+            "display_name": "GitHub Official",
+            "icon_url": "https://avatars.githubusercontent.com/u/9919?s=200&v=4",
+            "image": "ghcr.io/github/github-mcp-server",
+            "server_type": "server",
+            "source_project": "https://github.com/github/github-mcp-server",
+            "source_commit": "23fa0dd1a821d1346c1de2abafe7327d26981606",
+            "signed": True,
+            "allow_hosts": ("api.github.com:443", "github.com:443"),
+            "secrets": (
+                {
+                    "name": "github.personal_access_token",
+                    "env": "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "example": "<YOUR_TOKEN>",
+                    "description": "Create a token on GitHub.",
+                },
+            ),
+        }
+    )
+    assert entry.display_name == "GitHub Official"
+    assert entry.server_type == "server"
+    assert entry.source_commit == "23fa0dd1a821d1346c1de2abafe7327d26981606"
+    assert entry.signed is True
+    assert entry.allow_hosts == ("api.github.com:443", "github.com:443")
+    assert len(entry.secrets) == 1
+    assert entry.secrets[0].env == "GITHUB_PERSONAL_ACCESS_TOKEN"
+
+
+def test_secret_field_is_frozen_and_forbids_extra() -> None:
+    field = MCPSecretField(name="x.token", env="X_TOKEN")
+    assert field.example == ""  # optional display fields default empty
+    assert field.description == ""
+    with pytest.raises(ValidationError):
+        field.env = "Y"  # type: ignore[misc] — frozen → assignment rejected
+    with pytest.raises(ValidationError):
+        MCPSecretField.model_validate({"name": "x", "env": "X", "bogus": 1})
+
+
+def test_secrets_are_display_only_no_value_field() -> None:
+    """D-N1-5: the mirror carries the secret SCHEMA, never a value.
+
+    ``MCPSecretField`` exposes only name/env/example/description — there is no
+    field that could hold a credential value. Credential isolation starts in the
+    type: the catalog cannot transport a secret even by accident.
+    """
+    fields = set(MCPSecretField.model_fields)
+    assert fields == {"name", "env", "example", "description"}
+    assert "value" not in fields
+    assert "credential" not in fields
 
 
 def test_malformed_catalog_fails_loud(tmp_path: Path) -> None:

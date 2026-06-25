@@ -47,6 +47,7 @@ from persona_api.db.engine import create_db_engine
 from persona_api.editions import (
     build_credits_policy,
     build_owner_resolver,
+    check_gateway_edition_posture,
     check_public_noauth_guard,
 )
 from persona_api.errors import register_exception_handlers
@@ -485,6 +486,9 @@ def create_app(config: APIConfig | None = None) -> FastAPI:
     # Spec 33 D-33-4: refuse to start a community/no-auth process on a public
     # bind unless explicitly opted in — fail-safe before any collaborator wiring.
     check_public_noauth_guard(config)
+    # Spec N1 D-N1-7: refuse to start cloud with a Docker MCP Gateway URL unless the
+    # operator acknowledges the vetted-shared-across-tenants posture (community: no gate).
+    check_gateway_edition_posture(config)
 
     app = FastAPI(
         title="Persona API",

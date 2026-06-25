@@ -503,12 +503,31 @@ class MCPServerTestResult(_Output):
     error: str | None = None
 
 
+class MCPCatalogSecret(_Output):
+    """A credential an MCP server requires — DISPLAY-ONLY schema (Spec N1, D-N1-5).
+
+    Carries **no value field by construction**: the catalog API exposes WHICH secret a
+    server needs (so the apps UX can render the setup form), never a secret value. The
+    credential isolation property (user → secret store → Gateway, never an LLM turn) is
+    upheld at the API boundary, not just internally.
+    """
+
+    name: str
+    env: str
+    example: str = ""
+    description: str = ""
+
+
 class MCPCatalogServer(_Output):
-    """A built-in MCP server in the management catalog (spec 30 T11).
+    """An MCP server in the management catalog (spec 30 T11 + N1).
 
     A persona enables a server by adding ``mcp:<name>`` to its ``tools``
     allow-list. ``provider`` is the recommender tag (``mcp:builtin`` /
     ``mcp:optional``); ``required_env`` lists env vars an operator must set.
+
+    The N1 fields below carry the Docker catalog-mirror display metadata the apps UX
+    (N3) renders. They are **additive-with-default** so the existing five-field
+    contract is unchanged — a client written against spec 30 sees no break.
     """
 
     name: str
@@ -516,3 +535,14 @@ class MCPCatalogServer(_Output):
     provider: str
     default_enabled: bool
     required_env: list[str] = Field(default_factory=list)
+    # -- N1 (D-N1-3): Docker catalog-mirror display metadata (additive-with-default) --
+    display_name: str = ""
+    icon_url: str = ""
+    image: str = ""
+    server_type: str = "builtin"
+    risk: str = "low"
+    source_project: str = ""
+    source_commit: str = ""
+    signed: bool = False
+    allow_hosts: list[str] = Field(default_factory=list)
+    secrets: list[MCPCatalogSecret] = Field(default_factory=list)

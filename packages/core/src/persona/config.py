@@ -117,6 +117,20 @@ class PersonaCoreConfig(BaseSettings):
             return {}
         return _parse_mcp_servers_string(self.mcp_servers)
 
+    # Spec N1 (D-N1-1/2/5/8) — the Docker MCP Gateway as an aggregating MCP source.
+    # Connect-only: Persona connects to an externally-managed gateway, never spawns it
+    # (no Docker socket). The URL is OPERATOR deployment config (same trust tier as
+    # ``mcp_servers`` / ``DATABASE_URL``) — NOT user-supplied — so it is connected
+    # WITHOUT SSRF pinning (D-N1-2), exactly like the operator channel. It MUST be the
+    # gateway's streamable-HTTP endpoint (``--transport streaming`` ``/mcp`` path), NOT
+    # the legacy SSE transport (D-03-19). Unset → no gateway source (fail-soft).
+    docker_mcp_gateway_url: str = ""
+    # Optional bearer token for a non-loopback gateway (D-N1-5). A ``SecretStr`` so it
+    # is never logged; it rides the existing client header path only
+    # (``Authorization: Bearer …``) — never a prompt, tool spec, or audit line. A
+    # loopback gateway needs none.
+    docker_mcp_gateway_token: SecretStr | None = None
+
     # Spec 27 (D-27-4) — which built-in MCP servers an operator opts into. Stored
     # as a raw string so the "unset" case (None → catalog safe-subset) is
     # distinguishable from the "explicit empty" case ("" → opt out of all). The

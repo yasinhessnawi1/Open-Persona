@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from persona.skills import BUILTIN_ROOT, SkillScanner
 from persona.tools import TOOL_CATALOG
-from persona.tools.mcp.catalog import BUILTIN_MCP_CATALOG, recommender_provider_tag
+from persona.tools.mcp.catalog import BUILTIN_MCP_CATALOG, MCPServerCatalogEntry
+from persona.tools.mcp.mirror import load_mirror_catalog
 
-__all__ = ["list_mcp_servers", "list_skills", "list_tools"]
+__all__ = ["list_skills", "list_tools", "merged_mcp_catalog"]
 
 # Every bundled skill folder under persona/skills/builtin (architecture §9.3,
 # spec 13). The scanner emits one entry per declared skill that exists on disk.
@@ -51,18 +52,25 @@ def list_skills() -> list[tuple[str, str]]:
     return [(s.name, s.description) for s in scanned]
 
 
-def list_mcp_servers() -> list[tuple[str, str, str, bool, list[str]]]:
-    """The built-in MCP servers as ``(name, description, provider, default, required_env)``.
+def merged_mcp_catalog() -> list[MCPServerCatalogEntry]:
+    """The MCP catalog the management UI lists: builtin floor + Docker mirror (N1).
 
-    Spec 30 T11 — the management UI surfaces these alongside built-in tools +
-    skills as one capability set. A persona enables a server by adding
-    ``mcp:<name>`` to its ``tools`` allow-list. ``provider`` is the recommender
-    tag (``mcp:builtin`` for default-enabled authored servers, else
-    ``mcp:optional``). Sourced from the persona-core MCP catalog (the single
-    source of truth, mirroring ``list_tools``); bring-your-own servers are NOT
-    here (they live per-user, surfaced via ``GET /v1/mcp-servers``).
+    Spec 30 T11 + N1 (D-N1-3/4). The bundled ``catalog.toml`` is the authoritative
+    **floor** — it is also the fail-soft fallback target — so its authored entries
+    (curated security notes, gap-detection keywords, verb-phrase capabilities)
+    **supersede a same-named mirror entry**; the ~220–300 Docker-registry mirror fills
+    the long tail. Merge policy is therefore a name-keyed union with **builtin-wins on
+    collision**, in a deterministic order: builtins (``catalog.toml`` order) first,
+    then mirror entries (mirror order) whose names are not already a builtin.
+
+    When no mirror snapshot exists, :func:`load_mirror_catalog` returns the builtin
+    catalog (its fallback), so the result is exactly the builtins — a turn with no
+    mirror still resolves every built-in server. A persona enables a server by adding
+    ``mcp:<name>`` to its ``tools`` allow-list; bring-your-own servers are NOT here
+    (they live per-user, surfaced via ``GET /v1/mcp-servers``).
     """
-    return [
-        (name, e.description, recommender_provider_tag(e), e.default_enabled, list(e.required_env))
-        for name, e in BUILTIN_MCP_CATALOG.servers.items()
-    ]
+    merged: dict[str, MCPServerCatalogEntry] = dict(BUILTIN_MCP_CATALOG.servers)
+    for name, entry in load_mirror_catalog().servers.items():
+        if name not in merged:  # builtin-wins on name collision
+            merged[name] = entry
+    return list(merged.values())

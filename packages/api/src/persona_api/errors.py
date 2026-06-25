@@ -83,6 +83,18 @@ class PublicNoAuthRefusedError(PersonaError):
     """
 
 
+class CloudGatewayNotVettedError(PersonaError):
+    """Raised at startup when cloud has a Docker MCP Gateway URL but no vetting ack (N1, D-N1-7).
+
+    A cloud (multi-tenant) gateway is connect-only to an operator-run gateway whose
+    aggregated tools are SHARED across tenants — so it must be operator-vetted. Mirroring
+    the D-33-4 public-noauth guard, the operator must acknowledge the vetted-shared
+    posture via ``PERSONA_ALLOW_CLOUD_GATEWAY=1``; per-tenant gateways, per-tenant
+    container-running, and per-user secret injection are deferred (D-N1-7). Unset the
+    gateway URL or set the ack flag.
+    """
+
+
 class ConversationNotFoundError(PersonaError):
     """Raised when a conversation is not visible to the current user (→ 404)."""
 

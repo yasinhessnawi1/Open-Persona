@@ -11,6 +11,48 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Docker MCP Gateway integration & catalog mirror (2026-06-25)
+
+> Close-out of `docker-mcp-gateway`. Turns MCP from "configure each server, per
+> user" into "**enable once in Docker, then opt each persona in.**" The runtime
+> connects to an externally-run **Docker MCP Gateway** as a single aggregating MCP
+> endpoint, and the apps catalog is a **mirror** of `github.com/docker/mcp-registry`
+> (~300 servers), synced offline. Local-first and **connect-only** (Persona never
+> spawns the gateway — no Docker socket), reusing the existing streamable-HTTP + bearer
+> client path → near-zero new transport code. **Credentials never enter a model turn.**
+> Zero new dependency; **no migration**.
+
+#### Added
+- **Docker MCP Gateway as a 4th MCP source.** Set `PERSONA_DOCKER_MCP_GATEWAY_URL`
+  (the gateway's `--transport streaming` `/mcp` endpoint) and every enabled server's
+  tools arrive through one connection, prefixed `mcp:docker:<tool>`. Connect-only;
+  operator-trust (not SSRF-pinned, like the existing operator MCP channel); optional
+  bearer (`PERSONA_DOCKER_MCP_GATEWAY_TOKEN`, a secret — header-only, never logged).
+  **The per-persona allow-list stays the gate** — a server enabled in Docker is not
+  auto-granted; each persona opts in by listing the tool (an un-opted persona never
+  even connects the gateway).
+- **Catalog mirror.** An offline sync clones `docker/mcp-registry`, parses each
+  `server.yaml`, and writes a local `mirror.json` the catalog loads **zero-network** at
+  request time (verified: 328 live entries parse under the strict model). The
+  `/v1/mcp-catalog` surface gains additive display metadata — friendly name, icon,
+  image, provenance commit, signing/trust labels, and each server's **credential
+  schema** (which secrets it needs — *never a value*, by construction). The built-in
+  catalog is the floor (builtin-wins on a name collision); a missing/corrupt mirror
+  **fails soft** to the built-in catalog (boot never breaks).
+- **Edition split (honest).** Community = the full local gateway integration. Cloud =
+  the mirror shown + connect-only to an operator-**vetted** gateway; it **refuses to
+  start** with a gateway URL unless the operator acknowledges the shared-across-tenants
+  posture (`PERSONA_ALLOW_CLOUD_GATEWAY=1`). Per-tenant gateways, container-running, and
+  per-user secret injection are deferred.
+
+#### Security
+- **Credential isolation, proven end-to-end.** The gateway bearer flows operator →
+  transport → gateway and reaches **no model-facing surface** — not the prompt's tool
+  specs, tool-call args, tool result, or audit log (a real-dispatch adversarial test
+  confirms it reaches the wire yet appears in none of them). The mirror's secret schema
+  is display-only. Per-user secret injection is a defined-but-reserved seam for a future
+  release (no live path connect-only can deliver).
+
 ### The autonomous task model (2026-06-25)
 
 - The **task** — a durable entity *above* runs. Spec 06's agentic loop executes minutes

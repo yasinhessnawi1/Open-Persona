@@ -337,6 +337,105 @@ class TestBuildDefaultToolboxWithMCP:
         assert len(unavail) == 1
 
 
+# Section: Spec N1 — the Docker MCP Gateway as a 4th MCP source (D-N1-1/2/5/6)
+
+
+@asynccontextmanager
+async def _fake_transport_kw(_url: str, **_kw: Any) -> Any:  # noqa: ANN401
+    # Accepts **kwargs so the gateway's headers (bearer) arg is tolerated.
+    yield (MagicMock(), MagicMock(), MagicMock())
+
+
+def _patch_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mcp
+    import mcp.client.streamable_http as shttp
+
+    monkeypatch.setattr(shttp, "streamablehttp_client", _fake_transport_kw)
+    monkeypatch.setattr(mcp, "ClientSession", _fake_session)
+
+
+def _gateway(clients: list[Any]) -> Any:  # noqa: ANN401
+    return next((c for c in clients if c.server_name == "docker"), None)
+
+
+class TestBuildDefaultToolboxWithGateway:
+    @pytest.mark.asyncio
+    async def test_opted_in_persona_sees_gateway_tools(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D-N1-6: a persona opts in by naming the gateway tool in its allow-list.
+        _patch_mcp(monkeypatch)
+        config = PersonaCoreConfig(
+            tools_sandbox_root=tmp_path,
+            docker_mcp_gateway_url="http://127.0.0.1:8811/mcp",
+        )
+        persona = _persona(tools=["mcp:docker:search"])
+        toolbox, clients = await build_default_toolbox(config, persona)
+
+        assert "mcp:docker:search" in toolbox.names()  # the opted-in gateway tool
+        gw = _gateway(clients)
+        assert gw is not None
+        assert gw.is_connected
+
+    @pytest.mark.asyncio
+    async def test_un_opted_persona_does_not_see_gateway_tools(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The load-bearing D-N1-6 guarantee: enable-once-in-Docker is NOT auto-grant.
+        # A persona whose allow-list names no gateway tool sees none — and the gateway
+        # is not even connected for it (lazy, no waste).
+        _patch_mcp(monkeypatch)
+        config = PersonaCoreConfig(
+            tools_sandbox_root=tmp_path,
+            docker_mcp_gateway_url="http://127.0.0.1:8811/mcp",
+        )
+        persona = _persona(tools=["file_write"])  # explicit allow-list, NO gateway tool
+        toolbox, clients = await build_default_toolbox(config, persona)
+
+        assert "mcp:docker:search" not in toolbox.names()
+        assert _gateway(clients) is None  # not auto-connected for an un-opted persona
+
+    @pytest.mark.asyncio
+    async def test_no_gateway_url_means_no_gateway_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_mcp(monkeypatch)
+        config = PersonaCoreConfig(tools_sandbox_root=tmp_path)  # no gateway URL
+        persona = _persona(tools=["mcp:docker:search"])
+        _toolbox, clients = await build_default_toolbox(config, persona)
+        assert _gateway(clients) is None
+
+    @pytest.mark.asyncio
+    async def test_gateway_client_is_operator_trust_with_bearer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D-N1-2: operator-trust (enforce_ssrf=False, like PERSONA_MCP_SERVERS, NOT the
+        # SSRF-pinned BYO path). D-N1-5: the bearer rides the header path; it is a
+        # SecretStr (never logged) and never appears in an audit line.
+        _patch_mcp(monkeypatch)
+        config = PersonaCoreConfig(
+            tools_sandbox_root=tmp_path,
+            docker_mcp_gateway_url="http://gateway.internal:8811/mcp",
+            docker_mcp_gateway_token="gw-secret-token",
+        )
+        persona = _persona(tools=["mcp:docker:search"])
+        audit = MemoryToolAuditLogger()
+        _toolbox, clients = await build_default_toolbox(config, persona, tool_audit_logger=audit)
+
+        gw = _gateway(clients)
+        assert gw is not None
+        assert gw._enforce_ssrf is False  # operator-trust, not SSRF-pinned
+        # streaming /mcp URL passed through verbatim (the transport trap — D-N1-1).
+        assert gw._server_url == "http://gateway.internal:8811/mcp"
+        # bearer rides the header path only.
+        assert gw._headers == {"Authorization": "Bearer gw-secret-token"}
+        # the token is a SecretStr → never leaked by config repr (D-N1-5).
+        assert "gw-secret-token" not in repr(config)
+        # the secret never appears in any audit line.
+        for event in audit.events:
+            assert "gw-secret-token" not in str(event.metadata)
+
+
 # Section: Spec 26 — built-in tools are wired into build_default_toolbox
 # (AC #2 — no Spec 15 §2.9 wiring gap: every new factory has an integration
 # test proving the composed Toolbox advertises it when allow-listed).

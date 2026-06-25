@@ -15,10 +15,11 @@ from persona_api.editions import (
     UnlimitedCreditsPolicy,
     build_credits_policy,
     build_owner_resolver,
+    check_gateway_edition_posture,
     check_public_noauth_guard,
 )
 from persona_api.editions.guard import _is_loopback
-from persona_api.errors import PublicNoAuthRefusedError
+from persona_api.errors import CloudGatewayNotVettedError, PublicNoAuthRefusedError
 
 
 def test_edition_defaults_to_community(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,3 +118,47 @@ def test_guard_never_gates_cloud() -> None:
     check_public_noauth_guard(
         APIConfig(edition=Edition.cloud, host="0.0.0.0", allow_public_noauth=False)
     )
+
+
+# -- N1 (D-N1-7): the Docker MCP Gateway edition posture ----------------------
+
+_GW_URL = "http://gateway.internal:8811/mcp"
+
+
+def test_gateway_no_url_is_a_noop_in_any_edition() -> None:
+    # No gateway configured → nothing to gate (fail-soft), regardless of edition.
+    check_gateway_edition_posture(APIConfig(edition=Edition.cloud), gateway_url="")
+    check_gateway_edition_posture(APIConfig(edition=Edition.community), gateway_url="")
+
+
+def test_gateway_community_is_fully_enabled_even_with_a_url() -> None:
+    # Community = the full local integration; the user runs their own gateway. No gate.
+    check_gateway_edition_posture(
+        APIConfig(edition=Edition.community, allow_cloud_gateway=False), gateway_url=_GW_URL
+    )
+
+
+def test_gateway_cloud_refuses_without_vetting_ack() -> None:
+    # Cloud + a gateway URL but no explicit ack → refuse to start (D-N1-7).
+    with pytest.raises(CloudGatewayNotVettedError):
+        check_gateway_edition_posture(
+            APIConfig(edition=Edition.cloud, allow_cloud_gateway=False), gateway_url=_GW_URL
+        )
+
+
+def test_gateway_cloud_allowed_with_explicit_vetting_ack() -> None:
+    # Cloud + the explicit vetted-shared ack → warn + proceed (connect-only-to-vetted).
+    check_gateway_edition_posture(
+        APIConfig(edition=Edition.cloud, allow_cloud_gateway=True), gateway_url=_GW_URL
+    )
+
+
+def test_create_app_wires_the_gateway_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The guard is actually called at startup: cloud + a gateway URL (from env) + no ack
+    # → create_app refuses before any further wiring. Proves it's not dead code.
+    from persona_api.app import create_app
+
+    monkeypatch.setenv("PERSONA_DOCKER_MCP_GATEWAY_URL", _GW_URL)
+    monkeypatch.delenv("PERSONA_ALLOW_CLOUD_GATEWAY", raising=False)
+    with pytest.raises(CloudGatewayNotVettedError):
+        create_app(APIConfig(edition=Edition.cloud, allow_cloud_gateway=False))
