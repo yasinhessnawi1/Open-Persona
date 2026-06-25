@@ -36,7 +36,7 @@ from persona.backends.errors import (
 )
 from persona.backends.multi_model import AttemptRecord, MultiModelChatBackend
 from persona.backends.ollama import OllamaBackend
-from persona.backends.openai_compat import OpenAICompatibleBackend
+from persona.backends.openai_compat import OpenAICompatibleBackend, vision_supported
 from persona.backends.protocol import ChatBackend
 from persona.backends.types import (
     ChatResponse,
@@ -79,4 +79,5 @@ __all__ = [
     "parse_models_list",
     "resolve_tier_config",
     "tool_spec_from_tool",
+    "vision_supported",
 ]

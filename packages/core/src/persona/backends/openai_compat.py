@@ -274,8 +274,16 @@ _NVIDIA_VISION_MODELS_VERIFY_AT_DEPLOY: Final[frozenset[str]] = frozenset(
 )
 
 
-def _vision_supported(provider: str, model: str) -> bool:
-    """Look up the vision capability for a (provider, model) pair (D-13-3)."""
+def vision_supported(provider: str, model: str) -> bool:
+    """Look up the vision capability for a (provider, model) pair (D-13-3).
+
+    Public, static, key-free: the same O(1) ``_VISION_CAPABILITY`` lookup the
+    :class:`OpenAICompatibleBackend` constructor uses to set its own
+    ``supports_vision`` (R1-D-1a). Exposing one function keeps a single source
+    of truth — the runtime tier registry reads vision capability without
+    instantiating a backend (no API key required), and the router pre-filter
+    can never disagree with what the backend enforces at the boundary.
+    """
     if provider == "openrouter":
         return _resolve_openrouter_capability(model, matrix=_VISION_CAPABILITY, is_tools=False)
     return _matrix_contains(_VISION_CAPABILITY, provider, model)
@@ -346,7 +354,7 @@ class OpenAICompatibleBackend:
         self._model = config.model
         self._timeout = config.request_timeout_s
         self._supports_native_tools = _native_tools_supported(self._provider, self._model)
-        self._supports_vision = _vision_supported(self._provider, self._model)
+        self._supports_vision = vision_supported(self._provider, self._model)
         self._workspace_root = workspace_root
 
         api_key = config.api_key.get_secret_value()

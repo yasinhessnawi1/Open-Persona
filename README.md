@@ -154,6 +154,12 @@ uv run persona-api            # or:  uv run python -m persona_api
 cd packages/web && pnpm install && pnpm dev
 ```
 
+> **No key yet? It still boots.** The model API key is needed only for the
+> model-driven features (chat, persona authoring, agentic runs). Without one the API
+> comes up cleanly and persona browsing / creation works; the model-driven endpoints
+> return a clean `503 model_unavailable` ("set a model key") rather than an error —
+> so you can explore first and add the key when you want to talk to a persona.
+
 Prefer the terminal? The MIT library ships a CLI — no API or web app required:
 
 ```bash

@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from persona_api.auth import AuthenticatedUser, get_current_user
 from persona_api.errors import TurnNotActiveError
 from persona_api.middleware.rate_limit import rate_limit
+from persona_api.routes._runtime_guard import require_runtime_wired
 from persona_api.schemas import (
     ActiveTurnResponse,
     ConversationDetail,
@@ -196,6 +197,9 @@ async def post_message(
     request.app.state.credits_policy.require_credits(
         rls_engine=request.app.state.rls_engine, user_id=user.id
     )
+    # Pre-flight runtime guard: a keyless/unwired boot (no model configured) →
+    # clean 503 BEFORE streaming, not an AttributeError 500 (R1-D-2).
+    require_runtime_wired(request, "build_conversation_loop")
 
     # The text-only path's ``user_message`` is BYTE-FOR-BYTE unchanged (T03/T13
     # regression invariant); image-bearing turns thread ``images`` + the

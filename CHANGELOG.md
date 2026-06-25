@@ -11,6 +11,34 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Community edition hardening — boots keyless gracefully (2026-06-25)
+
+> The community edition (SQLite + Chroma, no Clerk, no required model key) assumed
+> cloud configuration in two places that 500'd a keyless boot. The fix reads model
+> capability as the static fact it is, and turns "no model configured" into a clean
+> 503 instead of a leaked 500 — plus a durable HTTP smoke suite so a cloud-assuming
+> change fails loudly in CI instead of silently breaking the self-host path. Cloud is
+> byte-unchanged. Zero new dependency, no migration.
+
+#### Fixed
+- **Persona detail renders with no model key.** Capability hydration
+  (`GET /v1/personas/{id}`, list, and create's returned detail) no longer
+  instantiates a live model backend just to read whether a model supports vision —
+  it resolves the answer statically from `(provider, model)`, the same lookup the
+  backend itself uses. A keyless community boot used to 500 here; it now returns the
+  correct capability (vision `true`/`false`) without a key.
+
+#### Added
+- **`503 model_unavailable` on the model-required write paths.** Persona authoring,
+  chat turns, and agentic runs now return a clean `503` ("model backend is not
+  configured", with `Retry-After`) when the deployment has no usable model backend,
+  instead of leaking a `500`. Route-local by design — a configured (cloud) deployment
+  is unaffected, and a cloud bad-key still surfaces through its normal path.
+- **Community HTTP smoke suite, in CI.** A no-cloud-config (SQLite + Chroma, no model
+  key) suite drives create → get → list (capability hydration) and a chat turn through
+  the real HTTP surface, plus the keyless `503` — run in the default test job so a
+  cloud-assuming regression fails loudly instead of silently breaking the self-host path.
+
 ### Telegram — reach your persona on Telegram (2026-06-25)
 
 > Close-out of `telegram-adapter` — the **first concrete connector**, co-developed with the framework to prove it. A persona is now reachable on **Telegram**: message the bot by name and the shared flow drives a reply; link your Telegram account from the web with a one-time deep link; switch personas, `/new`, idle boundaries all work over a real chat. Deliberately **thin** — Telegram's protocol surface only; everything else (routing, persona selection, the conversation model, identity mapping, C0 delivery) is the framework's, *used* not reimplemented. **Zero new dependency** (the Bot API over `httpx`; webhook over FastAPI/uvicorn — all already in the lock).
@@ -19,6 +47,7 @@ Per-spec entries are added by the close-out phase of each spec.
 - **Telegram connector** (`persona_connectors.telegram`) — implements C1's `Connector` + C0's `MessageDeliverer` for Telegram. Inbound Telegram updates → C1's normalised shape (tz-aware UTC, `from.id`→identity, `chat.id`→channel); outbound persona replies rendered with an **HTML bold name tag** and split on natural boundaries at Telegram's 4096-char cap (UTF-16-aware, never mid-word/mid-surrogate); non-text (voice/photo/sticker) declined gracefully; a "typing…" working indicator on slow turns. **Account linking** via the `t.me/<bot>?start=<token>` deep link (single-use, short-TTL, opaque token — reusing the framework's bind, adversarially tested). **The runnable service** (`python -m persona_connectors`): long-poll (dev) or webhook (prod) transport, the authenticated linking issue route, and the periodic idle sweep.
 - **Security:** webhook updates validated by a constant-time secret-token check **before** parsing, fail-closed on an unset secret (mandatory); the bot token a `SecretStr`, never logged; **ownership over the platform holds exactly as on the web** — a Telegram identity reaches only its linked user's personas (C1 identity-mapping + RLS, proven cross-tenant on real Postgres).
 - **Framework co-development (criterion 10):** five small additive C1 corrections surfaced + made *in the framework* (not worked around in the adapter), so C3–C5 inherit them — the `conversation_id→channel` and active-persona reverse reads, the `apply_new` port-completion, the platform-agnostic routing decision (`decide_route`), and an idle-timer fix so an actively-used chat is never swept mid-conversation.
+
 ### Graph write paths — every interaction extends the shared memory (2026-06-25)
 
 > Close-out of `graph-write-paths` (Spec K2). How the shared knowledge graph (K0)

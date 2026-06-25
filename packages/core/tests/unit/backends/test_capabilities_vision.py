@@ -3,7 +3,7 @@
 Covers:
 
 * The ``_VISION_CAPABILITY`` matrix entries (D-13-3) and the
-  ``_vision_supported`` helper that consults it.
+  ``vision_supported`` helper that consults it.
 * The :class:`OpenAICompatibleBackend.supports_vision` property per
   ``(provider, model)`` pair.
 * The :class:`OllamaBackend.supports_vision` default-off / opt-in shape
@@ -42,7 +42,7 @@ from persona.backends.openai_compat import (
     _NVIDIA_VISION_MODELS_VERIFY_AT_DEPLOY,
     _VISION_CAPABILITY,
     OpenAICompatibleBackend,
-    _vision_supported,
+    vision_supported,
 )
 from persona.errors import PersonaError
 from pydantic import SecretStr
@@ -85,7 +85,7 @@ class TestVisionCapabilityMatrix:
 
 
 # -----------------------------------------------------------------------------
-# _vision_supported helper
+# vision_supported helper
 # -----------------------------------------------------------------------------
 
 
@@ -95,24 +95,24 @@ class TestVisionSupportedHelper:
         ["claude-3-5-sonnet-20241022", "claude-opus-4-7", "anything-anthropic-ships"],
     )
     def test_anthropic_all_returns_true_for_any_model(self, model: str) -> None:
-        assert _vision_supported("anthropic", model) is True
+        assert vision_supported("anthropic", model) is True
 
     @pytest.mark.parametrize("model", ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"])
     def test_openai_known_positive_models(self, model: str) -> None:
-        assert _vision_supported("openai", model) is True
+        assert vision_supported("openai", model) is True
 
     @pytest.mark.parametrize("model", ["gpt-3.5-turbo", "gpt-4", "o1-preview", "text-davinci-003"])
     def test_openai_known_negative_models(self, model: str) -> None:
-        assert _vision_supported("openai", model) is False
+        assert vision_supported("openai", model) is False
 
     @pytest.mark.parametrize("provider", ["deepseek", "groq", "together"])
     def test_default_off_providers_always_false(self, provider: str) -> None:
-        assert _vision_supported(provider, "any-model") is False
+        assert vision_supported(provider, "any-model") is False
 
     def test_unknown_provider_falls_back_to_empty_frozenset(self) -> None:
         # Mirrors `_native_tools_supported` semantics — unknown providers
         # return False rather than raising.
-        assert _vision_supported("mystery-provider", "any-model") is False
+        assert vision_supported("mystery-provider", "any-model") is False
 
 
 # -----------------------------------------------------------------------------
@@ -153,7 +153,7 @@ class TestNvidiaVisionCapability:
         ],
     )
     def test_nvidia_known_positive_models(self, model: str) -> None:
-        assert _vision_supported("nvidia", model) is True
+        assert vision_supported("nvidia", model) is True
 
     @pytest.mark.parametrize(
         "model",
@@ -168,7 +168,7 @@ class TestNvidiaVisionCapability:
         ],
     )
     def test_nvidia_known_negative_models(self, model: str) -> None:
-        assert _vision_supported("nvidia", model) is False
+        assert vision_supported("nvidia", model) is False
 
 
 class TestNvidiaVisionVerifyAtDeploy:

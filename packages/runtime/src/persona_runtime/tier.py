@@ -33,7 +33,7 @@ import os
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
-from persona.backends import BackendConfig, load_backend
+from persona.backends import BackendConfig, load_backend, vision_supported
 from persona.backends.credentials import (
     ProviderCredentialResolver,
     TierResolution,
@@ -276,30 +276,40 @@ class TierRegistry:
     def supports_vision_for(self, tier_name: str) -> bool:
         """Whether the backend for ``tier_name`` accepts image content.
 
-        Resolves through the same fallback chain as :meth:`get` (so a
-        request for an unconfigured tier consults the fallback's backend),
-        instantiates the backend lazily, and reads its ``supports_vision``
-        capability. The router (T13-T09) consults this BEFORE any rule
-        fires so that image-bearing turns can never land on a text-only
-        tier.
+        Resolves through the same fallback chain as :meth:`get` (so a request
+        for an unconfigured tier consults the fallback), then answers WITHOUT
+        instantiating a backend (R1-D-1): if a backend is already built
+        (preconstructed or previously cached) its ``supports_vision`` property
+        is read directly; otherwise the answer is computed statically from the
+        tier's ``(provider, model)`` via :func:`persona.backends.vision_supported`
+        — the same O(1) lookup the backend constructor uses to set its own
+        ``supports_vision``. This is a read over a static fact, so it never
+        needs a live backend (a keyless community boot 500'd when this called
+        ``load_backend``); the router (T13-T09) consults it BEFORE any rule
+        fires so image-bearing turns can never land on a text-only tier.
 
         Args:
             tier_name: The tier name to inspect.
 
         Returns:
-            ``True`` iff the resolved backend's ``supports_vision`` is
-            ``True``; ``False`` if the backend is text-only.
+            ``True`` iff the resolved tier is vision-capable; ``False`` if it is
+            text-only.
 
         Raises:
             TierNotConfiguredError: No tier resolves, even after fallback.
         """
-        # Defensive ``getattr``: the ChatBackend Protocol declares
-        # ``supports_vision`` (D-13-X-error-hierarchy / T04), but a backend
-        # built before that declaration may not expose it yet. Treat the
-        # missing-attribute case as "not vision-capable" so the router's
-        # pre-filter stays fail-loud on image turns without blowing up on
-        # legacy backends.
-        return bool(getattr(self.get(tier_name), "supports_vision", False))
+        effective = self._resolve(tier_name)
+        # Already-built backend (preconstructed at init / cached by a prior
+        # get()) → read its live property, identical to before (cloud-unchanged
+        # path; the MultiModelChatBackend's any()-over-the-chain answer is read
+        # here too). Defensive ``getattr``: a legacy backend predating the
+        # ChatBackend ``supports_vision`` declaration reads as not-vision-capable.
+        built = self._cache.get(effective)
+        if built is not None:
+            return bool(getattr(built, "supports_vision", False))
+        # Else compute statically from (provider, model) — no instantiation.
+        config = self._tiers[effective].backend_config
+        return vision_supported(config.provider, config.model)
 
     def get(self, tier_name: str) -> ChatBackend:
         """Return the backend for ``tier_name``, instantiating + caching once.

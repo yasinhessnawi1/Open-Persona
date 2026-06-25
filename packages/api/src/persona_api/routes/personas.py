@@ -26,6 +26,7 @@ from persona_api.imagegen import service as imagegen_service
 from persona_api.jobs.handlers.avatar import enqueue_avatar_generation
 from persona_api.middleware.rate_limit import rate_limit
 from persona_api.middleware.rls_context import current_user_id
+from persona_api.routes._runtime_guard import require_model_backend
 from persona_api.schemas import (
     AuthoringDraft,
     AuthorPersonaRequest,
@@ -451,7 +452,7 @@ async def author_persona(
     request.app.state.credits_policy.require_credits(
         rls_engine=request.app.state.rls_engine, user_id=user.id
     )
-    backend = request.app.state.tier_registry.get(request.app.state.authoring_tier)
+    backend = require_model_backend(request, getattr(request.app.state, "authoring_tier", "mid"))
     events = authoring_service.stream_authoring_draft(
         backend,
         body.description,
@@ -490,7 +491,7 @@ async def refine_persona(
     request.app.state.credits_policy.require_credits(
         rls_engine=request.app.state.rls_engine, user_id=user.id
     )
-    backend = request.app.state.tier_registry.get(request.app.state.authoring_tier)
+    backend = require_model_backend(request, getattr(request.app.state, "authoring_tier", "mid"))
     events = authoring_service.stream_refine_authoring_draft(
         backend,
         body.current_yaml,
@@ -525,7 +526,7 @@ async def recommend_tools(
     request.app.state.credits_policy.require_credits(
         rls_engine=request.app.state.rls_engine, user_id=user.id
     )
-    backend = request.app.state.tier_registry.get("mid")
+    backend = require_model_backend(request, "mid")
     recommendations = await authoring_service.recommend_tools_for_persona(backend, body.description)
     _deduct_and_audit(
         request,
@@ -562,7 +563,7 @@ async def recommend_capabilities(
     request.app.state.credits_policy.require_credits(
         rls_engine=request.app.state.rls_engine, user_id=user.id
     )
-    backend = request.app.state.tier_registry.get("mid")
+    backend = require_model_backend(request, "mid")
     recommendations = await authoring_service.recommend_capabilities_for_persona(
         backend,
         body.description,

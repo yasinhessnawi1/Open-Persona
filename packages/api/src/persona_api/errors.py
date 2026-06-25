@@ -46,6 +46,7 @@ __all__ = [
     "MCPCredentialError",
     "MCPServerNotFoundError",
     "MCPServerValidationError",
+    "ModelBackendUnavailableError",
     "PublicNoAuthRefusedError",
     "RateLimitExceededError",
     "RefinementLimitError",
@@ -162,6 +163,20 @@ class MCPCredentialError(PersonaError):
     The operator did not configure ``MCP_CREDENTIAL_KEY`` but a server carrying
     credentials was submitted. Fail loud (never store a secret in plaintext);
     the message never leaks the key or the credential.
+    """
+
+
+class ModelBackendUnavailableError(PersonaError):
+    """No usable model backend for a model-required write path (→ 503; R1-D-2).
+
+    Raised by the route-local runtime guard at the authoring / chat / run paths
+    when the deployment has no usable model backend — either the runtime was
+    never wired (no model configured at all) or a configured tier cannot
+    construct a backend because no API key is set (community keyless boot). A
+    deliberate, documented unavailability (mirrors :class:`ImageGenUnavailableError`),
+    NOT a leaked 500. Route-local by design: a cloud bad-key still surfaces
+    through the normal provider path, so the global ``AuthenticationError``
+    (401) mapping is untouched (R1-D-5 stays a tracked follow-up).
     """
 
 
@@ -361,6 +376,24 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=_body(
                 "imagegen_unavailable",
                 exc.message or "image generation backend is not configured",
+                exc.context,
+            ),
+            headers={"Retry-After": "30"},
+        )
+
+    @app.exception_handler(ModelBackendUnavailableError)
+    async def _model_unavailable_503(_: Request, exc: ModelBackendUnavailableError) -> JSONResponse:
+        """Model-required write path with no usable model backend (R1-D-2).
+
+        Fires on a keyless/unconfigured boot (authoring/chat/run) — the runtime
+        was never wired, or a configured tier has no API key. A first-class 503
+        (mirrors ``ImageGenUnavailableError``), not a leaked 500.
+        """
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=_body(
+                "model_unavailable",
+                exc.message or "model backend is not configured",
                 exc.context,
             ),
             headers={"Retry-After": "30"},

@@ -36,7 +36,7 @@ from persona.backends.openai_compat import (
     _native_tools_supported,
     _parse_openai_response,
     _strip_reasoning_for_provider,
-    _vision_supported,
+    vision_supported,
 )
 from persona.backends.protocol import ChatBackend
 from persona.backends.types import ChatResponse, StreamChunk, ToolSpec
@@ -133,7 +133,7 @@ class TestOpenRouterCapabilityInference:
         assert _native_tools_supported("openrouter", "anthropic/claude-3.5-sonnet") is True
 
     def test_vision_inferred_from_anthropic_underlying(self) -> None:
-        assert _vision_supported("openrouter", "anthropic/claude-3.5-sonnet") is True
+        assert vision_supported("openrouter", "anthropic/claude-3.5-sonnet") is True
 
     def test_tools_inferred_deepseek_bare_name_match(self) -> None:
         # Dual match key — the deepseek row holds the BARE name "deepseek-chat".
@@ -148,7 +148,7 @@ class TestOpenRouterCapabilityInference:
 
     def test_vision_free_suffix_falls_back_to_base(self) -> None:
         # D-22-10c: vision for a :free slug infers from the base slug.
-        assert _vision_supported("openrouter", "anthropic/claude-3.5-sonnet:free") is True
+        assert vision_supported("openrouter", "anthropic/claude-3.5-sonnet:free") is True
 
     def test_tools_free_suffix_forces_false(self) -> None:
         # D-22-10c asymmetric conservatism — tools→False for :free in tier 3.
@@ -165,7 +165,7 @@ class TestOpenRouterCapabilityInference:
     def test_unmapped_author_defaults_to_shim(self) -> None:
         # meta-llama / google have no matrix row → conservative shim/no-vision.
         assert _native_tools_supported("openrouter", "meta-llama/llama-3.3-70b-instruct") is False
-        assert _vision_supported("openrouter", "google/gemini-2.0-flash-001") is False
+        assert vision_supported("openrouter", "google/gemini-2.0-flash-001") is False
 
     # --- tier 1: explicit operator override ---
 

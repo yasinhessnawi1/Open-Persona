@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from persona_api.auth import AuthenticatedUser, get_current_user
 from persona_api.middleware.rate_limit import rate_limit
+from persona_api.routes._runtime_guard import require_runtime_wired
 from persona_api.schemas import (
     RespondToRunRequest,
     RunListResponse,
@@ -41,6 +42,9 @@ async def start_run(
     request.app.state.credits_policy.require_credits(
         rls_engine=request.app.state.rls_engine, user_id=user.id
     )
+    # Pre-flight runtime guard: a keyless/unwired boot (no model configured) →
+    # clean 503 before the run starts, not an AttributeError 500 (R1-D-2).
+    require_runtime_wired(request, "build_agentic_loop")
     run_id = await run_service.start_run(
         rls_engine=request.app.state.rls_engine,
         registry=request.app.state.run_registry,
