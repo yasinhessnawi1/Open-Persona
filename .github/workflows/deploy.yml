@@ -1,14 +1,23 @@
 name: Deploy
 
-# Auto-deploy persona-api to Fly. Fires only when the CI workflow finishes
-# successfully on the `main` branch — never on PRs, never on a red build.
-# Vercel handles persona-web deploys via its own GitHub integration.
+# Auto-deploy persona-api AND persona-voice to Fly. Fires only when the CI
+# workflow finishes successfully on the `main` branch — never on PRs, never on a
+# red build. Vercel handles persona-web deploys via its own GitHub integration;
+# open-persona-db (self-hosted Postgres) is deployed once out-of-band, not here.
 #
 # One-time setup:
-#   1. Generate a deploy-scoped Fly token (90-day expiry, app-scoped):
-#        flyctl tokens create deploy -a open-persona-api -x 2160h
+#   1. Generate a deploy-scoped Fly token. The api job and the voice job both
+#      read `secrets.FLY_API_TOKEN`, so it MUST be authorised for BOTH apps.
+#      An app-scoped token (`-a open-persona-api`) CANNOT deploy voice and the
+#      voice job will 401. Create an ORG-scoped deploy token instead:
+#        flyctl tokens create deploy -x 2160h
+#      (no `-a` flag → scoped to the org, usable for every app in it). 2160h =
+#      90-day expiry. Copy the full `FlyV1 …` value it prints.
 #   2. GitHub → repo Settings → Secrets and variables → Actions →
 #      "New repository secret" named FLY_API_TOKEN, paste the `FlyV1 …` value.
+#      (If FLY_API_TOKEN already exists app-scoped to open-persona-api, use
+#      "Update" to overwrite it with the org-scoped token from step 1 —
+#      otherwise the voice deploy authenticates as nobody and fails.)
 #   3. (Optional) Add `workflow_dispatch` runs to manually re-deploy from the
 #      Actions tab without pushing a commit.
 
@@ -84,3 +93,66 @@ jobs:
           done
           echo "::error::healthz did not flip green within 60s after deploy"
           exit 1
+
+  deploy-voice:
+    # Same gate as deploy-api: only on a green CI run on main, or a manual
+    # workflow_dispatch (github.event.workflow_run is null then).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    concurrency:
+      # Separate group from deploy-api: voice and api serialise INDEPENDENTLY,
+      # so a slow voice cold start never blocks an api deploy and vice versa.
+      group: deploy-voice
+      cancel-in-progress: false
+    steps:
+      - name: Checkout the commit CI verified
+        uses: actions/checkout@v4
+        with:
+          # Pin to the exact SHA that just passed CI (same reasoning as the api
+          # job) so a deploy can never race ahead of its checks.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Remote build from the repo root (default CWD) so the build daemon gets
+      # the full workspace tree — the voice Dockerfile's `COPY packages/<member>/`
+      # paths require the repo root as build context. fly.toml lives at
+      # packages/voice/fly.toml (next to the Dockerfile); $WORKSPACE makes the
+      # --config path absolute.
+      #
+      # NOTE on FLY_API_TOKEN: this reuses the same secret as deploy-api, so the
+      # token MUST be org-scoped (or at least authorised for open-persona-voice).
+      # An api-app-scoped token 401s here. See the one-time-setup header.
+      #
+      # --wait-timeout is deliberately generous (900s). Voice cold start loads
+      # the bge-small embedder + Silero VAD on CPU BEFORE the uvicorn listener
+      # binds; on a shared VM that is minutes, not seconds (fly.toml's TCP check
+      # grace_period is 300s). flyctl waits on that TCP health check to pass, so
+      # the wait must comfortably exceed the worst-case cold start.
+      - name: flyctl deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          flyctl deploy \
+            --remote-only \
+            --config "$WORKSPACE/packages/voice/fly.toml" \
+            --app open-persona-voice \
+            --strategy rolling \
+            --wait-timeout 900
+
+      # No public /healthz curl: voice's only HTTP routes are auth-gated (they
+      # 401 unauthenticated), so there is no anonymous health probe. The
+      # `flyctl deploy --wait-timeout` above already blocks until the machine's
+      # TCP health check passes, so a successful deploy is itself the success
+      # signal. This step is a non-fatal sanity confirmation that flyctl agrees
+      # the machine is up, via `flyctl status` (no HTTP probe invented).
+      - name: Confirm machine status
+        if: success()
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl status --app open-persona-voice
