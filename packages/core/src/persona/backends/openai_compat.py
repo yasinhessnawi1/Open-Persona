@@ -107,6 +107,17 @@ _NATIVE_TOOLS_CAPABILITY: dict[str, frozenset[str] | Literal["all"]] = {
     # (tier 2, layered by T10/T11) or underlying-model inference (tier 3,
     # below) — never from pre-seeded entries here that would go stale.
     "openrouter": frozenset(),
+    # Cloudflare Workers AI: the OpenAI-compatible endpoint emits native
+    # ``tool_calls`` (verified live against ``@cf/zai-org/glm-5.2``). Model ids
+    # keep their ``@cf/<vendor>/<model>`` slash-format verbatim; only the
+    # function-calling-capable models are listed so others fall back to the
+    # prompt shim. Re-verify at deploy as Cloudflare's catalog churns.
+    "cloudflare": frozenset(
+        {
+            "@cf/zai-org/glm-5.2",
+            "@cf/meta/llama-4-scout-17b-16e-instruct",
+        }
+    ),
 }
 
 
@@ -256,6 +267,15 @@ _VISION_CAPABILITY: dict[str, frozenset[str] | Literal["all"]] = {
     # (tier 2) or underlying-model inference (tier 3); vision inference for a
     # ``:free`` slug falls back to the base slug (D-22-10c).
     "openrouter": frozenset(),
+    # Cloudflare Workers AI multimodal (image-in) chat models. Model ids keep
+    # their ``@cf/<vendor>/<model>`` slash-format verbatim. Verify-at-deploy
+    # like the NVIDIA row above — Cloudflare's model catalog evolves.
+    "cloudflare": frozenset(
+        {
+            "@cf/zai-org/glm-5.2",
+            "@cf/meta/llama-4-scout-17b-16e-instruct",
+        }
+    ),
 }
 
 # D-13-3 "verify-at-deploy" precedent — model IDs above were sourced from a
@@ -339,6 +359,7 @@ class OpenAICompatibleBackend:
             "together",
             "nvidia",
             "openrouter",
+            "cloudflare",
         }:
             msg = (
                 f"OpenAICompatibleBackend does not handle provider "

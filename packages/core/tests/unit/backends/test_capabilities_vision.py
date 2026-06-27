@@ -73,6 +73,8 @@ class TestVisionCapabilityMatrix:
         # Model License — avoids Llama-3.2-Vision EU carve-out per R-20-5).
         # Spec 22 D-22-10f: openrouter row added (empty override hook; vision
         # resolves via catalog metadata / underlying-model inference).
+        # Cloudflare Workers AI chat provider: row added with its multimodal
+        # @cf model ids (verify-at-deploy like the nvidia row).
         assert set(_VISION_CAPABILITY) == {
             "anthropic",
             "openai",
@@ -81,6 +83,7 @@ class TestVisionCapabilityMatrix:
             "nvidia",
             "together",
             "openrouter",
+            "cloudflare",
         }
 
 

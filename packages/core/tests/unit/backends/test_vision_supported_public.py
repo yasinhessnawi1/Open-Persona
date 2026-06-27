@@ -35,6 +35,10 @@ def test_vision_supported_is_the_same_object_the_constructor_uses() -> None:
         ("ollama", "llava", False),  # not in matrix → False (R1-D-3)
         ("local", "any", False),  # HF local → matrix miss → False
         ("mystery-provider", "any", False),  # unknown provider → False
+        # Cloudflare Workers AI multimodal chat models (slash-format @cf ids).
+        ("cloudflare", "@cf/zai-org/glm-5.2", True),
+        ("cloudflare", "@cf/meta/llama-4-scout-17b-16e-instruct", True),
+        ("cloudflare", "@cf/meta/llama-3.1-8b-instruct", False),  # text-only → False
     ],
 )
 def test_vision_supported_resolves_statically_from_provider_model(

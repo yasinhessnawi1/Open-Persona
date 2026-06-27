@@ -87,7 +87,7 @@ def format_tool_result(
                 },
             )
 
-        case "openai" | "deepseek" | "groq" | "together" | "nvidia":
+        case "openai" | "deepseek" | "groq" | "together" | "nvidia" | "cloudflare":
             content = result.content
             if result.is_error and not content.startswith("Error:"):
                 content = f"Error: {content}"

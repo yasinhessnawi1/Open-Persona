@@ -70,6 +70,15 @@ _LOCAL_REJECT_HINTS: Final[dict[str, str]] = {
 
 _VALID_PROVIDERS: Final[frozenset[str]] = frozenset(get_args(Provider))
 
+# Cloudflare Workers AI's OpenAI-compatible chat base URL embeds the account id:
+# ``.../accounts/{ACCOUNT_ID}/ai/v1/``. Unlike the static DEFAULT_BASE_URLS
+# entries, it must be assembled at resolution time from
+# ``PERSONA_CLOUDFLARE_ACCOUNT_ID`` (the same env var the imagegen path reads).
+# The resolver appends this suffix to the account-prefix template
+# (DEFAULT_BASE_URLS["cloudflare"], which ends at ``/accounts/``).
+_CLOUDFLARE_ACCOUNT_ID_ENV: Final[str] = "PERSONA_CLOUDFLARE_ACCOUNT_ID"
+_CLOUDFLARE_CHAT_URL_SUFFIX: Final[str] = "/ai/v1/"
+
 
 @dataclass(frozen=True)
 class ProviderCredentials:
@@ -169,6 +178,20 @@ class ProviderCredentialResolver:
         key_var = f"PERSONA_{provider.upper()}_API_KEY"
         base_var = f"PERSONA_{provider.upper()}_BASE_URL"
         base_url = self._env.get(base_var) or DEFAULT_BASE_URLS.get(provider, "")
+        if provider == "cloudflare" and not self._env.get(base_var):
+            # Cloudflare's chat base URL embeds the account id; assemble it from
+            # the account-prefix template + PERSONA_CLOUDFLARE_ACCOUNT_ID unless
+            # the operator supplied a full PERSONA_CLOUDFLARE_BASE_URL override
+            # (handled by the branch guard above). Account id is REQUIRED — fail
+            # fast with a config-layer error rather than emit a broken URL.
+            account_id = (self._env.get(_CLOUDFLARE_ACCOUNT_ID_ENV) or "").strip()
+            if not account_id:
+                raise ProviderCredentialMissingError(
+                    "provider 'cloudflare' requires an account id for its chat "
+                    "base URL but none is configured",
+                    context={"provider": provider, "env_var": _CLOUDFLARE_ACCOUNT_ID_ENV},
+                )
+            base_url = f"{base_url}{account_id}{_CLOUDFLARE_CHAT_URL_SUFFIX}"
         if provider in _KEYLESS_PROVIDERS:
             return ProviderCredentials(provider=provider, api_key=None, base_url=base_url)
         raw_key = self._env.get(key_var)

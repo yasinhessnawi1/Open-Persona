@@ -35,7 +35,18 @@ class TestFactory:
         # DEFAULT_BASE_URLS + _NATIVE_TOOLS_CAPABILITY + _VISION_CAPABILITY +
         # _factory.py's _OPENAI_COMPAT_PROVIDERS). Spec 22 T06/T15: openrouter
         # added after the T15 integration test caught the identical omission.
-        ["anthropic", "openai", "deepseek", "groq", "together", "nvidia", "openrouter"],
+        # cloudflare added (Cloudflare Workers AI chat) — same allow-set
+        # invariant; an omission crash-looped prod at startup.
+        [
+            "anthropic",
+            "openai",
+            "deepseek",
+            "groq",
+            "together",
+            "nvidia",
+            "openrouter",
+            "cloudflare",
+        ],
     )
     def test_openai_compat_providers(self, provider: str) -> None:
         backend = load_backend(_config(provider, api_key=SecretStr("k")))

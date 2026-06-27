@@ -352,6 +352,82 @@ class TestResolveTierConfigPrecedence:
             resolve_tier_config("frontier", env=env)
 
 
+class TestCloudflareChatProvider:
+    """Cloudflare Workers AI as a first-class chat provider.
+
+    The account id is not static, so the chat base URL is assembled at
+    resolution time from ``PERSONA_CLOUDFLARE_ACCOUNT_ID`` (mirroring the
+    imagegen path, which keeps the account id as a separate field and builds
+    the URL at backend-construction time). ``@cf/<vendor>/<model>`` ids carry
+    internal slashes that must pass through the tier parser intact.
+    """
+
+    def test_models_list_parses_cloudflare_at_cf_model_no_error(self) -> None:
+        # The exact value that crash-looped prod with MalformedTierModelsError.
+        result = parse_models_list(
+            "frontier", "cloudflare/@cf/zai-org/glm-5.2,anthropic/claude-sonnet-4-6"
+        )
+        assert result == [
+            ("cloudflare", "@cf/zai-org/glm-5.2"),
+            ("anthropic", "claude-sonnet-4-6"),
+        ]
+
+    def test_at_cf_model_id_passes_through_intact(self) -> None:
+        # First-slash split: provider=cloudflare, model keeps all its slashes.
+        result = parse_models_list("mid", "cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct")
+        assert result == [("cloudflare", "@cf/meta/llama-4-scout-17b-16e-instruct")]
+
+    def test_base_url_built_from_account_id(self) -> None:
+        resolver = ProviderCredentialResolver(
+            env={
+                "PERSONA_CLOUDFLARE_API_KEY": "cf-test",
+                "PERSONA_CLOUDFLARE_ACCOUNT_ID": "acct-123",
+            }
+        )
+        creds = resolver.resolve("cloudflare")
+        assert creds.api_key is not None
+        assert creds.api_key.get_secret_value() == "cf-test"
+        assert creds.base_url == "https://api.cloudflare.com/client/v4/accounts/acct-123/ai/v1/"
+
+    def test_missing_account_id_fails_fast(self) -> None:
+        resolver = ProviderCredentialResolver(env={"PERSONA_CLOUDFLARE_API_KEY": "cf-test"})
+        with pytest.raises(ProviderCredentialMissingError) as exc_info:
+            resolver.resolve("cloudflare")
+        assert exc_info.value.context == {
+            "provider": "cloudflare",
+            "env_var": "PERSONA_CLOUDFLARE_ACCOUNT_ID",
+        }
+
+    def test_blank_account_id_fails_fast(self) -> None:
+        resolver = ProviderCredentialResolver(
+            env={
+                "PERSONA_CLOUDFLARE_API_KEY": "cf-test",
+                "PERSONA_CLOUDFLARE_ACCOUNT_ID": "   ",
+            }
+        )
+        with pytest.raises(ProviderCredentialMissingError) as exc_info:
+            resolver.resolve("cloudflare")
+        assert exc_info.value.context["env_var"] == "PERSONA_CLOUDFLARE_ACCOUNT_ID"
+
+    def test_missing_api_key_raises_credential_missing(self) -> None:
+        # Account id present but API key absent → standard credential-missing.
+        resolver = ProviderCredentialResolver(env={"PERSONA_CLOUDFLARE_ACCOUNT_ID": "acct-123"})
+        with pytest.raises(ProviderCredentialMissingError) as exc_info:
+            resolver.resolve("cloudflare")
+        assert exc_info.value.context["env_var"] == "PERSONA_CLOUDFLARE_API_KEY"
+
+    def test_explicit_base_url_override_skips_account_assembly(self) -> None:
+        # A full PERSONA_CLOUDFLARE_BASE_URL override wins; account id not needed.
+        resolver = ProviderCredentialResolver(
+            env={
+                "PERSONA_CLOUDFLARE_API_KEY": "cf-test",
+                "PERSONA_CLOUDFLARE_BASE_URL": "https://proxy.example/ai/v1/",
+            }
+        )
+        creds = resolver.resolve("cloudflare")
+        assert creds.base_url == "https://proxy.example/ai/v1/"
+
+
 class TestFilterOpenRouterFreeMode:
     """Spec 22 D-22-2 (chat) + D-22-20 (image) free-mode MODELS filter."""
 

@@ -33,7 +33,7 @@ __all__ = ["load_backend"]
 # before commit. Spec 22 T06/T15: ``openrouter`` joins the same path (the
 # T15 cross-spec integration test caught the identical omission here).
 _OPENAI_COMPAT_PROVIDERS = frozenset(
-    {"anthropic", "openai", "deepseek", "groq", "together", "nvidia", "openrouter"}
+    {"anthropic", "openai", "deepseek", "groq", "together", "nvidia", "openrouter", "cloudflare"}
 )
 
 
@@ -67,6 +67,7 @@ def load_backend(config: BackendConfig) -> ChatBackend:
         return HFLocalBackend(config)
     raise ProviderError(
         f"unknown provider {provider!r}; expected one of "
-        "anthropic, openai, deepseek, groq, together, nvidia, openrouter, ollama, local",
+        "anthropic, openai, deepseek, groq, together, nvidia, openrouter, cloudflare, "
+        "ollama, local",
         context={"provider": provider},
     )

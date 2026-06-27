@@ -27,6 +27,7 @@ Provider = Literal[
     "together",
     "nvidia",
     "openrouter",
+    "cloudflare",
     "ollama",
     "local",
 ]
@@ -51,6 +52,15 @@ DEFAULT_BASE_URLS: dict[str, str] = {
     # model names are already <provider>/<model> slash-format (D-20-13), so
     # OpenRouter slots into MultiModelChatBackend MODELS lists unchanged.
     "openrouter": "https://openrouter.ai/api/v1/",
+    # Cloudflare Workers AI exposes an OpenAI-compatible chat endpoint at
+    # ``.../accounts/{ACCOUNT_ID}/ai/v1/`` — the account id is NOT static, so
+    # this entry is the account-PREFIX template only (ending at ``/accounts/``,
+    # mirroring the imagegen ``DEFAULT_BASE_URLS["cloudflare"]`` convention in
+    # ``persona.imagegen.config``). ``ProviderCredentialResolver`` appends
+    # ``{PERSONA_CLOUDFLARE_ACCOUNT_ID}/ai/v1/`` at resolution time so the openai
+    # SDK can append ``/chat/completions`` and the ``@cf/<vendor>/<model>`` id
+    # (slashes intact) passes through verbatim as the request ``model``.
+    "cloudflare": "https://api.cloudflare.com/client/v4/accounts/",
     "ollama": "http://localhost:11434",
 }
 
