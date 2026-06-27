@@ -293,9 +293,21 @@ class SileroVADAdapter:
         # Per-frame state-machine advance. ms_per_frame is a module constant
         # (32 ms at 16 kHz) computed once.
         ms_per_frame = (SILERO_FRAME_SAMPLES / SILERO_SAMPLE_RATE_HZ) * 1000.0
-        for frame in self._framer.push(pcm):
+        # ``SileroVAD.process`` is synchronous C++ ONNX inference, invoked per
+        # 512-sample frame at high frequency for the whole call. Running it inline
+        # starves the asyncio loop so LiveKit heartbeats + the Deepgram/Cartesia
+        # WebSocket handshakes time out — the live voice incident's root cause.
+        # Offload this push's whole frame batch to ONE worker thread (one hop per
+        # push, not per frame, so the high-frequency path is not pessimised), then
+        # advance the deterministic state machine + emit events back ON the loop:
+        # the ``asyncio.Queue`` is loop-affine (``put_nowait`` is not thread-safe),
+        # so emission must stay on the loop thread.
+        frames = list(self._framer.push(pcm))
+        if not frames:
+            return
+        scores = await asyncio.to_thread(self._score_frames, self._vad, frames)
+        for score in scores:
             self._samples_pushed += SILERO_FRAME_SAMPLES
-            score = self._vad.process(frame.tobytes())
             voiced = score >= self._config.silero_activation_threshold
             if voiced:
                 self._consecutive_voiced_ms += ms_per_frame
@@ -315,6 +327,26 @@ class SileroVADAdapter:
                 ):
                     self._in_speech = False
                     self._emit_speech_ended()
+
+    @staticmethod
+    def _score_frames(vad: SileroVAD, frames: list[npt.NDArray[np.float32]]) -> list[float]:
+        """Run the blocking ONNX inference for a batch of frames (off-loop).
+
+        Called via :func:`asyncio.to_thread` from :meth:`push_audio`. Touches only
+        the ``vad`` argument (the C++ ONNX session) — never adapter state — so it is
+        safe to run off the event-loop thread. The state machine advances on the
+        loop thread once the scores return. ``vad`` is passed explicitly (rather
+        than read from ``self`` in the thread) so the live-session reference cannot
+        be torn out by a concurrent :meth:`close` mid-inference.
+
+        Args:
+            vad: The loaded Silero ONNX session.
+            frames: This push's 512-sample float32 frames, in order.
+
+        Returns:
+            One activation score per frame, in order.
+        """
+        return [vad.process(frame.tobytes()) for frame in frames]
 
     def _emit_speech_started(self, score: float) -> None:
         """Emit speech_started unless TTS-mute-window is active."""

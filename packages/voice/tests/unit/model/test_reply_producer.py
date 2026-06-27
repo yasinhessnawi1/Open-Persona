@@ -400,6 +400,53 @@ class TestVoiceToolsConversational:
         assert "This is taking a moment — I'll follow up on that shortly." in out  # bound hit
 
 
+class TestRetrievalRunsOffTheEventLoop:
+    """Voice-event-loop fix: the CPU-bound embedder recall must not block the loop.
+
+    The persona-store ``query`` (which runs the synchronous bge-small ``.encode()``)
+    is offloaded via ``asyncio.to_thread`` on the graph-OFF path (the production
+    default — the runner wires no graph on the voice ``VoiceTurnContext``), exactly
+    as the graph-ON path already did. If it ran inline, LiveKit heartbeats and the
+    provider WebSocket handshakes would starve mid-turn — the live incident's root
+    cause.
+    """
+
+    @pytest.mark.asyncio
+    async def test_graph_off_retrieval_runs_in_a_worker_thread(self) -> None:
+        import threading
+
+        loop_thread = threading.get_ident()
+        query_threads: list[int] = []
+
+        class _ThreadRecordingStore(_FakeStore):
+            def query(
+                self, persona_id: str, query: str, top_k: int, **filters: Any
+            ) -> list[PersonaChunk]:
+                query_threads.append(threading.get_ident())
+                return super().query(persona_id, query, top_k, **filters)
+
+        ctx = _context(_ScriptedBackend([StreamChunk(delta="ok"), _final()]))
+        # Swap the variable stores for thread-recording ones (identity is cached
+        # session-constant and read via get_all, not the per-turn embedder query).
+        ctx.stores["self_facts"] = _ThreadRecordingStore(
+            query_chunks=[_chunk("I specialise in tenancy law.")]
+        )
+        ctx.stores["worldview"] = _ThreadRecordingStore(
+            query_chunks=[_chunk("Tenants have strong protections.")]
+        )
+        ctx.stores["episodic"] = _ThreadRecordingStore(
+            query_chunks=[_chunk("Last time we discussed mould.")]
+        )
+        producer = VoiceModelReplyProducer(ctx)
+
+        await _drain(producer)
+
+        # The embedder-backed query ran (graph-off path is the production default)
+        # and every call happened OFF the event-loop thread.
+        assert query_threads, "expected the per-turn persona-store query to run"
+        assert all(tid != loop_thread for tid in query_threads)
+
+
 class TestUnifiedMemoryWiring:
     """T8 — the producer notes the user turn so the recorder can correlate it."""
 

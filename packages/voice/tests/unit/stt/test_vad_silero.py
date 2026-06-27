@@ -341,6 +341,72 @@ async def test_close_is_idempotent() -> None:
     await adapter.push_audio(_silence_pcm(50), SILERO_SAMPLE_RATE_HZ)
 
 
+# ---------- event-loop offload (voice-event-loop incident fix) ---------------
+
+
+@pytest.mark.asyncio
+async def test_process_runs_off_the_event_loop_thread() -> None:
+    """``SileroVAD.process`` (sync C++ ONNX) must run in a worker thread.
+
+    Running per-frame inference inline starves the asyncio loop so LiveKit
+    heartbeats + the Deepgram/Cartesia WebSocket handshakes time out — the live
+    voice incident's root cause. The adapter offloads the frame batch via
+    ``asyncio.to_thread``; state-machine advance + event emission stay on the loop
+    so the ``asyncio.Queue`` stays loop-affine. A fake VAD records which thread its
+    ``process`` ran on, asserted distinct from the loop thread.
+    """
+    import threading
+
+    loop_thread = threading.get_ident()
+    process_threads: list[int] = []
+
+    class _ThreadRecordingVAD:
+        window_size_samples = SILERO_FRAME_SAMPLES
+        sample_rate = SILERO_SAMPLE_RATE_HZ
+
+        def process(self, frame_bytes: bytes) -> float:  # noqa: ARG002 — signature mirrors SileroVAD.process
+            process_threads.append(threading.get_ident())
+            return 0.9  # always-voiced so the state machine also advances
+
+    config = _make_config(silero_activation_threshold=0.5, silero_min_speech_duration_ms=32)
+    adapter = SileroVADAdapter(config)
+    # Inject the fake session directly (bypass load() — no native lib needed).
+    adapter._vad = _ThreadRecordingVAD()  # type: ignore[assignment]  # noqa: SLF001
+
+    await adapter.push_audio(_speech_pcm(200), SILERO_SAMPLE_RATE_HZ)
+
+    assert process_threads, "expected process() to be called for the pushed frames"
+    assert all(tid != loop_thread for tid in process_threads)
+    # Emission stayed on the loop thread: the onset event is on the queue.
+    event = await asyncio.wait_for(adapter._event_queue.get(), timeout=0.05)
+    assert isinstance(event, SpeechStartedEvent)
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_push_skips_the_thread_hop() -> None:
+    """A push with no complete frame must not pay a worker-thread round-trip."""
+    import threading
+
+    process_threads: list[int] = []
+
+    class _CountingVAD:
+        window_size_samples = SILERO_FRAME_SAMPLES
+        sample_rate = SILERO_SAMPLE_RATE_HZ
+
+        def process(self, frame_bytes: bytes) -> float:  # noqa: ARG002 — signature mirrors SileroVAD.process
+            process_threads.append(threading.get_ident())
+            return 0.0
+
+    config = _make_config()
+    adapter = SileroVADAdapter(config)
+    adapter._vad = _CountingVAD()  # type: ignore[assignment]  # noqa: SLF001
+    # 64 bytes = 32 samples << one 512-sample frame: the framer holds it back.
+    await adapter.push_audio(b"\x00\x00" * 32, SILERO_SAMPLE_RATE_HZ)
+    assert process_threads == []
+    await adapter.close()
+
+
 # ---------- benchmark harness ------------------------------------------------
 
 

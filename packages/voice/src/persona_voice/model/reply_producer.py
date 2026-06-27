@@ -176,22 +176,30 @@ class VoiceModelReplyProducer:
         # The fast, never-blocking history view (D-V5-3); the slow compaction runs
         # off the critical path in a background inter-turn task (T8).
         history = self._history.live_history(ctx.conversation)
+        # Persona-store retrieval runs the bge-small embedder's synchronous,
+        # CPU-bound ``.encode()`` (one recall per variable store, per turn). It MUST
+        # run OFF the event loop or it starves the loop: while inference blocks, the
+        # loop cannot service LiveKit heartbeats or the Deepgram/Cartesia WebSocket
+        # handshakes, which is the live voice incident's root cause (three outbound
+        # connections timing out simultaneously). Both the graph-on and graph-off
+        # paths offload via ``asyncio.to_thread`` (the codebase's canonical
+        # CPU-offload primitive — D-02-17 / graph_voice precedent).
+        context = await asyncio.to_thread(
+            self._assembler.retrieve, user_message, history_turns=len(history)
+        )
         if graph_task is not None:
-            # K3-D-6 — GENUINE overlap: run the persona-store retrieval (V5's
-            # existing pre-model I/O) OFF-THREAD so the graph query progresses
-            # concurrently with it. We then take the graph only if it finished
-            # within that window; otherwise the turn proceeds graph-off. The only
-            # await is the retrieval we already had to do — zero NEW serial work,
-            # never a serial graph leg on the TTFT path.
-            context = await asyncio.to_thread(
-                self._assembler.retrieve, user_message, history_turns=len(history)
-            )
+            # K3-D-6 — GENUINE overlap: the off-thread retrieval above gave the
+            # concurrently-running graph query a window to finish in. We take the
+            # graph only if it is ready by now; otherwise the turn proceeds
+            # graph-off (additive). Zero NEW serial work on the TTFT path.
             graph = take_graph_if_ready(graph_task)
             prompt = self._assembler.build(
                 user_message, history=history, max_tokens=max_tokens, graph=graph, context=context
             )
         else:
-            prompt = self._assembler.build(user_message, history=history, max_tokens=max_tokens)
+            prompt = self._assembler.build(
+                user_message, history=history, max_tokens=max_tokens, context=context
+            )
 
         timing = _RoundTiming(t_start=time.perf_counter())
         tools = self._offered_specs(backend)
