@@ -381,7 +381,28 @@ def load_image_backend_from_env(
             ignored=",".join(ignored),
         )
 
-    resolver = ProviderCredentialResolver(env=env_snapshot)
+    # Cloudflare's account id has an image-gen-specific env var
+    # (``PERSONA_IMAGEGEN_CLOUDFLARE_ACCOUNT_ID``) that predates the chat
+    # provider's generic ``PERSONA_CLOUDFLARE_ACCOUNT_ID``. The shared
+    # ``ProviderCredentialResolver`` (chat path) reads only the generic name and
+    # fail-fasts on it when assembling cloudflare's chat base URL. The image-gen
+    # MODELS path must keep honouring its own var: resolve the account id here
+    # via the fallback chain (image-specific preferred, generic accepted) and
+    # seed the generic name in the resolver's env snapshot so
+    # ``resolve('cloudflare')`` succeeds under either namespace. The cloudflare
+    # ImageBackend builds its own request URL from the bare ``DEFAULT_BASE_URLS``
+    # prefix + account id, so the chat base URL the resolver assembles is
+    # discarded for cloudflare slots below.
+    cloudflare_account_id = (
+        env_snapshot.get("PERSONA_IMAGEGEN_CLOUDFLARE_ACCOUNT_ID")
+        or env_snapshot.get("PERSONA_CLOUDFLARE_ACCOUNT_ID")
+        or None
+    )
+    resolver_env = dict(env_snapshot)
+    if cloudflare_account_id and not resolver_env.get("PERSONA_CLOUDFLARE_ACCOUNT_ID"):
+        resolver_env["PERSONA_CLOUDFLARE_ACCOUNT_ID"] = cloudflare_account_id
+
+    resolver = ProviderCredentialResolver(env=resolver_env)
     resolved_backends: list[ImageBackend] = []
     skipped: list[tuple[str, str]] = []
     for position, (provider, model) in enumerate(parsed):
@@ -404,7 +425,15 @@ def load_image_backend_from_env(
         # Synthesize a per-slot ImageBackendConfig. The provider's default
         # base URL is sourced from :data:`DEFAULT_BASE_URLS` if the resolver
         # didn't carry one (e.g., the per-provider env var was unset).
-        slot_base_url = creds.base_url or DEFAULT_BASE_URLS.get(provider)
+        if provider == "cloudflare":
+            # The shared resolver assembles cloudflare's CHAT base URL
+            # (``.../accounts/{id}/ai/v1/``). The cloudflare ImageBackend builds
+            # its own request URL from the bare ``.../accounts/`` prefix +
+            # account id, so the chat URL must not leak in here — use the
+            # image-gen DEFAULT_BASE_URLS prefix and let the backend append.
+            slot_base_url = DEFAULT_BASE_URLS.get(provider)
+        else:
+            slot_base_url = creds.base_url or DEFAULT_BASE_URLS.get(provider)
         slot_config = ImageBackendConfig(
             provider=provider,  # type: ignore[arg-type]
             model=model,
@@ -413,17 +442,12 @@ def load_image_backend_from_env(
             # Spec 25 D-25-14: thread the single process-level Cloudflare
             # account id into every slot (ignored by non-cloudflare backends);
             # a cloudflare slot in a cross-provider MODELS list needs it.
-            # On the MODELS path the API key resolves via the per-provider
-            # convention (``PERSONA_CLOUDFLARE_API_KEY``), so the account id's
-            # canonical sibling here is ``PERSONA_CLOUDFLARE_ACCOUNT_ID``;
-            # ``PERSONA_IMAGEGEN_CLOUDFLARE_ACCOUNT_ID`` (the single-provider
-            # config-field name) is accepted as a fallback so an operator who
-            # set it under either namespace resolves. (Operator-pass §2.7 fix.)
-            cloudflare_account_id=(
-                env_snapshot.get("PERSONA_CLOUDFLARE_ACCOUNT_ID")
-                or env_snapshot.get("PERSONA_IMAGEGEN_CLOUDFLARE_ACCOUNT_ID")
-                or None
-            ),
+            # The image-gen-specific ``PERSONA_IMAGEGEN_CLOUDFLARE_ACCOUNT_ID``
+            # is preferred (it predates the chat provider's generic
+            # ``PERSONA_CLOUDFLARE_ACCOUNT_ID``), with the generic name accepted
+            # as a fallback so an operator who set it under either namespace
+            # resolves. (Operator-pass §2.7 fix.) Resolved once above.
+            cloudflare_account_id=cloudflare_account_id,
         )
         resolved_backends.append(load_image_backend(slot_config))
 
