@@ -125,6 +125,33 @@ async def test_mcp_invocations_recorded_on_turnlog() -> None:
 
 
 @pytest.mark.asyncio
+async def test_conversation_tool_call_emits_paired_activity_events() -> None:
+    # P2 (T2): a chat-turn tool dispatch emits activity_start/activity_end (run-level,
+    # step=-1), additive to the existing tool_result (P2-D-3 keep-both).
+    backend = ScriptedBackend(
+        [
+            ScriptedRound(tool_name="mcp:time:datetime", tool_args={"operation": "now"}),
+            ScriptedRound(text="It is midnight UTC."),
+        ]
+    )
+    loop, _ = _make_loop(backend, [_mcp_time])
+
+    events = await _run(loop, "What time is it?")
+
+    starts = [e for e in events if e.type == "activity_start"]
+    ends = [e for e in events if e.type == "activity_end"]
+    assert len(starts) == 1
+    assert len(ends) == 1
+    assert starts[0].step == -1
+    assert starts[0].data["name"] == "mcp:time:datetime"
+    assert starts[0].data["kind"] == "mcp"
+    assert ends[0].data["status"] == "ok"
+    assert starts[0].data["activity_id"] == ends[0].data["activity_id"]
+    # Coexists with tool_result (keep-both, no double-render is a frontend concern).
+    assert any(e.type == "tool_result" for e in events)
+
+
+@pytest.mark.asyncio
 async def test_no_mcp_activity_leaves_telemetry_empty() -> None:
     backend = ScriptedBackend([ScriptedRound(text="The weather is lovely today.")])
     loop, writer = _make_loop(backend, [_echo])

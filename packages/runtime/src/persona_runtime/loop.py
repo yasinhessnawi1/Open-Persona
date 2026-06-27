@@ -49,6 +49,7 @@ from persona.skills import collect_skill_supplements, count_tokens, render_skill
 from persona.skills.composition import AdmissionResult, SkillCompositionState
 from persona.tools import format_tool_result
 
+from persona_runtime.activity import dispatch_with_activity
 from persona_runtime.agentic.events import RunEvent
 from persona_runtime.ambiguity import DetectionContext, detect_ambiguity, should_ask
 from persona_runtime.logging import (
@@ -681,7 +682,7 @@ class ConversationLoop:
                     )
                 # Dispatch each call; feed results back; intercept use_skill.
                 for call in round_calls:
-                    result = await self._dispatch(call)
+                    result = await self._dispatch(call, on_event=on_event)
                     tool_call_count += 1
                     # Spec 27 T12: record MCP tool invocations for TurnLog telemetry.
                     if call.name.startswith("mcp:"):
@@ -1357,7 +1358,12 @@ class ConversationLoop:
                 args_json[delta.call_id] += delta.arguments_delta
         outcome.calls = [self._build_call(cid, names[cid], args_json[cid]) for cid in order]
 
-    async def _dispatch(self, call: ToolCall) -> ToolResult:
+    async def _dispatch(
+        self,
+        call: ToolCall,
+        *,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
+    ) -> ToolResult:
         """Dispatch a tool call, converting structural failures to is_error results.
 
         A hallucinated, empty, or not-allowed tool name raises ``ToolNotAllowedError``
@@ -1368,6 +1374,12 @@ class ConversationLoop:
         the SSE mid-stream ("response already started"). Mirrors the agentic
         loop's ``_dispatch`` (one tool-failure discipline across both loops).
         A tool that runs but fails already returns ``is_error=True`` unchanged.
+
+        P2: dispatch routes through :func:`dispatch_with_activity` so each call emits a
+        paired ``activity_start``/``activity_end`` when ``on_event`` is present (the live
+        "using <X>…" state + trail). Chat turns are run-level, so ``step=-1`` (mirrors the
+        ``tool_result`` emission below). The existing ``tool_result`` keeps emitting
+        additively during the migration (P2-D-3 keep-both).
         """
         from persona.errors import ToolExecutionError, ToolNotAllowedError
 
@@ -1384,7 +1396,7 @@ class ConversationLoop:
             )
 
         try:
-            return await self._toolbox.dispatch(call)
+            return await dispatch_with_activity(self._toolbox, call, on_event=on_event, step=-1)
         except ToolNotAllowedError:
             available = ", ".join(self._toolbox.names())
             return ToolResult(

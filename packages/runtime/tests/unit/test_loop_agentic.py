@@ -146,6 +146,23 @@ class TestHappyPath:
         assert "tool_result" in event_types
         assert "completed" in event_types
         assert event_types[-1] == "finished"
+        # P2: each dispatched tool emits a paired activity_start/activity_end
+        # (additive to tool_result, P2-D-3 keep-both), at the real step index.
+        assert event_types.count("activity_start") == 2
+        assert event_types.count("activity_end") == 2
+        starts = [e for e in events if e.type == "activity_start"]
+        assert starts[0].data["name"] == "echo"
+        assert starts[0].step >= 0
+        # P2 memory_recall bridge: a run now emits a recall event per typed store,
+        # after `started` (parity with the chat loop).
+        recall = [e for e in events if e.type == "memory_recall"]
+        assert {e.data["store"] for e in recall} == {
+            "identity",
+            "self_facts",
+            "worldview",
+            "episodic",
+        }
+        assert event_types.index("started") < event_types.index("memory_recall")
 
     @pytest.mark.asyncio
     async def test_final_step_records_telemetry(self) -> None:

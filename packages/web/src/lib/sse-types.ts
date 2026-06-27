@@ -49,6 +49,44 @@ export interface ToolCallingData {
 }
 
 /**
+ * P2 — the pre-execution "using <X>…" signal. Emitted before the persona invokes
+ * any capability (builtin tool / skill / MCP / sandbox / imagegen / web), paired with
+ * an {@link ActivityEndData} by `activity_id`. Drives the live "using <X>…" state.
+ * `args_summary` is redacted at the core emit boundary — never carries secrets.
+ *
+ * Coexists with `tool_calling`/`tool_result` during the migration (P2-D-3 keep-both):
+ * the activity events drive the live state (a SEPARATE channel from the tool card),
+ * so a call renders ONE card (from `tool_result`) plus a transient activity state —
+ * not two cards. `tool_result` stays the card source until its retirement.
+ */
+export interface ActivityStartData {
+  activity_id: string;
+  /** `tool` / `skill` / `mcp` / `sandbox` / `imagegen` / `web` / `memory_recall`. */
+  kind: string;
+  /** The specific name (tool name, `mcp:server:tool`, `use_skill`). */
+  name: string;
+  /** Human label for the affordance ("Searching the web"). */
+  label: string;
+  /** Redacted, bounded arg summary (never secrets). */
+  args_summary: Record<string, string>;
+}
+
+/**
+ * P2 — the post-execution half, paired to its {@link ActivityStartData} by
+ * `activity_id`. `status` resolves/clears (or error/awaiting-approval marks) the live
+ * state. Lightweight by design (P2-D-3): the rich-output payload (content /
+ * produced_files / artifacts) stays on the coexisting `tool_result` during keep-both.
+ */
+export interface ActivityEndData {
+  activity_id: string;
+  /** `ok` / `error` / `denied` / `awaiting_approval`. */
+  status: string;
+  duration_ms: number;
+  is_error: boolean;
+  result_summary?: string;
+}
+
+/**
  * One produced file in a `tool_result` event's structured payload.
  *
  * Wire-shape mirror of the runtime forwarding amendment at
@@ -169,6 +207,9 @@ export type ChatEvent =
   | { event: "chunk"; data: ChatChunkData }
   | { event: "tool_calling"; data: ToolCallingData }
   | { event: "tool_result"; data: ToolResultData }
+  // P2: the unified "using <X>…" activity contract (start/end paired by activity_id).
+  | { event: "activity_start"; data: ActivityStartData }
+  | { event: "activity_end"; data: ActivityEndData }
   // Spec 30 (D-30-2): the chat-proactive-question rail. The shared loop already
   // emits `asking_user` to the chat stream (tool-gap / MCP-gap offers); the web
   // now parses it (previously dropped) so the rail can render inline.
@@ -186,6 +227,8 @@ const CHAT_EVENTS = new Set([
   "chunk",
   "tool_calling",
   "tool_result",
+  "activity_start",
+  "activity_end",
   "asking_user",
   "memory_recall",
   "thinking",
@@ -275,6 +318,8 @@ export type RunEventType =
   | "memory_recall"
   | "tool_calling"
   | "tool_result"
+  | "activity_start"
+  | "activity_end"
   | "asking_user"
   | "user_responded"
   | "reasoning"
@@ -366,6 +411,8 @@ export type RunEvent =
   | (RunEventBase & { type: "memory_recall"; data: MemoryRecallData })
   | (RunEventBase & { type: "tool_calling"; data: ToolCallingData })
   | (RunEventBase & { type: "tool_result"; data: ToolResultData })
+  | (RunEventBase & { type: "activity_start"; data: ActivityStartData })
+  | (RunEventBase & { type: "activity_end"; data: ActivityEndData })
   | (RunEventBase & { type: "asking_user"; data: AskingUserData })
   | (RunEventBase & { type: "user_responded"; data: EmptyData })
   | (RunEventBase & { type: "reasoning"; data: ReasoningData })

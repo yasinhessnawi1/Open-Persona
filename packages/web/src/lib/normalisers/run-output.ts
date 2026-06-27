@@ -52,6 +52,10 @@ export function runEventToOutputContent(event: RunEvent): OutputContent[] {
     case "tier":
     case "thinking":
     case "memory_recall":
+    // P2: the activity contract is live-state for runViewFromEvents (step.activities),
+    // not capability output — it never contributes to step.outputs.
+    case "activity_start":
+    case "activity_end":
     case "asking_user":
     case "user_responded":
     case "reasoning":

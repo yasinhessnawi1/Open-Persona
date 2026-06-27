@@ -1,6 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
+import { ActivityState } from "@/components/activity-state";
 import { OutputList } from "@/components/chat/output/dispatcher";
 import { ToolCallCard } from "@/components/chat/tool-call-card";
 import { Markdown } from "@/components/ui/markdown";
@@ -86,6 +87,11 @@ export function StepCard({
             </span>
           ) : null}
         </div>
+
+        {/* P2 (T5): the live "using <X>…" state for an in-flight capability on this
+            step — the same component the chat surface renders (one cross-surface
+            affordance). Collapses to the current activity; clears on resolve. */}
+        <ActivityState activities={step.activities} />
 
         {step.tools.length > 0 ? (
           <div className="flex flex-col gap-1.5" data-slot="step-tools">

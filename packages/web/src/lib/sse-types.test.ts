@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  type ActivityStartData,
   type ChatDoneData,
   type MemoryRecallData,
   parseChatEvent,
+  parseRunEvent,
 } from "./sse-types";
 
 /**
@@ -78,5 +80,54 @@ describe("parseChatEvent — memory_recall (Spec 35)", () => {
     const data = ev?.data as MemoryRecallData;
     expect(data.store).toBe("identity");
     expect(data.count).toBeUndefined();
+  });
+});
+
+describe("activity contract — both SSE transports (P2)", () => {
+  const startPayload = {
+    activity_id: "a1",
+    kind: "web",
+    name: "web_search",
+    label: "Searching the web",
+    args_summary: { q: "rent" },
+  };
+
+  it("parses an activity_start chat frame (bare-payload transport)", () => {
+    const ev = parseChatEvent({
+      event: "activity_start",
+      data: JSON.stringify(startPayload),
+    });
+    expect(ev?.event).toBe("activity_start");
+    const data = ev?.data as ActivityStartData;
+    expect(data.activity_id).toBe("a1");
+    expect(data.kind).toBe("web");
+    expect(data.args_summary).toEqual({ q: "rent" });
+  });
+
+  it("parses an activity_end chat frame", () => {
+    const ev = parseChatEvent({
+      event: "activity_end",
+      data: JSON.stringify({
+        activity_id: "a1",
+        status: "ok",
+        duration_ms: 9,
+        is_error: false,
+      }),
+    });
+    expect(ev?.event).toBe("activity_end");
+  });
+
+  it("parses an activity_start run frame (RunEvent envelope transport)", () => {
+    const ev = parseRunEvent({
+      event: "message",
+      data: JSON.stringify({
+        type: "activity_start",
+        step: 0,
+        timestamp: "2026-06-27T00:00:00Z",
+        data: startPayload,
+      }),
+    });
+    expect(ev?.type).toBe("activity_start");
+    expect(ev?.step).toBe(0);
   });
 });

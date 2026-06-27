@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/auth";
 import type { ChatMessageView } from "@/components/chat/message-element";
+import { reduceActivityEnd, reduceActivityStart } from "@/lib/activity";
 import { ApiError, createApiClient, unwrap } from "@/lib/api/client";
 import type { components } from "@/lib/api/schema";
 import { consumeSSE, type RawSSEEvent } from "@/lib/sse";
@@ -133,6 +134,21 @@ function applyTurnFrame(raw: RawSSEEvent, patch: Patch): "ok" | "error" {
         ],
       };
     });
+  } else if (ev.event === "activity_start") {
+    // P2: open the live "using <X>…" state — a SEPARATE channel from `tools` (the card
+    // stays sourced from tool_result during keep-both, P2-D-3). Idempotent on the
+    // reattach replay (dedup by activity_id).
+    patch((a) => ({
+      ...a,
+      working: false,
+      activities: reduceActivityStart(a.activities, ev.data),
+    }));
+  } else if (ev.event === "activity_end") {
+    // P2: resolve the matching live state by activity_id (no-op if no start seen).
+    patch((a) => ({
+      ...a,
+      activities: reduceActivityEnd(a.activities, ev.data),
+    }));
   } else if (ev.event === "asking_user") {
     // Spec 30 (D-30-2): the chat-proactive-question rail. The shared loop emits
     // this for a tool-gap / MCP-gap consent offer (the question prose also

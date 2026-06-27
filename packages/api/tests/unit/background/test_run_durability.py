@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
-from persona.schema.tools import ToolCall
+from persona.schema.tools import ToolCall, ToolResult
 from persona_api.background.run_worker import RunRegistry
 from persona_api.db.community import (
     create_community_schema,
@@ -98,6 +98,101 @@ class _GatedLoop:
             started_at=now,
             finished_at=now,
         )
+
+
+class _ActivityLoop:
+    """Emits the P2 activity contract interleaved with tool events, gating AFTER
+    ``activity_start`` (before ``activity_end``) so the test can inspect the persisted
+    floor while the activity is in-flight — the reattach-mid-"using X…" moment."""
+
+    def __init__(self, emitted: asyncio.Event, release: asyncio.Event) -> None:
+        self._emitted = emitted
+        self._release = release
+
+    async def run(
+        self,
+        task: str,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
+        user_respond: Callable[[str], Awaitable[str]] | None = None,
+        cancel_token: object | None = None,
+    ) -> Run:
+        assert on_event is not None
+        await on_event(RunEvent.started(task))
+        await on_event(
+            RunEvent.tool_calling(0, [ToolCall(name="web_search", args={}, call_id="c1")])
+        )
+        await on_event(
+            RunEvent.activity_start(
+                0,
+                activity_id="a1",
+                kind="web",
+                name="web_search",
+                label="Searching the web",
+                args_summary={"q": "rent"},
+            )
+        )
+        self._emitted.set()  # in-flight: start persisted, end NOT yet
+        await self._release.wait()
+        await on_event(
+            RunEvent.activity_end(0, activity_id="a1", status="ok", duration_ms=7.0, is_error=False)
+        )
+        await on_event(
+            RunEvent.tool_result(
+                0,
+                "web_search",
+                ToolResult(tool_name="web_search", content="results", call_id="c1"),
+            )
+        )
+        now = datetime.now(UTC)
+        return Run(
+            persona_id=_PERSONA,
+            task=task,
+            status=RunStatus.COMPLETED,
+            steps=[],
+            output="done",
+            error=None,
+            started_at=now,
+            finished_at=now,
+        )
+
+
+@pytest.mark.asyncio
+async def test_activity_trail_in_running_snapshot_survives_mid_activity_reattach(
+    engine: Engine,
+) -> None:
+    # P2 T4 (the trail-survives-reattach hold, RUN surface): while a run is RUNNING, the
+    # event-log snapshot in runs.steps carries activity_* in order (no migration), so a
+    # reattach-after-gap reads the in-flight "using X…" — activity_start persisted, its end
+    # not yet. NOTE the two-shape behaviour (run_worker.py:139-141): on COMPLETION
+    # _persist_final overwrites runs.steps with the authoritative Step list (tool_calls /
+    # results — the benchmark's metric source), so the completed RUN form is Steps, not the
+    # event-log. The verbatim activity trail through completion is the CHAT surface
+    # (messages.stream_events) — see test_chat_turn_worker.
+    emitted, release = asyncio.Event(), asyncio.Event()
+    registry = RunRegistry(engine)
+    handle = registry.start(
+        run_id=_RUN,
+        owner_id=_OWNER,
+        loop=_ActivityLoop(emitted, release),
+        task_text="t",  # type: ignore[arg-type]
+    )
+
+    await emitted.wait()
+    # Mid-activity: the persisted running snapshot carries the trail IN ORDER — a reattach
+    # reads the in-flight activity (start present, end not yet; ordered after its tool_calling).
+    mid = [e.get("type") for e in _persisted_steps(engine)]
+    assert "activity_start" in mid
+    assert "activity_end" not in mid
+    assert mid.index("tool_calling") < mid.index("activity_start")
+
+    release.set()
+    assert handle.task is not None
+    await handle.task
+
+    # On completion the authoritative form is the Step list (pre-existing P1 behaviour).
+    with engine.begin() as conn:
+        status = conn.execute(select(runs_t.c.status).where(runs_t.c.id == _RUN)).scalar_one()
+    assert status == str(RunStatus.COMPLETED)
 
 
 @pytest.mark.asyncio

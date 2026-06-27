@@ -322,6 +322,69 @@ async def test_tool_event_forces_an_immediate_checkpoint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_activity_trail_persists_verbatim_in_order_through_completion() -> None:
+    # P2 T4 (the trail-survives-reattach hold, CHAT surface): the chat event log persists
+    # VERBATIM into messages.stream_events (no migration) and is what a reattach replays.
+    # Assert activity_start/activity_end land in the finalize event log, IN ORDER, coexisting
+    # with tool_result (keep-both, P2-D-3) — so a reattach reconstructs the trail unbroken.
+    from persona.schema.tools import ToolCall, ToolResult
+
+    captured: list[list[dict[str, object]]] = []
+
+    class _CapturingSink(_RecordingSink):
+        def finalize(self, *, events: list[dict[str, object]], **kw: Any) -> None:  # noqa: ANN401
+            captured.append(events)
+            super().finalize(events=events, **kw)
+
+    class _ActivityChatLoop:
+        async def turn(
+            self,
+            conversation: Conversation,
+            user_message: str,
+            on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
+            **_kwargs: object,
+        ) -> AsyncIterator[StreamChunk]:
+            assert on_event is not None
+            await on_event(
+                RunEvent.tool_calling(-1, [ToolCall(name="web_search", args={}, call_id="c1")])
+            )
+            await on_event(
+                RunEvent.activity_start(
+                    -1,
+                    activity_id="a1",
+                    kind="web",
+                    name="web_search",
+                    label="Searching the web",
+                    args_summary={"q": "rent"},
+                )
+            )
+            await on_event(
+                RunEvent.activity_end(
+                    -1, activity_id="a1", status="ok", duration_ms=5.0, is_error=False
+                )
+            )
+            await on_event(
+                RunEvent.tool_result(
+                    -1,
+                    "web_search",
+                    ToolResult(tool_name="web_search", content="results", call_id="c1"),
+                )
+            )
+            yield StreamChunk(delta="done", is_final=True)
+
+    handle = _start(_registry(_CapturingSink()), _ActivityChatLoop())
+    await handle.task
+
+    assert captured, "finalize must persist the event log"
+    types = [e.get("type") for e in captured[-1]]
+    assert "activity_start" in types
+    assert "activity_end" in types
+    assert "tool_result" in types  # keep-both (P2-D-3)
+    # Ordered, not dropped/reordered — the honest reattach trail.
+    assert types.index("activity_start") < types.index("activity_end")
+
+
+@pytest.mark.asyncio
 async def test_second_start_same_conversation_raises_turn_already_active() -> None:
     reg = _registry(_RecordingSink())
     handle = _start(reg, _ScriptedLoop(["slow"]))

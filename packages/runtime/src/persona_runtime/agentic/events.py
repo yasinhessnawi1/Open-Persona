@@ -38,8 +38,10 @@ class RunEvent(BaseModel):
     Attributes:
         type: The event kind — one of ``started``, ``tier``, ``thinking``,
             ``memory_recall``, ``tool_calling``, ``tool_result``,
-            ``asking_user``, ``user_responded``, ``reasoning``, ``completed``,
-            ``cancelled``, ``max_steps``, ``error``, ``finished``.
+            ``activity_start``, ``activity_end`` (P2 — the unified "using <X>…"
+            activity contract), ``asking_user``, ``user_responded``,
+            ``reasoning``, ``completed``, ``cancelled``, ``max_steps``,
+            ``error``, ``finished``.
         step: The zero-based step index the event belongs to (``-1`` for
             run-level events that precede the first step, e.g. ``started``).
         data: Event-type-specific JSON-safe payload built by the constructor.
@@ -209,6 +211,101 @@ class RunEvent(BaseModel):
             data["artifacts"] = [a.model_dump() for a in result.artifacts]
         return cls(
             type="tool_result",
+            step=step,
+            data=data,
+            timestamp=datetime.now(UTC),
+        )
+
+    @classmethod
+    def activity_start(
+        cls,
+        step: int,
+        *,
+        activity_id: str,
+        kind: str,
+        name: str,
+        label: str,
+        args_summary: dict[str, str],
+    ) -> RunEvent:
+        """A capability is about to run — drives the live "using <X>…" state (P2).
+
+        The pre-execution half of the unified activity contract (P2-D-3). Emitted
+        by the runtime adapter for ``persona.tools.activity.ActivityObserver`` from the
+        single dispatch boundary (``ObservedToolbox``), so every builtin tool / skill /
+        MCP / sandbox / imagegen / web call signals before it runs — paired with an
+        :meth:`activity_end` by ``activity_id``.
+
+        Coexists additively with ``tool_calling``/``tool_result`` during the migration
+        (P2-D-3 keep-both): the frontend renders the "using X…" affordance from this
+        contract, not from ``tool_result`` (no double-render). ``args_summary`` is
+        redacted at the core emit boundary (P2-D-2) — never carries secrets.
+
+        Args:
+            step: Step index (``-1`` for run-level chat/voice turns; a real step in
+                the agentic loop), mirroring ``tool_result``.
+            activity_id: Stable id pairing this start with its end.
+            kind: Capability family (``tool``/``skill``/``mcp``/``sandbox``/
+                ``imagegen``/``web``/``memory_recall``).
+            name: The specific name (tool name, ``mcp:server:tool``, ``use_skill``).
+            label: A human label for the affordance ("Searching the web").
+            args_summary: Redacted, bounded ``dict[str, str]`` arg summary.
+        """
+        return cls(
+            type="activity_start",
+            step=step,
+            data={
+                "activity_id": activity_id,
+                "kind": kind,
+                "name": name,
+                "label": label,
+                "args_summary": args_summary,
+            },
+            timestamp=datetime.now(UTC),
+        )
+
+    @classmethod
+    def activity_end(
+        cls,
+        step: int,
+        *,
+        activity_id: str,
+        status: str,
+        duration_ms: float,
+        is_error: bool,
+        result_summary: str = "",
+    ) -> RunEvent:
+        """A capability finished, was denied, or is awaiting approval (P2).
+
+        The post-execution half of the activity contract, paired to its
+        :meth:`activity_start` by ``activity_id``. ``status`` is one of ``ok`` /
+        ``error`` / ``denied`` / ``awaiting_approval`` — the last two come from A3's
+        deny/gate at the same boundary (P2-D-a3-composition); a returned
+        ``is_error`` result maps to ``error`` (never silently ``ok``).
+
+        Carries the lifecycle/display essentials only; the rich-output payload
+        (full content, ``produced_files``, ``artifacts``) stays on the coexisting
+        ``tool_result`` during the migration (P2-D-3 keep-both) — moving it onto this
+        event is the deferred ``tool_result``-retirement step, avoiding a double-persist
+        of artifacts while both events emit.
+
+        Args:
+            step: Step index (mirrors the paired :meth:`activity_start`).
+            activity_id: Pairs this end with its start.
+            status: Terminal outcome (``ok``/``error``/``denied``/``awaiting_approval``).
+            duration_ms: Wall-clock duration (monotonic), measured at the boundary.
+            is_error: True on the model-recoverable failure surface.
+            result_summary: A short, bounded outcome summary (omitted when empty).
+        """
+        data: dict[str, Any] = {
+            "activity_id": activity_id,
+            "status": status,
+            "duration_ms": duration_ms,
+            "is_error": is_error,
+        }
+        if result_summary:
+            data["result_summary"] = result_summary
+        return cls(
+            type="activity_end",
             step=step,
             data=data,
             timestamp=datetime.now(UTC),

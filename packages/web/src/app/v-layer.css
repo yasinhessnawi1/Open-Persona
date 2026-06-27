@@ -1088,6 +1088,21 @@
   .v-recall-dot[data-store="episodic"] {
     background: var(--store-episodic);
   }
+  /* P2 (T5) — the live "using <X>…" activity pulse. Generalises .v-recall-dot to
+     every capability: identity-tinted (--v-id, the persona working), shares v-pulse.
+     data-kind is carried for optional future per-kind theming; data-awaiting (A3 gate)
+     holds a static, dimmed dot (no pulse) while approval is pending. */
+  .v-activity-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    background: var(--v-id);
+    animation: v-pulse 1.4s ease-in-out infinite;
+  }
+  .v-activity-dot[data-awaiting="true"] {
+    animation: none;
+    opacity: 0.6;
+  }
   @keyframes v-pulse {
     0%,
     100% {
@@ -1698,6 +1713,7 @@
    transitions/animations; this silences the .v-* keyframes explicitly too. */
 @media (prefers-reduced-motion: reduce) {
   .v-recall-dot,
+  .v-activity-dot,
   .v-dots i,
   .v-caret,
   .v-run-dot,

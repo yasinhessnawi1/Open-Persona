@@ -37,6 +37,10 @@ export function chatSseToOutputContent(event: ChatEvent): OutputContent[] {
     // The "working" pulse during round generation is a transient indicator,
     // not assistant output content.
     case "thinking":
+    // P2: the activity contract is the live "using <X>…" state (message.activities),
+    // not assistant output content — it never contributes to the output dispatcher.
+    case "activity_start":
+    case "activity_end":
       return [];
     case "tool_calling":
       return projectToolCalling(event.data.tool_calls);

@@ -64,6 +64,30 @@ const ev = {
     data: { run_id: "run_1", status },
     timestamp: TS,
   }),
+  // P2 — the activity contract.
+  activityStart: (step: number, id: string, name: string): RunEvent => ({
+    type: "activity_start",
+    step,
+    data: {
+      activity_id: id,
+      kind: name.startsWith("mcp:") ? "mcp" : "web",
+      name,
+      label: "Searching the web",
+      args_summary: { q: "x" },
+    },
+    timestamp: TS,
+  }),
+  activityEnd: (step: number, id: string, status: string): RunEvent => ({
+    type: "activity_end",
+    step,
+    data: {
+      activity_id: id,
+      status,
+      duration_ms: 9,
+      is_error: status === "error" || status === "awaiting_approval",
+    },
+    timestamp: TS,
+  }),
 };
 
 describe("runViewFromEvents", () => {
@@ -122,6 +146,74 @@ describe("runViewFromEvents", () => {
       { task: "t" },
     );
     expect(answered.steps[0].answered).toBe(true);
+  });
+});
+
+describe("runViewFromEvents — P2 activity no-double-render", () => {
+  // One step-0 call where BOTH the activity contract AND tool_calling/tool_result stream
+  // for the same call (P2-D-3 keep-both). The reducer must produce ONE tool card and ONE
+  // live-activity entry — not two cards.
+  const oneCall = [
+    ev.started("find rent law"),
+    ev.toolCalling(0, "web_search", "c1"),
+    ev.activityStart(0, "a1", "web_search"),
+    ev.activityEnd(0, "a1", "ok"),
+    ev.toolResult(0, "web_search", "results"),
+  ];
+
+  it("renders ONE tool card + ONE activity entry per call (not two cards)", () => {
+    const view = runViewFromEvents(oneCall, { task: "find rent law" });
+    expect(view.steps).toHaveLength(1);
+    const step = view.steps[0];
+    // Card channel: one tool, sourced from tool_result.
+    expect(step.tools).toHaveLength(1);
+    expect(step.tools[0]).toMatchObject({
+      toolName: "web_search",
+      pending: false,
+    });
+    // Activity channel: one resolved live-state, SEPARATE from tools.
+    expect(step.activities).toHaveLength(1);
+    expect(step.activities?.[0]).toMatchObject({
+      activityId: "a1",
+      kind: "web",
+      status: "ok",
+    });
+  });
+
+  it("is idempotent on reattach replay — re-streaming the log never doubles", () => {
+    const replayed = runViewFromEvents([...oneCall, ...oneCall], {
+      task: "find rent law",
+    });
+    expect(replayed.steps).toHaveLength(1);
+    expect(replayed.steps[0].tools).toHaveLength(1);
+    expect(replayed.steps[0].activities).toHaveLength(1);
+    expect(replayed.steps[0].activities?.[0].status).toBe("ok");
+  });
+
+  it("carries an awaiting_approval activity end (A3 gate) onto the step", () => {
+    const view = runViewFromEvents(
+      [
+        ev.started("t"),
+        ev.activityStart(0, "a1", "spend_money"),
+        ev.activityEnd(0, "a1", "awaiting_approval"),
+      ],
+      { task: "t" },
+    );
+    expect(view.steps[0].activities?.[0].status).toBe("awaiting_approval");
+  });
+
+  it("preserves per-step ordering after replay (no reorder/drop)", () => {
+    const twoSteps = [
+      ...oneCall,
+      ev.activityStart(1, "a2", "code_execution"),
+      ev.activityEnd(1, "a2", "ok"),
+    ];
+    const view = runViewFromEvents([...twoSteps, ...twoSteps], { task: "t" });
+    expect(view.steps.map((s) => s.step)).toEqual([0, 1]);
+    expect(view.steps[1].activities?.[0]).toMatchObject({
+      activityId: "a2",
+      status: "ok",
+    });
   });
 });
 

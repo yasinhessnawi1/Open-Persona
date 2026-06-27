@@ -11,6 +11,38 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Persona activity events — live "using X…" states + traceability (2026-06-28)
+
+> Close-out of `persona-activity-events`. Emits a structured **activity-start** event the
+> moment the persona is about to use *any* capability — builtin tool, skill, MCP tool,
+> sandbox/code-execution, image generation, web search/fetch, memory recall — paired with
+> an **activity-end** on completion. The chat + run views render a live "Searching the
+> web… / Running code… / Creating an image…" state (closing the v1 "is it stuck during a
+> long tool turn?" gap), and every turn/run leaves an ordered, persisted trace.
+> Generalizes Spec 35's named-store recall moment to all capabilities, through **one**
+> typed `RunEvent` extension emitted at a **single dispatch boundary**. Purely additive
+> instrumentation — no behaviour change. **Zero new dependency; no migration.**
+
+#### Added
+- **One emit seam = total coverage.** A core-defined `ActivityObserver` port + an
+  `ObservedToolbox` decorator wrap the single `toolbox.dispatch` boundary (outermost, so
+  it composes with the in-flight approvals gate: activity emit outer, gate inner). Every
+  capability the persona invokes mid-turn — chat, runs, and (forward) voice — emits without
+  a per-surface event layer. A structural test asserts the runtime dispatches tools in
+  exactly one place, so a new capability cannot ship silent by omission.
+- **Unified `activity_start` / `activity_end` `RunEvent` kinds** (kind / label / name /
+  status / `activity_id` / timestamps), carried over both SSE transports and persisted via
+  the existing event-log JSONB (chat `stream_events`; run `runs.steps` while running).
+  Coexists with `tool_result` / `memory_recall` (kept emitting); consumers render the live
+  state from the activity contract, the tool card from `tool_result` — one per call, no
+  double-render. `memory_recall` now also emits for agentic runs (parity with chat).
+- **Redaction at the emit boundary** — a key-denylist + nested redaction + value
+  truncation + total cap on the args summary, so no credential / API key / sensitive input
+  leaks into an activity event.
+- **Live "using X…" UI** — an identity-tinted, reduced-motion, ARIA-announced
+  (collapse-to-current) affordance in the chat message + run step card, generalizing the
+  Spec 35 named-store recall component to every capability.
+
 ### Call history & transcripts — a browsable home for voice calls (2026-06-27)
 
 > Close-out of `call-history-transcripts` (Spec V9). A finished voice call now

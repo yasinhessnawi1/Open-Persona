@@ -87,6 +87,10 @@ _logger = get_logger("agentic.loop")
 _RETRIEVE_TOP_K = 3
 _DEFAULT_MAX_TOKENS = 4096
 _ASK_USER_MARKER = "[ASK_USER]"
+#: The typed-store recall order for the P2 memory_recall bridge (mirrors
+#: ``persona_runtime.retrieval._RECALL_ORDER``); identity / self_facts / worldview /
+#: episodic are the four stores ``_retrieve`` consults for a run's initial context.
+_RECALL_ORDER = ("identity", "self_facts", "worldview", "episodic")
 _FINAL_MARKER = "[FINAL]"
 _NO_CALLBACK_REPLY = "Please proceed with your best judgment."
 _HALLUCINATION_NUDGE = "You must use only the tools listed as available. Do not invent tool names."
@@ -224,8 +228,11 @@ class AgenticLoop:
         output: str | None = None
         error: str | None = None
 
-        context = self._build_initial_context(persona_id, task)
+        # `started` first (the run began), then build the initial context — which
+        # emits the P2 memory_recall events for the stores it consults (so the recall
+        # signals follow `started`, mirroring the chat turn's ordering).
         await self._emit(on_event, RunEvent.started(task))
+        context = await self._build_initial_context(persona_id, task, on_event)
 
         last_bad_tool: str | None = None  # for the hallucinated-twice escalation (§5.2)
 
@@ -366,7 +373,7 @@ class AgenticLoop:
         results: list[ToolResult] = []
         bad_tool_this_step: str | None = None
         for call in response.tool_calls:
-            result = await self._dispatch(call)
+            result = await self._dispatch(call, step_num=step_num, on_event=on_event)
             results.append(result)
             if result.is_error and self._is_unknown_tool(call):
                 bad_tool_this_step = call.name
@@ -599,7 +606,13 @@ class AgenticLoop:
 
     # ----- dispatch + error recovery (§5.1/§5.2) ---------------------------
 
-    async def _dispatch(self, call: ToolCall) -> ToolResult:
+    async def _dispatch(
+        self,
+        call: ToolCall,
+        *,
+        step_num: int = -1,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
+    ) -> ToolResult:
         """Dispatch a tool call, converting structural failures to is_error results.
 
         A not-allowed / not-registered tool raises (spec 03); we convert to
@@ -607,9 +620,19 @@ class AgenticLoop:
         (D-03-3 — ``tool_name`` is required on the synthesised result). A tool
         that runs but fails already returns ``is_error=True`` and is returned
         unchanged.
+
+        P2: dispatch routes through :func:`dispatch_with_activity` so each call emits a
+        paired ``activity_start``/``activity_end`` at ``step_num`` when ``on_event`` is
+        present (the live "using <X>…" state + trail). The existing ``tool_result`` keeps
+        emitting additively during the migration (P2-D-3 keep-both).
         """
         from persona.errors import ToolExecutionError, ToolNotAllowedError
         from persona.schema.tools import truncated_tool_call_message
+
+        # Lazy import: persona_runtime.activity imports persona_runtime.agentic.events,
+        # which pulls persona_runtime.agentic.__init__ → this module; a top-level import
+        # would be a partially-initialised cycle. Imported here (like the errors above).
+        from persona_runtime.activity import dispatch_with_activity
 
         # The provider truncated the call mid-JSON (finish_reason="length" or
         # unparseable arguments). Dispatching with empty args yields the cryptic
@@ -624,7 +647,9 @@ class AgenticLoop:
             )
 
         try:
-            return await self._toolbox.dispatch(call)
+            return await dispatch_with_activity(
+                self._toolbox, call, on_event=on_event, step=step_num
+            )
         except ToolNotAllowedError:
             available = ", ".join(self._toolbox.names())
             return ToolResult(
@@ -689,15 +714,29 @@ class AgenticLoop:
 
     # ----- context construction --------------------------------------------
 
-    def _build_initial_context(self, persona_id: str, task: str) -> list[ConversationMessage]:
+    async def _build_initial_context(
+        self,
+        persona_id: str,
+        task: str,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
+    ) -> list[ConversationMessage]:
         """Build the floor: ONE system message (persona block + agentic framing) + task.
 
         The persona prompt is assembled by the reused ``PromptBuilder`` (D-06-9);
         the agentic instructions are appended into the same floor system message
         so ``context[0]`` is the compactor's whole invariant (D-06-5). The task is
         the trailing user message.
+
+        P2 (memory_recall bridge): runs now emit a ``memory_recall`` event per typed
+        store consulted for the initial context — parity with the chat loop
+        (``loop.py``), which was the only surface emitting it (Spec 35 D-35-4). Emitted
+        at ``step=-1`` (run-level, mirroring the chat turn) since the recall feeds the
+        run's whole initial context, before the first step.
         """
         retrieved = self._retrieve(persona_id, task)
+        if on_event is not None:
+            for store in _RECALL_ORDER:
+                await on_event(RunEvent.memory_recall(-1, store, len(getattr(retrieved, store))))
         skill_index = render_skill_index(self._scanned_skills)
         built = self._builder.build(
             self._persona,

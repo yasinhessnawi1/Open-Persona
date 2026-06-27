@@ -1,4 +1,6 @@
 import type { ToolEntry } from "@/components/chat/tool-call-card";
+import type { ActivityView } from "@/lib/activity";
+import { reduceActivityEnd, reduceActivityStart } from "@/lib/activity";
 import type { RunStatusResponse } from "@/lib/api";
 import type { OutputContent } from "@/lib/api/output-content";
 import {
@@ -67,6 +69,14 @@ export interface RunStep {
    * surface; doubling up would be noise.
    */
   outputs: OutputContent[];
+  /**
+   * P2 — the live "using <X>…" activity states for this step, a SEPARATE channel from
+   * {@link tools} (the card). `activity_start` opens an entry; `activity_end` resolves
+   * it by `activityId`. Kept apart from `tools`/`outputs` so a call renders ONE card
+   * (from `tool_result`) plus a transient activity state — never two cards (P2-D-3
+   * no-double-render). Absent on pre-P2 / historical runs.
+   */
+  activities?: ActivityView[];
   reasoning?: string;
   question?: string;
   /** Spec 21 (D-21-9): the 3+1 options when the ask carries them; else absent. */
@@ -149,6 +159,21 @@ export function runViewFromEvents(
         // capability tool. Unrecognized tools contribute nothing — their
         // result surfaces through st.tools' tool-card path.
         st.outputs = projectToolCalling(ev.data.tool_calls);
+        break;
+      }
+      case "activity_start": {
+        // P2: open the live "using <X>…" state on this step — a SEPARATE channel from
+        // st.tools (the card stays sourced from tool_result during keep-both, P2-D-3).
+        // Idempotent on replay (dedup by activity_id).
+        const st = ensure(ev.step);
+        st.thinking = false;
+        st.activities = reduceActivityStart(st.activities, ev.data);
+        break;
+      }
+      case "activity_end": {
+        // P2: resolve the matching live state by activity_id (no-op if no start seen).
+        const st = ensure(ev.step);
+        st.activities = reduceActivityEnd(st.activities, ev.data);
         break;
       }
       case "tool_result": {

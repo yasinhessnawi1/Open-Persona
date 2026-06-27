@@ -43,11 +43,13 @@ import { type ReactNode, useMemo, useState } from "react";
  * Tier badge sits below the body when the message is terminal.
  */
 
+import { ActivityState } from "@/components/activity-state";
 import type { AvatarPersona } from "@/components/persona/persona-avatar";
 import { PersonaAvatar } from "@/components/persona/persona-avatar";
 import { AskUserPrompt } from "@/components/runs/ask-user-prompt";
 import { DocumentChip } from "@/components/ui/document-chip";
 import { Markdown } from "@/components/ui/markdown";
+import type { ActivityView } from "@/lib/activity";
 import type { OutputContent } from "@/lib/api/output-content";
 import { operationFor, projectToolResult } from "@/lib/normalisers/_classify";
 import { personaIdentityStyle } from "@/lib/persona-identity";
@@ -168,6 +170,14 @@ export interface MessageElementView {
    * store-coloured pulse). Absent on historical / non-streaming turns.
    */
   recall?: { store: string; count?: number }[];
+  /**
+   * P2 — the live "using <X>…" activity states for this turn (a SEPARATE channel from
+   * {@link tools}: `activity_start` opens an entry, `activity_end` resolves it by
+   * `activityId`). Kept apart from `tools` so a call renders ONE tool card plus a
+   * transient activity state — never two cards (P2-D-3). Absent on historical /
+   * non-streaming turns.
+   */
+  activities?: ActivityView[];
 }
 
 /**
@@ -383,6 +393,13 @@ function PersonaMessage({
             // Legacy stacked layout: tools above content (back-compat).
             <StackedContent message={message} thinkingLabel={thinkingLabel} />
           )}
+          {/* P2 (T5): the live "using <X>…" state for an in-flight capability this
+              turn — generalises the Spec 35 recall moment to every tool/skill/MCP.
+              Renders only while streaming + an activity is in-flight (the component
+              collapses to the current one and clears on resolve). */}
+          {message.streaming ? (
+            <ActivityState activities={message.activities} />
+          ) : null}
         </div>
 
         {message.tier && !message.streaming ? (
