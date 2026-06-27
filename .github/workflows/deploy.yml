@@ -1,9 +1,11 @@
 name: Deploy
 
-# Auto-deploy persona-api AND persona-voice to Fly. Fires only when the CI
-# workflow finishes successfully on the `main` branch — never on PRs, never on a
-# red build. Vercel handles persona-web deploys via its own GitHub integration;
-# open-persona-db (self-hosted Postgres) is deployed once out-of-band, not here.
+# Auto-deploy persona-api, persona-voice AND the self-hosted LiveKit SFU to Fly.
+# Fires only when the CI workflow finishes successfully on the `main` branch —
+# never on PRs, never on a red build. Vercel handles persona-web deploys via its
+# own GitHub integration; open-persona-db (self-hosted Postgres) is deployed once
+# out-of-band, not here. open-persona-livekit's app + dedicated IPv4 + LIVEKIT_KEYS
+# secret are provisioned once out-of-band; this workflow only redeploys its image.
 #
 # One-time setup:
 #   1. Generate a deploy-scoped Fly token. The api job and the voice job both
@@ -156,3 +158,60 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           flyctl status --app open-persona-voice
+
+  deploy-livekit:
+    # Same gate as the other jobs: green CI on main, or a manual workflow_dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    concurrency:
+      # Independent group: the SFU redeploys without blocking/being blocked by api
+      # or voice.
+      group: deploy-livekit
+      cancel-in-progress: false
+    steps:
+      - name: Checkout the commit CI verified
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # DIFFERENT build context from api/voice: the LiveKit Dockerfile COPYs its
+      # OWN files (entrypoint.sh, livekit.yaml) with relative paths — NOT repo-root
+      # `COPY packages/<member>/...`. So the build context must be packages/livekit/,
+      # not the repo root. `working-directory` makes that the CWD, and the build
+      # daemon receives that dir as context (fly.toml is read from the CWD).
+      #
+      # FLY_API_TOKEN must be org-scoped (same as the other jobs). The SFU starts
+      # fast (thin livekit-server image, no embedder), so a short wait suffices.
+      # The app/IPv4/LIVEKIT_KEYS are provisioned out-of-band; this only ships the
+      # image.
+      - name: flyctl deploy
+        working-directory: packages/livekit
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl deploy \
+            --remote-only \
+            --config fly.toml \
+            --app open-persona-livekit \
+            --strategy rolling \
+            --wait-timeout 300
+
+      # Unlike voice, LiveKit serves an anonymous HTTP endpoint (Fly 443 → 7880),
+      # so signaling reachability is directly probe-able — a real post-deploy check.
+      - name: Smoke-test signaling
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 10 https://open-persona-livekit.fly.dev/ >/dev/null; then
+              echo "livekit signaling reachable"
+              exit 0
+            fi
+            echo "waiting for livekit signaling ($i/6)…"
+            sleep 10
+          done
+          echo "::error::livekit signaling did not respond within 60s after deploy"
+          exit 1
