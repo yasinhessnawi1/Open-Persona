@@ -59,7 +59,12 @@ kill_timeout = "30s"
   [checks.listener]
     type = "tcp"
     port = 8001
-    grace_period = "30s"
+    # Cold start loads the bge-small embedder + Silero VAD on CPU before the
+    # listener binds; on a shared VM that takes minutes, not seconds. A 30s grace
+    # marked the machine critical mid-startup and the proxy 503'd ("could not
+    # find a good candidate") for the whole boot. 300s covers the worst-case
+    # cold start with headroom; steady-state health still fails fast (interval+timeout).
+    grace_period = "300s"
     interval = "30s"
     timeout = "5s"
 
