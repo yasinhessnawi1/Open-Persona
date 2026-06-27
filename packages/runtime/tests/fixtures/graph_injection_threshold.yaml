@@ -1,0 +1,119 @@
+# Labelled relevant-vs-small-talk set for the K3 injection-threshold sweep
+# (D-K3-3 refinement (a): validate inject_similarity_floor against the INJECTION
+# decision — "is this node relevant enough to inject for THIS turn?" — not
+# inherited from K0's semantic-link bar). Each entry pairs a turn's user message
+# with a candidate user-knowledge node and the ground-truth label:
+#   inject: true  — the node bears on the turn; injecting helps (a positive).
+#   inject: false — small-talk / off-topic / loosely-related; injecting it would
+#                   be stuffing (a negative — the failure the floor must prevent).
+# The external sweep embeds (query, node.content) with the real bge-small
+# embedder, takes cosine similarity as the score, and sweeps the floor for the
+# F0.5-precision-biased operating point (stuffing degrades every turn → precision
+# weighted over recall, the K0 house posture).
+
+# --- relevant: the node bears on the turn (positives) ----------------------
+- slice: relevant
+  query: "Can you help me build a study plan? I lose concentration after about an hour."
+  content: "Finds it hard to concentrate during long study sessions and gets distracted easily."
+  inject: true
+- slice: relevant
+  query: "I want to cook dinner for a few friends this weekend — any menu ideas?"
+  content: "Eats a vegetarian diet and avoids all meat and fish."
+  inject: true
+- slice: relevant
+  query: "Recommend some high-protein meals I could batch-cook."
+  content: "Eats a vegetarian diet and avoids all meat and fish."
+  inject: true
+- slice: relevant
+  query: "Help me set up a daily medication reminder schedule."
+  content: "Takes metformin every day to manage blood sugar."
+  inject: true
+- slice: relevant
+  query: "What's a good way to practise a language a little every day?"
+  content: "Is learning Spanish and is currently at an intermediate level."
+  inject: true
+- slice: relevant
+  query: "Help me plan the logistics for my move next month."
+  content: "Is planning to move to Oslo next month to start a new job."
+  inject: true
+- slice: relevant
+  query: "I want to start running regularly — when in the day should I go?"
+  content: "Prefers to exercise in the morning before work starts."
+  inject: true
+- slice: relevant
+  query: "How do I cope with stress given my shift pattern at work?"
+  content: "Works as a nurse at a city hospital and often does night shifts."
+  inject: true
+- slice: relevant
+  query: "I keep getting distracted while revising for my exam — any techniques?"
+  content: "Finds it hard to concentrate during long study sessions and gets distracted easily."
+  inject: true
+- slice: relevant
+  query: "Suggest a sustainable daily walk routine I can actually keep up."
+  content: "Has a border collie named Pixel who needs a lot of exercise."
+  inject: true
+- slice: relevant
+  query: "Plan healthy lunches I can bring to work."
+  content: "Eats a vegetarian diet and avoids all meat and fish."
+  inject: true
+- slice: relevant
+  query: "What should I keep in mind for my new job starting soon?"
+  content: "Is planning to move to Oslo next month to start a new job."
+  inject: true
+
+# --- small talk: off-topic, nothing to inject (negatives) ------------------
+- slice: small_talk
+  query: "What's the weather like today?"
+  content: "Finds it hard to concentrate during long study sessions and gets distracted easily."
+  inject: false
+- slice: small_talk
+  query: "Tell me a fun fact about space."
+  content: "Eats a vegetarian diet and avoids all meat and fish."
+  inject: false
+- slice: small_talk
+  query: "What time is it in Tokyo right now?"
+  content: "Takes metformin every day to manage blood sugar."
+  inject: false
+- slice: small_talk
+  query: "Hey, how are you doing today?"
+  content: "Is learning Spanish and is currently at an intermediate level."
+  inject: false
+- slice: small_talk
+  query: "Recommend a good movie for tonight."
+  content: "Is planning to move to Oslo next month to start a new job."
+  inject: false
+- slice: small_talk
+  query: "What's 15 percent of 240?"
+  content: "Prefers to exercise in the morning before work starts."
+  inject: false
+- slice: small_talk
+  query: "Tell me a joke."
+  content: "Has a border collie named Pixel who needs a lot of exercise."
+  inject: false
+- slice: small_talk
+  query: "Who won the football match last night?"
+  content: "Works as a nurse at a city hospital and often does night shifts."
+  inject: false
+
+# --- loosely related: lexical/topical overlap but NOT about this user (negatives,
+#     the stuffing guard — these are the ones a naive floor wrongly injects) ---
+- slice: loosely_related
+  query: "What's the capital of Spain?"
+  content: "Is learning Spanish and is currently at an intermediate level."
+  inject: false
+- slice: loosely_related
+  query: "What dog breeds are good with children in general?"
+  content: "Has a border collie named Pixel who needs a lot of exercise."
+  inject: false
+- slice: loosely_related
+  query: "Is it hard to find work as a nurse these days?"
+  content: "Works as a nurse at a city hospital and often does night shifts."
+  inject: false
+- slice: loosely_related
+  query: "What are the main tourist sights in Oslo?"
+  content: "Is planning to move to Oslo next month to start a new job."
+  inject: false
+- slice: loosely_related
+  query: "What is metformin and how does it work pharmacologically?"
+  content: "Takes metformin every day to manage blood sugar."
+  inject: false

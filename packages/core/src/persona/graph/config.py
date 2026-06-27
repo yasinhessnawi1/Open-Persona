@@ -104,6 +104,35 @@ class GraphSettings(BaseSettings):
     traversal_weight_temporal: float = Field(default=0.8, ge=0.0)
     traversal_weight_semantic: float = Field(default=0.4, ge=0.0)
 
+    # --- graph-aware injection gate (K3, D-K3-3) ---------------------------
+    # K3 injects a retrieved node into the prompt only when it is RELEVANT to the
+    # current turn — gating on the genuine relevance signal, dense cosine
+    # similarity (``1 - node.distance``), NEVER on the RRF ``score`` (rank-based:
+    # rank-1 small talk scores identically to rank-1 relevant, so an RRF floor
+    # stuffs every turn — fusion.py / the RRF literature).
+    #
+    # ``inject_similarity_floor`` is **validated by the calibration sweep**, NOT
+    # inherited from K0's 0.82 semantic-link bar ("linkable concepts" is a
+    # SYMMETRIC concept↔concept decision; "inject-worthy" is the ASYMMETRIC
+    # query↔node-content retrieval decision, which scores materially lower on
+    # bge-small — production embeds the raw query (store.py) against the raw node
+    # content (merge.py), no instruction prefix). The sweep over a labelled
+    # relevant-vs-small-talk set (F0.5, precision-biased — stuffing degrades every
+    # turn, the recoverable failure is starving) put the operating point at the
+    # 0.62–0.66 plateau: at 0.66, precision 0.86 / recall 0.50, cleanly excluding
+    # ALL small talk (≤0.46) and most loosely-related topical overlap (the
+    # stuffing guard). Evidence: docs/specs/phase3/spec_K3/evidence/. Flagged for a
+    # real-data re-tune (the K0 posture) — the moderate recall is the recoverable
+    # side, and the sparse-only fallback below catches exact-term hits dense
+    # paraphrase-misses.
+    #
+    # Sparse-only nodes (no embedding distance) get a NARROW high-precision
+    # fallback: inject only a top exact-term FTS hit (names/drugs that paraphrase-
+    # blind dense retrieval misses), capped tight so it cannot become a stuffing
+    # vector — its regression sentinel is the eval's ``small_talk_injection == 0``.
+    inject_similarity_floor: float = Field(default=0.66, ge=0.0, le=1.0)
+    inject_sparse_rank_cap: int = Field(default=3, gt=0)
+
     @model_validator(mode="after")
     def _bands_ordered(self) -> GraphSettings:
         if self.alias_separate_threshold > self.alias_merge_threshold:

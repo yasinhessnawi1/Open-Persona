@@ -26,6 +26,7 @@ counts in :class:`persona_runtime.logging.TurnLog` come from the backend's
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from persona.language_capability import (
@@ -40,13 +41,19 @@ from persona.skills import count_tokens
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from persona.schema.content import MessageContent
     from persona.schema.persona import Persona
 
 __all__ = [
+    "K3_USAGE_GUIDANCE_VERSION",
     "DocumentContext",
     "DocumentDescriptor",
     "DocumentInjection",
+    "GraphContext",
+    "GraphKnowledgeItem",
+    "GraphRecency",
     "PromptBuilder",
     "RetrievedContext",
 ]
@@ -179,12 +186,150 @@ class DocumentContext(BaseModel):
     instead of mistaking retrieved fragments for the whole."""
 
 
+class GraphRecency(StrEnum):
+    """Coarse age bucket for an injected graph item (K3-D-4).
+
+    Light by design — the persona needs only enough to frame old knowledge
+    tentatively ("you mentioned a while back…"), never an exact timestamp. The
+    *bucket*, not a date, is what reaches the model; the PromptBuilder (T4) maps
+    each to its framing phrase. The boundaries (the timestamp → bucket policy)
+    are the projection step's concern (T3), not this type's — this is the shape.
+
+    Values:
+        RECENT: Learned recently — use as current.
+        A_WHILE_BACK: Aging — frame as an invitation to confirm, not an assertion.
+        LONG_AGO: Old — held tentatively; the user may well have moved on.
+    """
+
+    RECENT = "recent"
+    A_WHILE_BACK = "a_while_back"
+    LONG_AGO = "long_ago"
+
+
+class GraphKnowledgeItem(BaseModel):
+    """One graph node projected into the light shape the prompt injects (K3-D-4).
+
+    The genuinely-new K3 concern is *usage*, so an item carries only what the
+    persona needs to use shared knowledge well — and nothing that invites it to
+    *perform* the knowledge (no metadata dump, no exact timestamps). A sibling of
+    :class:`DocumentInjection`, deliberately decoupled from the K0
+    :class:`persona.graph.models.ConceptNode` storage shape: this is the
+    rendered, user-facing projection, not the stored node.
+
+    All fields are immutable so an item can be carried across turns without
+    leakage.
+
+    Attributes:
+        concept_name: Short label for the concept — frames the line.
+        content: The accumulating understanding to use (the node's ``content``).
+        recency: Coarse age bucket for the tentative framing of old knowledge.
+        source_persona: The persona that contributed the knowledge (``None`` for
+            user/system contributions) — the basis for the honest
+            "how do you know?" answer. The retrieval mechanism is never narrated,
+            but the truthful source is available when the user asks (D-K3-5).
+        source_interaction: The interaction it was learned in, if known — lets the
+            attribution be specific ("when you were planning with Kai").
+        wellbeing_category: K4's sensitive-category tag, carried to *route* the
+            surfacing-guidance slot (D-K3-X-k4-seam). NOT rendered as a label to
+            the model — it routes care text, it is never narrated (D-K3-4).
+        relevance: The dense-similarity reading (``1 − cosine distance``) that
+            admitted this item, or ``None`` when it entered via the sparse-only
+            fallback (no embedding distance). Carried for deterministic ordering
+            of the block and for the eval harness; the injection *gate* is T2.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    concept_name: str
+    content: str
+    recency: GraphRecency
+    source_persona: str | None = None
+    source_interaction: str | None = None
+    wellbeing_category: str | None = None
+    relevance: float | None = None
+
+
+class GraphContext(BaseModel):
+    """The per-turn graph-knowledge bundle for :class:`PromptBuilder` (K3-D-1).
+
+    A **sibling** of :class:`RetrievedContext` and :class:`DocumentContext` — the
+    user-scoped shared knowledge (K1 retrieval against the K0/K2 graph), kept a
+    distinct type from the persona's own retrieved memory so the
+    no-precedence/no-merge discipline (both inject independently, complementary
+    not competing) is structurally visible at the prompt-builder boundary.
+
+    An empty bundle renders nothing → byte-identical Phase-1 prompt
+    (criterion 9): the graph is additive presence, invisible until there is
+    knowledge.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    items: tuple[GraphKnowledgeItem, ...] = ()
+
+
+#: Version of the graph usage-guidance artifact (D-K3-5, Spec 10 discipline).
+#: Bump on every wording change; the natural-usage eval (T8) re-runs per version.
+#: This task (T4) renders the artifact and proves the mechanics (block renders,
+#: zero-graph byte-identical, budget-reduces); the *performed-knowledge quality*
+#: it aims for is T8's judged eval + the human operator-pass, not asserted here.
+K3_USAGE_GUIDANCE_VERSION = "v1"
+
+#: The usage-guidance instruction block that rides WITH injected graph knowledge
+#: (D-K3-5) — §3's five rules: relevance, no narration, no gratuitous display,
+#: tentativeness with age, honesty on request. Rendered ONLY when the graph block
+#: is non-empty, so a zero-graph turn never carries it (criterion 9).
+_K3_USAGE_GUIDANCE = (
+    "Some things below are already known about this person, from your own and "
+    "other assistants' earlier conversations with them. Draw on this the way you "
+    "naturally use anything you already know about someone:\n"
+    "- Use only what bears on what they are asking now; let the rest stay silent "
+    "background.\n"
+    '- Never describe how you know it. No "according to my records", no "based on '
+    'what I know about you", no mention of notes, a profile, or a graph — you '
+    "simply know it.\n"
+    "- Do not parade knowledge the moment does not call for. Knowing is not for "
+    "showing.\n"
+    "- The note in brackets after each item is when and from whom you learned it. "
+    "Treat older items as possibly out of date — frame them as an invitation to "
+    'confirm ("you mentioned a while back…"), not a fact to assert.\n'
+    "- If they ask how you know something, answer honestly from that note; never "
+    "deny it and never invent a source."
+)
+
+#: Header introducing the rendered knowledge — the what-is-known-about-the-user
+#: framing of D-K3-1, distinct from who-the-persona-is.
+_K3_GRAPH_HEADER = "What you already know about this person:"
+
+#: GraphRecency → the coarse framing phrase in each item's bracket. T4 owns the
+#: phrasing; D-K3-4 owns the buckets.
+_RECENCY_PHRASE: dict[GraphRecency, str] = {
+    GraphRecency.RECENT: "recently",
+    GraphRecency.A_WHILE_BACK: "a while back",
+    GraphRecency.LONG_AGO: "a long time ago",
+}
+
+#: The graceful node-shed cadence under budget pressure (D-K3-2): the graph block
+#: sheds toward these caps (a peer of episodic, before worldview/self-facts drop)
+#: — fewer nodes, never a broken prompt. Caps that don't reduce the current block
+#: are skipped, so a small or empty graph adds no redundant reduction stages.
+_GRAPH_REDUCTION_CAPS = (7, 5, 3)
+
+
 class RetrievedContext(BaseModel):
     """The per-turn retrieval the loop fills from the stores (D-05-6).
 
     A frozen bundle so the :class:`PromptBuilder` can be tested without a live
     store. ``identity`` comes from ``identity.get_all(persona_id)``; the other
     three from ``query(persona_id, message, top_k=3)``.
+
+    ``graph`` is the K3 enrichment (D-K3-X-a2-seam): the user-scoped shared
+    knowledge from the K1 retrieval, an **additive, independent** source
+    alongside the persona's own memory — both queried per turn, both injected, no
+    precedence. It defaults to an **empty** :class:`GraphContext`, so every
+    existing caller (the text loop *and* A2's leg reconstruction, which share
+    this function) is byte-identical until graph retrieval is wired in, and a
+    zero-graph user always is (criterion 9).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -193,6 +338,7 @@ class RetrievedContext(BaseModel):
     self_facts: list[PersonaChunk] = Field(default_factory=list)
     worldview: list[PersonaChunk] = Field(default_factory=list)
     episodic: list[PersonaChunk] = Field(default_factory=list)
+    graph: GraphContext = Field(default_factory=GraphContext)
 
 
 class PromptBuilder:
@@ -210,6 +356,7 @@ class PromptBuilder:
         matched_skill_content: str | None = None,
         document_context: DocumentContext | None = None,
         reply_language: str | None = None,
+        graph_surfacing_guidance: Callable[[str], str | None] | None = None,
     ) -> list[ConversationMessage]:
         """Build the full prompt as a message list.
 
@@ -236,6 +383,12 @@ class PromptBuilder:
                 (the text-path default). The voice path passes the TTS-resolved
                 language so the reply matches what is spoken. English (the model
                 default) injects no directive.
+            graph_surfacing_guidance: The K4 surfacing-guidance slot
+                (D-K3-X-k4-seam) — a ``category -> care-text`` provider rendered
+                alongside any injected graph node carrying a ``wellbeing_category``.
+                K3 owns the slot; K4 owns the policy + text. ``None`` (the
+                default) is the reserved no-op stub: the slot is on the wire but
+                renders nothing until K4 lands.
 
         Returns:
             ``[system_message, *history, user_message]`` — sized to ``max_tokens``.
@@ -253,12 +406,13 @@ class PromptBuilder:
             matched_skill_content,
             document_context,
             reply_language,
+            graph_surfacing_guidance,
         )
         if self._token_total(messages) <= max_tokens:
             return messages
 
-        # Over budget: drop retrieved context per the §5.3 + D-14-5 ladder
-        # (episodic → docs → worldview → self-facts).
+        # Over budget: drop retrieved context per the §5.3 + D-14-5 + D-K3-2
+        # ladder (graph sheds nodes → episodic → docs → worldview → self-facts).
         reduced_docs = document_context
         for dropped_ctx, dropped_docs in self._reductions(reduced_context, document_context):
             reduced_context = dropped_ctx
@@ -272,6 +426,7 @@ class PromptBuilder:
                 matched_skill_content,
                 reduced_docs,
                 reply_language,
+                graph_surfacing_guidance,
             )
             if self._token_total(messages) <= max_tokens:
                 return messages
@@ -289,6 +444,7 @@ class PromptBuilder:
                 matched_skill_content,
                 reduced_docs,
                 reply_language,
+                graph_surfacing_guidance,
             )
         return messages
 
@@ -302,6 +458,7 @@ class PromptBuilder:
         matched_skill_content: str | None,
         document_context: DocumentContext | None = None,
         reply_language: str | None = None,
+        graph_surfacing_guidance: Callable[[str], str | None] | None = None,
     ) -> list[ConversationMessage]:
         """Compose the message list in the spec §5.1 order."""
         system_text = self._render_system(
@@ -311,6 +468,7 @@ class PromptBuilder:
             matched_skill_content,
             document_context,
             reply_language,
+            graph_surfacing_guidance,
         )
         now = datetime.now(UTC)
         system = ConversationMessage(role="system", content=system_text, created_at=now)
@@ -325,6 +483,7 @@ class PromptBuilder:
         matched_skill_content: str | None,
         document_context: DocumentContext | None = None,
         reply_language: str | None = None,
+        graph_surfacing_guidance: Callable[[str], str | None] | None = None,
     ) -> str:
         """Render the system block in the spec §5.1 ordering."""
         parts: list[str] = []
@@ -363,6 +522,15 @@ class PromptBuilder:
                 suffix = f" ({tag})" if tag else ""
                 lines.append(f"- {c.text}{suffix}")
             parts.append("\n".join(lines))
+
+        # 4c. Graph knowledge — the user-scoped shared brain (K3, D-K3-1). In the
+        # supplementary region (below the identity/constraints floor, a peer of
+        # worldview/episodic), framed as what-is-known-about-the-user — an
+        # *additive, independent* source alongside the persona's own memory (no
+        # precedence). Empty ⇒ nothing rendered ⇒ byte-identical Phase-1 prompt
+        # (criterion 9). The versioned usage guidance rides WITH the block.
+        if context.graph.items:
+            parts.append(self._render_graph_knowledge(context.graph, graph_surfacing_guidance))
 
         # 4a. Attached documents synopsis — T16 (D-14-X-synopsis-source).
         # The structural defence against confident-but-incomplete answers
@@ -446,6 +614,35 @@ class PromptBuilder:
             f"Always respond in {name}, regardless of the language the user "
             f"writes or speaks in. Every reply must be written in {name}."
         )
+
+    @staticmethod
+    def _render_graph_knowledge(
+        graph: GraphContext,
+        surfacing_guidance: Callable[[str], str | None] | None,
+    ) -> str:
+        """Render the graph-knowledge block (K3, D-K3-1/4/5).
+
+        The versioned usage guidance (D-K3-5) leads, then the user-knowledge
+        facts, each with a light recency/source note in brackets (D-K3-4 — the
+        basis for tentative framing and the honest "how do you know?" answer; the
+        ``wellbeing_category`` is deliberately NOT rendered as a label, it only
+        routes the K4 slot). Only called when ``graph.items`` is non-empty, so a
+        zero-graph turn emits nothing (criterion 9).
+        """
+        lines = [_K3_USAGE_GUIDANCE, "", _K3_GRAPH_HEADER]
+        for item in graph.items:
+            note = [_RECENCY_PHRASE[item.recency]]
+            if item.source_persona:
+                note.append(f"from {item.source_persona}")
+            lines.append(f"- {item.content} [{', '.join(note)}]")
+            # K4 surfacing slot (D-K3-X-k4-seam): K3 owns the slot, K4 owns the
+            # policy + text. A no-op stub (no provider, or one returning None)
+            # renders nothing — the slot is reserved, filled when K4 lands.
+            if item.wellbeing_category is not None and surfacing_guidance is not None:
+                care = surfacing_guidance(item.wellbeing_category)
+                if care:
+                    lines.append(f"  ({care})")
+        return "\n".join(lines)
 
     @staticmethod
     def _render_whole_inject_documents(document_context: DocumentContext) -> str:
@@ -548,24 +745,25 @@ class PromptBuilder:
         context: RetrievedContext,
         document_context: DocumentContext | None = None,
     ) -> list[tuple[RetrievedContext, DocumentContext | None]]:
-        """Progressively-reduced contexts per the §5.3 + D-14-5 ladder.
+        """Progressively-reduced contexts per the §5.3 + D-14-5 + D-K3-2 ladder.
 
         Order (lowest-priority dropped first; identity + constraints + skill
         index never drop — the §5.3 floor):
 
-        1. Drop episodic.
-        2. Drop document retrieved chunks (D-14-5: docs drop AFTER episodic
-           but BEFORE worldview when over-budget). Only inserted when there
-           are document chunks to drop; otherwise skipped so the cascade
-           matches the Phase 1 3-stage shape for callers without documents.
+        0. Shed graph nodes toward :data:`_GRAPH_REDUCTION_CAPS` (D-K3-2) — a
+           peer of episodic, graceful (fewer nodes, never a broken prompt).
+        1. Drop episodic (graph held at its smallest shed size — interleaved).
+        2. Drop document retrieved chunks (D-14-5: after episodic, before
+           worldview). Only inserted when there are chunks to drop.
+        2a. Drop graph entirely (gone before worldview/self-facts — D-K3-2:
+            externally-shared knowledge yields before the persona's own core).
         3. Drop worldview.
         4. Drop self-facts (all retrieved context cleared).
 
-        Returns tuples of ``(RetrievedContext, DocumentContext | None)`` so
-        :meth:`build` can pass both back through :meth:`_assemble`. When
-        ``document_context`` is ``None`` or has no retrieved chunks, the
-        document-context slot rides through unchanged and the ladder
-        reduces to the Phase 1 3-stage shape (no behavioural regression).
+        The graph stages (0, 2a) appear only when there is a graph, so a
+        zero-graph caller gets EXACTLY the Phase-1 ladder (no extra stages, no
+        behavioural regression) — the criterion-9 invariant carried into the
+        reduction path.
         """
         stages: list[tuple[RetrievedContext, DocumentContext | None]] = []
         has_retrieved_docs = bool(
@@ -577,27 +775,36 @@ class PromptBuilder:
         else:
             docs_no_chunks = document_context
 
-        # Stage 1: drop episodic.
-        stages.append((context.model_copy(update={"episodic": []}), document_context))
-        # Stage 2: also drop document chunks (D-14-5) — only when there's
-        # something to drop, so the Phase 1 3-stage shape is preserved
-        # for callers without documents.
+        graph_len = len(context.graph.items)
+
+        def _capped(graph_cap: int, **update: object) -> RetrievedContext:
+            return context.model_copy(
+                update={"graph": GraphContext(items=context.graph.items[:graph_cap]), **update}
+            )
+
+        # Stage 0: shed graph nodes first (peer of episodic) — only caps that
+        # actually reduce the current block, so an empty/small graph adds none.
+        active_caps = [c for c in _GRAPH_REDUCTION_CAPS if c < graph_len]
+        for cap in active_caps:
+            stages.append((_capped(cap), document_context))
+        # The graph is held at its smallest shed size through the episodic/doc
+        # stages (interleaved); ``held`` is the full length when no cap reduced.
+        held = active_caps[-1] if active_caps else graph_len
+
+        # Stage 1: drop episodic (graph held).
+        stages.append((_capped(held, episodic=[]), document_context))
+        # Stage 2: also drop document chunks (D-14-5) — only when present.
         if has_retrieved_docs:
-            stages.append((context.model_copy(update={"episodic": []}), docs_no_chunks))
+            stages.append((_capped(held, episodic=[]), docs_no_chunks))
+        # Stage 2a: drop the graph entirely — gone before worldview/self-facts
+        # (D-K3-2). Only when there was a graph, so the zero-graph ladder is
+        # exactly Phase-1.
+        if graph_len:
+            stages.append((_capped(0, episodic=[]), docs_no_chunks))
         # Stage 3: also drop worldview.
-        stages.append(
-            (
-                context.model_copy(update={"episodic": [], "worldview": []}),
-                docs_no_chunks,
-            )
-        )
+        stages.append((_capped(0, episodic=[], worldview=[]), docs_no_chunks))
         # Stage 4: also drop self-facts (all retrieved context gone).
-        stages.append(
-            (
-                context.model_copy(update={"episodic": [], "worldview": [], "self_facts": []}),
-                docs_no_chunks,
-            )
-        )
+        stages.append((_capped(0, episodic=[], worldview=[], self_facts=[]), docs_no_chunks))
         return stages
 
     @staticmethod

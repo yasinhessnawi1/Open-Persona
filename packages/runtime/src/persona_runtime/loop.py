@@ -88,7 +88,12 @@ if TYPE_CHECKING:
 
     from persona_runtime.images import TurnImage
     from persona_runtime.logging import TurnLogWriter
-    from persona_runtime.prompt import DocumentContext, PromptBuilder, RetrievedContext
+    from persona_runtime.prompt import (
+        DocumentContext,
+        GraphContext,
+        PromptBuilder,
+        RetrievedContext,
+    )
     from persona_runtime.question_author import QuestionAuthor
     from persona_runtime.questions import ProactiveQuestion
     from persona_runtime.routing import IntelligentRouter, Router
@@ -300,10 +305,16 @@ class ConversationLoop:
         latency_tracker: FirstTokenLatencyTracker | None = None,
         question_author: QuestionAuthor | None = None,
         intelligent_router: IntelligentRouter | None = None,
+        graph_retrieval: Callable[[str], GraphContext] | None = None,
     ) -> None:
         self._persona = persona
         self._stores = stores
         self._toolbox = toolbox
+        # K3 (D-K3-X-a2-seam): the owner-scoped graph-knowledge retrieval, queried
+        # per turn alongside the persona's own memory. ``None`` (the default) is
+        # the additive zero-graph path — every existing caller is byte-identical
+        # until the composition root wires a retriever (RuntimeFactory).
+        self._graph_retrieval = graph_retrieval
         # Spec 21 T06: proactive clarifying questions (D-21-1). The author turns
         # an ambiguity signal into the 3+1 question; the template author is the
         # D-21-14 mandatory fallback and the default, a model-backed author is
@@ -1103,6 +1114,7 @@ class ConversationLoop:
             user_message,
             history_turns=history_turns,
             on_recall=on_recall,
+            graph_retrieval=self._graph_retrieval,
         )
 
     async def _manage_history(

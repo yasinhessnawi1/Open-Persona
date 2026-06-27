@@ -33,6 +33,15 @@ around two ideas that hold up over hundreds of turns:
   trained router, no embeddings, no opacity — rules you can read, with optional
   deterministic cost/quality/latency scoring to pick the best model within a tier.
 
+- **A shared brain across personas.** Beyond each persona's own memory, a
+  user-scoped knowledge graph lets every persona draw on what you told the
+  *others* — the tutor adapts to a struggle you mentioned to someone else; the
+  planner budgets for a move it was never told about directly. Knowledge is used
+  *naturally* (applied where relevant, never recited or paraded), held tentatively
+  when old, and honestly attributable when you ask how it knows — with wellbeing-
+  sensitive matters handled with care. It's additive: a persona with an empty
+  graph behaves exactly as before.
+
 Wrap audio I/O around the same turn loop and you get **real-time voice** with the
 same persona, memory, and routing — voice is the same stack, not a parallel one.
 

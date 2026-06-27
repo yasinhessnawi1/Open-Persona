@@ -11,6 +11,49 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Graph-aware prompts — the shared brain enters the persona's behaviour (2026-06-26)
+
+> Close-out of `graph-aware-prompts` (Spec K3). Where the shared knowledge graph
+> stops being a database and becomes *felt*: every persona now draws on what the
+> user told **other** personas — the tutor adapts to the focus struggles mentioned
+> to someone else; the planner budgets for the move it was never told about
+> directly. The graph is an **additive, independent** retrieval source alongside
+> the persona's own memory (both queried per turn, no precedence, no conflict
+> logic). The genuinely-hard part is **usage, not plumbing**: knowledge learned
+> through another persona is used *naturally* — applied where relevant, never
+> recited, never paraded, tentative when old, honestly attributable when you ask
+> "how do you know that?". Zero new dependencies; migration-free (it reads K2's
+> graph). Identical to before for any user whose graph is empty.
+
+#### Added
+- **Graph-knowledge in the prompt** — a per-turn block of what-is-known-about-you,
+  rendered in the supplementary region (below the identity/constraints floor,
+  beside the persona's own retrieved memory). Each item carries a light recency +
+  source note — enough to frame old knowledge tentatively and to answer "how do
+  you know?" honestly, never a metadata dump. A **versioned usage-guidance
+  artifact** rides with the block, encoding natural use (no narration of the
+  mechanism, no gratuitous display).
+- **Relevance-thresholded injection** — the graph is queried every turn (cheap),
+  but a node is injected only when it genuinely bears on the turn: a substantive
+  turn pulls what's relevant, small talk pulls nothing. The threshold gates on the
+  real signal — dense semantic similarity — **validated against representative
+  turns** (not inherited), so the graph never stuffs the prompt.
+- **Graph-aware on every channel** — the extension lives in the shared prompt
+  builder, so web chat, voice, and connectors are graph-aware identically. Voice
+  fits a tighter, latency-safe profile that **never adds serial wall-clock** to
+  the spoken-turn response.
+- **Wellbeing safety at the prompt layer** — sensitive knowledge a persona should
+  not surface is removed before retrieval AND re-checked at the last surface
+  before the model (dual enforcement); a reserved slot lets category-specific care
+  guidance ride alongside any sensitive knowledge that is surfaced.
+
+#### Changed
+- **Graph knowledge is a budgeted consumer** of the context window — under
+  pressure it sheds gracefully (fewer nodes, then none) before the persona's own
+  core memory yields, with identity and constraints always held as the floor.
+  A user with no graph gets a byte-identical prompt — the graph is additive
+  presence, invisible until there is knowledge.
+
 ### Docker MCP Gateway integration & catalog mirror (2026-06-25)
 
 > Close-out of `docker-mcp-gateway`. Turns MCP from "configure each server, per

@@ -24,7 +24,7 @@ from persona_runtime.retrieval import DEFAULT_RETRIEVE_TOP_K, retrieve_context
 if TYPE_CHECKING:
     from persona.schema.chunks import PersonaChunk
     from persona.schema.conversation import ConversationMessage
-    from persona_runtime.prompt import DocumentContext, RetrievedContext
+    from persona_runtime.prompt import DocumentContext, GraphContext, RetrievedContext
 
     from persona_voice.model.turn_context import VoiceTurnContext
 
@@ -89,6 +89,8 @@ class VoicePromptAssembler:
         skill_index: str = "",
         matched_skill_content: str | None = None,
         document_context: DocumentContext | None = None,
+        graph: GraphContext | None = None,
+        context: RetrievedContext | None = None,
     ) -> list[ConversationMessage]:
         """Assemble the full persona-conditioned prompt for one voice turn.
 
@@ -102,12 +104,25 @@ class VoicePromptAssembler:
                 scope is decided in T7; defaults to empty here).
             matched_skill_content: Already-budgeted active-skill content, if any.
             document_context: Optional retrieved-document context.
+            graph: The overlapped graph-knowledge bundle (K3, D-K3-6), already
+                retrieved off the critical path and taken only if ready. ``None``
+                ⇒ graph-off (the additive default; the prompt is byte-identical).
+                Injected into the retrieved context so the shared ``PromptBuilder``
+                renders it exactly as the text path does — one mechanism.
+            context: A pre-fetched :class:`RetrievedContext` (the caller already
+                ran :meth:`retrieve`, e.g. off-thread so the graph query could
+                overlap it — D-K3-6). ``None`` ⇒ this method retrieves inline (the
+                historical path). Letting the caller supply it is what makes the
+                voice overlap genuine without re-retrieving.
 
         Returns:
             ``[system, *history, user]`` — the same shape the text loop builds,
             via the shared ``PromptBuilder`` (criteria 1+2; no persona-bypass).
         """
-        context = self.retrieve(user_message, history_turns=len(history))
+        if context is None:
+            context = self.retrieve(user_message, history_turns=len(history))
+        if graph is not None:
+            context = context.model_copy(update={"graph": graph})
         # The reply must be generated in the language TTS will actually speak
         # (Spec 32 B5). The per-call plan's reply_language already accounts for a
         # TTS fall-back to English, so a persona whose declared language the

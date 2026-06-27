@@ -36,14 +36,14 @@ from typing import TYPE_CHECKING
 from persona_voice.model.errors import VoiceIntegrationError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from persona.history import ConversationHistoryManager
     from persona.schema.conversation import Conversation
     from persona.schema.persona import Persona
     from persona.stores.protocol import MemoryStore
     from persona.tools import Toolbox
-    from persona_runtime.prompt import PromptBuilder
+    from persona_runtime.prompt import GraphContext, PromptBuilder
     from persona_runtime.routing import FirstTokenLatencyTracker, IntelligentRouter, Router
     from persona_runtime.tier import TierRegistry
 
@@ -108,6 +108,12 @@ class VoiceTurnContext:
     """The per-call language plan (Spec 32 B2). ``reply_language`` drives the
     prompt builder's reply-language injection (B5); ``None`` ⇒ the persona's
     declared default is resolved at prompt-build time (the text-path behaviour)."""
+    graph_retrieval: Callable[[str], GraphContext] | None = None
+    """The owner-scoped graph-knowledge retrieval (K3, D-K3-6). ``None`` ⇒ the
+    voice turn runs graph-off. When wired, the reply producer starts it at turn
+    onset (concurrent with pre-model work) and takes the result only if ready by
+    assembly time — zero serial wall-clock on the TTFT path (the voice profile is
+    traversal-off + a tighter node budget)."""
 
     def __post_init__(self) -> None:
         missing = [kind for kind in REQUIRED_STORE_KINDS if kind not in self.stores]

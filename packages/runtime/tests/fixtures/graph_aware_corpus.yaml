@@ -1,0 +1,103 @@
+# The natural-usage evaluation corpus (K3-R-1). Cross-persona pairs: persona A
+# writes knowledge (knowledge_content + source_persona), persona B meets it in a
+# later turn. Labels say how B should behave. EN + Bokmål, adversarial slices.
+# The deterministic metrics check the mechanically-checkable rules; the felt
+# quality (no gratuitous display, tentative aging, the uncanny first-contact
+# feel) is the human operator-pass's job — this corpus FEEDS that judged gate.
+
+# --- normal: relevant, natural use -----------------------------------------
+- id: norm-study
+  slice: normal
+  knowledge_content: "Finds long study sessions hard to concentrate through; gets distracted after about an hour."
+  source_persona: kai
+  turn: "Can you help me plan revision for my exam next week?"
+  inject_expected: true
+  golden_terms: ["hour"]
+  banned_narration: []
+
+- id: norm-diet
+  slice: normal
+  knowledge_content: "Eats a vegetarian diet and avoids all meat and fish."
+  source_persona: sam
+  turn: "I'm hosting dinner this weekend, can you suggest a menu I'd enjoy?"
+  inject_expected: true
+  golden_terms: ["vegetarian"]
+
+- id: norm-bokmaal
+  slice: normal
+  knowledge_content: "Holder på å lære seg spansk på mellomnivå."
+  source_persona: kai
+  turn: "Hvordan kan jeg øve litt hver dag?"
+  inject_expected: true
+  golden_terms: ["spansk"]
+
+# --- first_contact: persona B's FIRST conversation, drawing on rich graph ---
+- id: first-contact-move
+  slice: first_contact
+  knowledge_content: "Is planning to move to Oslo next month to start a new job."
+  source_persona: sam
+  turn: "Hi — I haven't talked with you before. Can you help me get organised this month?"
+  inject_expected: true
+  golden_terms: ["move"]
+  # The uncanny case: B must NOT open by summarising the user's life. Judged by
+  # the human rubric (first-contact grace); the scan only catches narration.
+
+# --- no_narration: knowledge used but the mechanism never described ---------
+- id: no-narration-meds
+  slice: no_narration
+  knowledge_content: "Takes metformin daily for blood sugar."
+  source_persona: kai
+  turn: "Help me build a daily reminder routine."
+  inject_expected: true
+  banned_narration: ["i see you take", "your medication list"]
+
+# --- small_talk: nothing relevant — must inject NOTHING --------------------
+- id: small-weather
+  slice: small_talk
+  knowledge_content: "Works as a nurse on night shifts."
+  source_persona: sam
+  turn: "What's the weather like today?"
+  inject_expected: false
+
+- id: small-joke
+  slice: small_talk
+  knowledge_content: "Has a border collie named Pixel."
+  source_persona: kai
+  turn: "Tell me a joke."
+  inject_expected: false
+
+# --- old_knowledge: aged fact framed tentatively ---------------------------
+- id: old-job
+  slice: old_knowledge
+  knowledge_content: "Was job-hunting in marketing."
+  source_persona: sam
+  turn: "Any advice for my career?"
+  inject_expected: true
+  # The human rubric checks tentative framing ("you mentioned a while back…").
+
+# --- honest_attribution: "how do you know?" answered truthfully ------------
+- id: attrib-move
+  slice: honest_attribution
+  knowledge_content: "Is planning to move to Oslo next month."
+  source_persona: kai
+  turn: "Wait — how did you know I'm moving?"
+  inject_expected: true
+  expected_attribution_terms: ["kai", "mentioned", "told"]
+
+- id: attrib-diet
+  slice: honest_attribution
+  knowledge_content: "Eats a vegetarian diet."
+  source_persona: sam
+  turn: "How do you know I'm vegetarian?"
+  inject_expected: true
+  expected_attribution_terms: ["sam", "mentioned", "told"]
+
+# --- k4_subtracted: a sensitive node K4 removed — never surfaced -----------
+- id: k4-subtracted
+  slice: k4_subtracted
+  knowledge_content: "A sensitive wellbeing circumstance."
+  source_persona: kai
+  turn: "Help me plan a healthy week."
+  inject_expected: false
+  # Subtraction-by-construction is proven adversarially in test_graph_k4_seam;
+  # here the entry documents that a subtracted node yields no injection.

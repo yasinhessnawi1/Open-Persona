@@ -38,6 +38,7 @@ stream closes cleanly — no fire-and-forget escapes this scope.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ from typing import TYPE_CHECKING
 from persona.schema.conversation import ConversationMessage
 from persona.schema.tools import ToolCall
 from persona.tools import format_tool_result
+from persona_runtime.graph_voice import start_graph_retrieval, take_graph_if_ready
 from persona_runtime.routing import RoutingContext, classifiers
 from persona_runtime.routing.model_selection import reorder_primary
 
@@ -147,6 +149,16 @@ class VoiceModelReplyProducer:
         """Stream the persona-conditioned reply token-by-token (spoken text only)."""
         ctx = self._ctx
         user_message = final_transcript.text
+        # K3 (D-K3-6): kick the owner-scoped graph query off NOW, so it runs
+        # CONCURRENTLY with the routing/selection pre-model work below. It is
+        # taken just before assembly and only if already ready — never awaited on
+        # the critical path, so it adds zero serial wall-clock to TTFT. ``None``
+        # graph_retrieval ⇒ the turn runs graph-off (additive).
+        graph_task = (
+            start_graph_retrieval(ctx.graph_retrieval, user_message)
+            if ctx.graph_retrieval is not None
+            else None
+        )
         # Note this turn's user transcript for the unified-memory write that the
         # recorder performs on commit (T8 correlation key — D-V5-X).
         if self._turn_recorder is not None:
@@ -161,13 +173,25 @@ class VoiceModelReplyProducer:
             backend = reorder_primary(backend, selection.model)
 
         max_tokens = self._max_tokens(backend)
-        prompt = self._assembler.build(
-            user_message,
-            # The fast, never-blocking history view (D-V5-3); the slow compaction
-            # runs off the critical path in a background inter-turn task (T8).
-            history=self._history.live_history(ctx.conversation),
-            max_tokens=max_tokens,
-        )
+        # The fast, never-blocking history view (D-V5-3); the slow compaction runs
+        # off the critical path in a background inter-turn task (T8).
+        history = self._history.live_history(ctx.conversation)
+        if graph_task is not None:
+            # K3-D-6 — GENUINE overlap: run the persona-store retrieval (V5's
+            # existing pre-model I/O) OFF-THREAD so the graph query progresses
+            # concurrently with it. We then take the graph only if it finished
+            # within that window; otherwise the turn proceeds graph-off. The only
+            # await is the retrieval we already had to do — zero NEW serial work,
+            # never a serial graph leg on the TTFT path.
+            context = await asyncio.to_thread(
+                self._assembler.retrieve, user_message, history_turns=len(history)
+            )
+            graph = take_graph_if_ready(graph_task)
+            prompt = self._assembler.build(
+                user_message, history=history, max_tokens=max_tokens, graph=graph, context=context
+            )
+        else:
+            prompt = self._assembler.build(user_message, history=history, max_tokens=max_tokens)
 
         timing = _RoundTiming(t_start=time.perf_counter())
         tools = self._offered_specs(backend)

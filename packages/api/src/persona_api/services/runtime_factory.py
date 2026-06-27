@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from persona.stores.protocol import MemoryStore
     from persona.tools.mcp.client import MCPClient
     from persona_runtime.logging import TurnLogWriter
+    from persona_runtime.prompt import GraphContext
     from persona_runtime.tier import TierRegistry
     from sqlalchemy import Engine
 
@@ -219,6 +220,32 @@ class RuntimeFactory:
             audit_logger=JSONLAuditLogger(audit_root),
         )
         _logger.info("graph writes enabled (record_user_fact composed into toolboxes)")
+
+    def _build_graph_retrieval(self) -> Callable[[str], GraphContext] | None:
+        """The owner-scoped graph-knowledge retrieval for the chat loop (K3).
+
+        Reuses the K2 graph store + the ``current_user_id`` owner provider (the
+        same one ``record_user_fact`` writes through), so reads and writes share
+        one owner scope. Graph reads are on whenever the store is composed — the
+        shared-graph thesis, mirroring writes; ``None`` (no store) ⇒ the loop runs
+        zero-graph (additive, byte-identical). The owner is resolved per turn at
+        dispatch, so a non-request call fails closed.
+        """
+        if self._graph_store is None:
+            return None
+        from persona.graph.config import GraphSettings
+        from persona.graph.retrieval import HybridRetriever
+        from persona_runtime.graph_selection import make_graph_retrieval
+
+        from persona_api.middleware.rls_context import current_user_id
+
+        settings = GraphSettings()
+        retriever = HybridRetriever(store=self._graph_store, settings=settings)
+        return make_graph_retrieval(
+            retriever=retriever,
+            owner_provider=current_user_id.get,
+            settings=settings,
+        )
 
     @staticmethod
     def _build_intelligent_router(
@@ -614,6 +641,9 @@ class RuntimeFactory:
             # per-day cap fails loud at this construction (D-23-7 ruling).
             latency_tracker=self._latency_tracker,
             intelligent_router=self._intelligent_router,
+            # K3: the owner-scoped graph-knowledge retrieval (None until graph
+            # writes were enabled — additive, zero-graph otherwise).
+            graph_retrieval=self._build_graph_retrieval(),
         )
         # Replace the loop's default-empty deferred_input_files with the
         # SHARED holder (same identity), so the use_skill intercept's

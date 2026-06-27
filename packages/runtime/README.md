@@ -23,10 +23,15 @@ the CLI for local use, the tests in CI. The loop itself is stateless per request
   turn back to the episodic store.
 - **`PromptBuilder`** + `RetrievedContext` — assembles the system prompt from
   identity + constraints + retrieved chunks + the skill index, with a
-  context-window budget reducer.
+  context-window budget reducer. Also renders the **graph-knowledge block** — an
+  additive, independent source of what is known about the *user* (from the shared
+  knowledge graph), relevance-gated and budgeted alongside the persona's own
+  memory, with a versioned usage-guidance artifact and a wellbeing-care slot.
 - **`retrieve_context`** — the per-turn conditioning retrieval (identity via
   `get_all`, the rest via `query`), extracted so the voice trunk shares the *same*
-  conditioning rather than reimplementing it.
+  conditioning rather than reimplementing it. Optionally enriched with an
+  owner-scoped graph retrieval (`graph_selection.make_graph_retrieval`), queried
+  independently of the persona stores.
 - **Routing** — `Router` (a `@runtime_checkable` Protocol) with `HeuristicRouter`
   (rule-based, per-turn, per-persona-overridable) and `UnifiedRouter` (two-layer:
   hard constraint-filter then sweet-spot scoring with bounded fallback). Plus the

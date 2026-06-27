@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from persona_runtime.prompt import RetrievedContext
+from persona_runtime.prompt import GraphContext, RetrievedContext
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -125,6 +125,7 @@ def retrieve_context(
     identity: list[PersonaChunk] | None = None,
     history_turns: int | None = None,
     on_recall: Callable[[str, int], None] | None = None,
+    graph_retrieval: Callable[[str], GraphContext] | None = None,
 ) -> RetrievedContext:
     """Retrieve this turn's conditioning context from the typed stores.
 
@@ -156,7 +157,16 @@ def retrieve_context(
             remembering" state). ``None`` (the default, and the voice turn's
             path — D-35-5) emits nothing: retrieval stays silent, behaviour
             unchanged. The hook is invoked *after* all stores are read, so it
-            never reorders or perturbs retrieval itself.
+            never reorders or perturbs retrieval itself. The graph is NOT
+            reported here — its surfacing is K5's UI concern, and ``on_recall``
+            stays the four persona stores so the existing contract is unchanged.
+        graph_retrieval: The K3 enrichment (D-K3-X-a2-seam) — an owner-scoped
+            ``query -> GraphContext`` callable (built by
+            :func:`~persona_runtime.graph_selection.make_graph_retrieval`),
+            queried with this turn's message. ``None`` (the default) ⇒ an empty
+            graph, so the text loop and A2's legs are byte-identical until graph
+            retrieval is composed in. The graph is an **independent** source: it
+            does not touch, reorder, or gate the persona-store retrieval above.
 
     Returns:
         The :class:`RetrievedContext` the prompt builder conditions on.
@@ -169,6 +179,7 @@ def retrieve_context(
         self_facts=stores["self_facts"].query(persona_id, user_message, k),
         worldview=stores["worldview"].query(persona_id, user_message, k),
         episodic=_recall_episodic(stores["episodic"], persona_id, user_message, k, recency=dynamic),
+        graph=graph_retrieval(user_message) if graph_retrieval is not None else GraphContext(),
     )
     if on_recall is not None:
         counts = {
