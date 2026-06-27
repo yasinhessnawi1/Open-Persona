@@ -9,8 +9,16 @@
  * resource:
  *
  *   1. start (email)     → signIn.create({ identifier: email })
- *   2. password          → signIn.password({ password })  (status -> 'complete')
- *   3. finalize          → signIn.finalize({ navigate })   (sets the active session)
+ *   2. password          → signIn.password({ password })
+ *      - status 'complete'             → finalize
+ *      - status 'needs_second_factor'  → MFA email-code step (3a/3b)
+ *   3a. mfa send          → signIn.mfa.sendEmailCode()      (emails a 6-digit code)
+ *   3b. mfa verify        → signIn.mfa.verifyEmailCode({ code })  (status -> 'complete')
+ *   4. finalize          → signIn.finalize({ navigate })   (sets the active session)
+ *
+ * The email-code second factor reuses the sign-up flow's exact code-entry UX
+ * (per-digit `OtpInput` that auto-submits when full + a throttled "Resend code"
+ * cooldown), so MFA looks identical to the verification step users already know.
  *
  * OAuth (gated OFF for v1 via OAUTH_PROVIDERS) is wired through
  * signIn.sso({ strategy, redirectUrl, redirectCallbackUrl }). Errors are read
@@ -29,14 +37,17 @@ import {
   Field,
   HiddenUsernameField,
   OAuthRow,
+  OtpInput,
   PasswordInput,
+  useResendCooldown,
 } from "./auth-fields.cloud";
 import {
   type ClerkErrorLike,
   clerkErrorToMessage,
   dedupeFieldError,
+  formatCooldown,
 } from "./auth-flow.cloud";
-import { ArrowIcon } from "./auth-icons.cloud";
+import { ArrowIcon, MailIcon } from "./auth-icons.cloud";
 import { AuthLoading, isAuthSignalReady } from "./auth-ready.cloud";
 import { signInRedirectTarget } from "./auth-redirect.cloud";
 import { AuthShell, authStyles as s } from "./auth-shell.cloud";
@@ -50,8 +61,15 @@ const SIGN_IN_BRAND = {
   compact: "Sign in to personas that remember you.",
 } as const;
 
-/** The two steps of the email→password sign-in flow. */
-type Step = "start" | "password";
+const MFA_BRAND = {
+  kicker: "One more step",
+  tagline: "Confirm it's you.",
+  note: "We sent a 6-digit code to your inbox. Enter it to finish signing in.",
+  compact: "Enter the code we emailed you.",
+} as const;
+
+/** The steps of the email→password (→ email-code second factor) sign-in flow. */
+type Step = "start" | "password" | "mfa";
 
 export function SignIn() {
   const { signIn, errors, fetchStatus } = useSignIn();
@@ -64,11 +82,15 @@ export function SignIn() {
   const [step, setStep] = useState<Step>("start");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+  const cooldown = useResendCooldown();
   // Single-flight latch: a fast double-Enter / double-click can fire a submit
   // handler twice before `busy`/`fetchStatus` flips, sending a duplicate request
-  // (the second hits an "already in progress"/"already complete" error). Guard
-  // each async step so it runs once per user action.
+  // (the second hits an "already in progress"/"already complete" error). It also
+  // closes the window where the MFA OTP `onComplete` auto-submit and the form
+  // `onSubmit` both target the verify in one code entry. Guard each async step so
+  // it runs once per user action.
   const { runGuarded } = useInFlightGuard();
 
   // An active session was detected — show the calm loading state while the
@@ -125,12 +147,60 @@ export function SignIn() {
     });
   };
 
-  /** Step 2: submit the password, then finalize on completion. */
+  /**
+   * Step 2: submit the password, then branch on the resulting status.
+   *
+   * - `complete`             → finalize (set the active session).
+   * - `needs_second_factor`  → the account has email-code MFA enabled; send the
+   *   code and move to the OTP step. If the send fails we stay on the password
+   *   step with a themed error rather than stranding the user on an empty form.
+   * - anything else          → surface a calm prompt rather than silently stall.
+   */
   const handlePassword = async (event: React.FormEvent) => {
     event.preventDefault();
     await runGuarded(async () => {
       setFormError(null);
       const { error } = await signIn.password({ password });
+      const handled =
+        signIn.status === "complete" || signIn.status === "needs_second_factor";
+      if (error && !handled) {
+        setFormError(clerkErrorToMessage(error as ClerkErrorLike));
+        return;
+      }
+      if (signIn.status === "complete") {
+        await signIn.finalize(finishSession);
+        return;
+      }
+      if (signIn.status === "needs_second_factor") {
+        const { error: sendError } = await signIn.mfa.sendEmailCode();
+        if (sendError) {
+          setFormError(clerkErrorToMessage(sendError as ClerkErrorLike));
+          return;
+        }
+        cooldown.start();
+        setCode("");
+        setStep("mfa");
+        return;
+      }
+      // needs_client_trust / needs_new_password etc. are not part of the v1
+      // email+password config; surface a calm prompt rather than silently stall.
+      setFormError(clerkErrorToMessage(null));
+    });
+  };
+
+  /**
+   * Step 3: verify the email-code second factor, then finalize on completion.
+   *
+   * Guarded single-flight (shared `runGuarded`): the OTP auto-submit and the form
+   * submit can both fire for one code entry; without the latch the second call
+   * hits Clerk's "already verified" → 400. Defense-in-depth: a wrong code returns
+   * an error and the status stays `needs_second_factor`, so we surface the themed
+   * error and DO NOT finalize — a bad code can never sign the user in.
+   */
+  const submitMfaCode = (value: string) =>
+    runGuarded(async () => {
+      setFormError(null);
+      const { error } = await signIn.mfa.verifyEmailCode({ code: value });
       const alreadyComplete = signIn.status === "complete";
       if (error && !alreadyComplete) {
         setFormError(clerkErrorToMessage(error as ClerkErrorLike));
@@ -139,17 +209,32 @@ export function SignIn() {
       if (signIn.status === "complete") {
         await signIn.finalize(finishSession);
       } else {
-        // needs_second_factor / needs_client_trust etc. are not part of the v1
-        // email+password config; surface a calm prompt rather than silently stall.
         setFormError(clerkErrorToMessage(null));
       }
     });
+
+  const handleMfaVerify = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await submitMfaCode(code);
+  };
+
+  /** Resend the email second-factor code (throttled by the cooldown). */
+  const resendMfa = async () => {
+    if (cooldown.isCoolingDown || busy) return;
+    setFormError(null);
+    const { error } = await signIn.mfa.sendEmailCode();
+    if (error) {
+      setFormError(clerkErrorToMessage(error as ClerkErrorLike));
+      return;
+    }
+    cooldown.start();
   };
 
   /** Reset to the email step so the user can correct the identifier. */
   const changeIdentifier = async () => {
     await signIn.reset();
     setPassword("");
+    setCode("");
     setFormError(null);
     setStep("start");
   };
@@ -169,6 +254,92 @@ export function SignIn() {
   };
 
   const startForgot = () => router.push("/reset-password");
+
+  // Email-code second factor (only reached when the account has MFA enabled).
+  // Reuses the sign-up verification UX exactly: per-digit `OtpInput` that
+  // auto-submits when full, plus a throttled "Resend code" cooldown.
+  if (step === "mfa") {
+    const cooldownLabel = formatCooldown(cooldown.remaining);
+    return (
+      <AuthShell brand={MFA_BRAND}>
+        <div className={s.head}>
+          <h1>Verify it's you</h1>
+          <p>
+            Enter the 6-digit code we sent to{" "}
+            <strong className={s.resendStrong}>
+              {signIn.identifier ?? email}
+            </strong>
+            .
+          </p>
+        </div>
+        <form
+          className={s.body}
+          onSubmit={handleMfaVerify}
+          aria-busy={busy}
+          noValidate
+        >
+          <ErrorAlert message={formError} />
+          <OtpInput
+            value={code}
+            onChange={setCode}
+            onComplete={submitMfaCode}
+            invalid={Boolean(fieldErrors.code)}
+            disabled={busy}
+          />
+          <div className={s.actions}>
+            <button
+              className={`${s.btn} ${s.btnPrimary}`}
+              type="submit"
+              disabled={busy || code.length < 6}
+              aria-disabled={busy || code.length < 6}
+            >
+              {busy ? (
+                <>
+                  <span className={s.spinner} aria-hidden="true" />
+                  Verifying…
+                </>
+              ) : (
+                <>
+                  Verify code
+                  <ArrowIcon />
+                </>
+              )}
+            </button>
+          </div>
+          {cooldown.isCoolingDown ? (
+            <p className={s.resend}>
+              Resend code in{" "}
+              <strong className={s.resendStrong}>{cooldownLabel}</strong>
+            </p>
+          ) : (
+            <p className={s.resend}>
+              <MailIcon />
+              Didn&apos;t get it?{" "}
+              <button
+                type="button"
+                className={s.link}
+                onClick={resendMfa}
+                disabled={busy}
+              >
+                Resend code
+              </button>
+            </p>
+          )}
+        </form>
+        <p className={s.foot}>
+          Wrong account?{" "}
+          <button
+            type="button"
+            className={s.link}
+            onClick={changeIdentifier}
+            disabled={busy}
+          >
+            Start over
+          </button>
+        </p>
+      </AuthShell>
+    );
+  }
 
   return (
     <AuthShell brand={SIGN_IN_BRAND}>
