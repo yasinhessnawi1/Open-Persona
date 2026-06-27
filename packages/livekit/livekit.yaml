@@ -1,0 +1,65 @@
+# Open Persona — PROD LiveKit server config (app: open-persona-livekit).
+#
+# Derived from livekit.dev.yaml (the community/local dev config) but hardened for
+# Fly.io. Same server image (livekit/livekit-server:v1.13.1), same single-port-UDP
+# + explicit-node-IP shape — ONE config story, two deploy targets. See
+# docs/research/livekit_selfhost_fly.md for the full reasoning + citations.
+#
+# Differences from the dev config (livekit.dev.yaml):
+#   * node_ip is NOT hardcoded here — the entrypoint resolves the app's dedicated
+#     Fly IPv4 (`dig $FLY_APP_NAME.fly.dev`, or the LIVEKIT_NODE_IP secret) and
+#     passes it as `--node-ip`. Dev used 127.0.0.1 (loopback) for the docker path.
+#   * RTC binds to `fly-global-services` (Fly's UDP requirement), not 0.0.0.0.
+#     The entrypoint substitutes this (env-templated) at boot.
+#   * keys come from the LIVEKIT_KEYS secret (entrypoint splices `key_file`), not
+#     the inline devkey:secret of the dev config.
+#
+# !!! Single-node, audio-only. No Redis (no multi-node scaling on Fly's single
+#     dedicated v4). Add Redis only if we ever scale horizontally. !!!
+
+# Main TCP port: RoomService HTTP API + the WebSocket signaling endpoint. Fly
+# terminates TLS on 443 and forwards plaintext here (browser uses wss://).
+port: 7880
+
+# HTTP/signaling binds on all interfaces; the RTC (media) bind is overridden to
+# Fly's required `fly-global-services` by the entrypoint (rtc.bind_addresses).
+bind_addresses:
+  - "0.0.0.0"
+
+rtc:
+  # ICE/TCP media fallback for clients that can't do UDP (matches fly.toml 7881).
+  tcp_port: 7881
+  # Single-port UDP mux. external==internal on Fly (no port rewrite), so this MUST
+  # equal the fly.toml UDP service port (7882) and is the port the advertised ICE
+  # candidate carries. When set, port_range_start/end are NOT used.
+  udp_port: 7882
+  # Do NOT STUN for the public IP. On Fly the public v4 isn't on any interface, and
+  # use_external_ip:true has a flag-precedence bug with node_ip (livekit#4049). We
+  # advertise the app's dedicated Fly v4 explicitly via the entrypoint --node-ip.
+  use_external_ip: false
+  # node_ip is injected by the entrypoint (--node-ip flag); do not hardcode here.
+  # RTC sockets MUST bind to fly-global-services for Fly UDP. The entrypoint
+  # templates the real bind into a generated config; this placeholder documents it.
+  # bind_addresses: ["fly-global-services"]   # set by entrypoint for the RTC layer
+
+# --- Embedded TURN (FORWARD-ITEM — present but DISABLED for v1) ---
+# TURN/TLS-443 covers strict "outbound-443-TLS-only" clients. Deferred because the
+# cert-on-Fly story is non-trivial (Fly's 443 is taken by the signaling HTTP
+# service). Two paths to enable later (docs/research §1.5):
+#   (a) external_tls: terminate TLS at a Fly service, forward plaintext TURN here.
+#   (b) cert_file/key_file: LiveKit holds a cert for turn.domain on a dedicated
+#       TLS port. Requires `fly certs add turn.<domain>` + a routed port.
+# turn:
+#   enabled: true
+#   domain: turn.open-persona-livekit.fly.dev
+#   tls_port: 5349            # or 443 if no proxy sits in front
+#   external_tls: true        # set true if a TLS-terminating LB fronts TURN
+#   udp_port: 3478            # needs another UDP service in fly.toml (3478==3478)
+
+# Keys: the entrypoint writes the LIVEKIT_KEYS secret to a key_file and points
+# LiveKit at it. The voice service signs AccessToken JWTs with the SAME pair
+# (PERSONA_VOICE_LIVEKIT_API_KEY / _API_SECRET), so tokens validate here.
+# key_file is set by the entrypoint at boot.
+
+logging:
+  level: info

@@ -1,0 +1,103 @@
+# Open Persona — self-hosted LiveKit SFU Fly.io app config (app: open-persona-livekit).
+#
+# WHY THIS APP EXISTS
+# Prod voice used to connect OUT to LiveKit Cloud (PERSONA_VOICE_LIVEKIT_URL on
+# open-persona-voice). This app self-hosts the SAME `livekit/livekit-server` OSS
+# image the community edition already runs (docker-compose.yml + livekit.dev.yaml),
+# so prod stops depending on LiveKit Cloud. ONE config story, TWO deploy targets.
+#
+# WHY A SEPARATE APP (not co-located on open-persona-voice)
+# The voice VM runs bge-small + Silero VAD + STT/TTS/LLM in-process. Putting the
+# media SFU on the same machine re-creates the CPU/event-loop starvation the
+# voice-VM scale-up just fixed. The SFU gets its own dedicated machine.
+#
+# REVERSIBILITY
+# Switching voice cloud<->self-hosted is purely a secret swap on open-persona-voice
+# (PERSONA_VOICE_LIVEKIT_URL + key/secret). No code change. See the runbook.
+#
+# !!! NOT YET DEPLOYED / NOT BROWSER-VALIDATED !!!
+# WebRTC on Fly is research-backed (docs/research/livekit_selfhost_fly.md) but
+# proven only by a real deploy + real-browser operator pass. See the runbook for
+# what still needs prod validation.
+
+app = "open-persona-livekit"
+primary_region = "fra"                  # Frankfurt — co-located with open-persona-voice / -api
+kill_signal = "SIGINT"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+  # fly.toml lives next to the Dockerfile (packages/livekit/). Invoke flyctl from
+  # this directory or pass -c packages/livekit/fly.toml from the repo root.
+
+[deploy]
+  strategy = "rolling"
+
+[env]
+  # Path the entrypoint passes to `livekit-server --config`. The image bakes the
+  # prod livekit.yaml here. Keys come from the LIVEKIT_KEYS secret (see runbook),
+  # which the entrypoint splices into the config at boot.
+  LIVEKIT_CONFIG_PATH = "/etc/livekit/livekit.yaml"
+
+# --- Signaling + ICE/TCP service (HTTPS-terminated by Fly on 443 -> 7880) ---
+# Fly terminates TLS on 443 and forwards plaintext to the LiveKit signaling port
+# 7880. The browser connects with wss://open-persona-livekit.fly.dev (TLS-443).
+[[services]]
+  protocol = "tcp"
+  internal_port = 7880
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.ports]]
+    # Plain HTTP -> redirect to HTTPS (LiveKit health probe also lives on 7880).
+    port = 80
+    handlers = ["http"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 200
+    soft_limit = 150
+
+  [[services.tcp_checks]]
+    grace_period = "10s"
+    interval = "15s"
+    timeout = "2s"
+
+# --- ICE/TCP media fallback (raw TCP, no TLS handler) on 7881 ---
+# For clients that can't do UDP at all: LiveKit relays media over TCP. external
+# port == internal port (no Fly rewrite needed for TCP, but keep them aligned so
+# the advertised tcp candidate matches).
+[[services]]
+  protocol = "tcp"
+  internal_port = 7881
+
+  [[services.ports]]
+    port = 7881
+
+# --- ICE/UDP single-port mux on 7882 (the PRIMARY media path) ---
+# CRITICAL Fly UDP rules (docs/research/livekit_selfhost_fly.md §1):
+#   * UDP needs a DEDICATED IPv4 (run `fly ips allocate-v4`) — shared/IPv6 won't
+#     carry UDP. The dedicated v4 is what the browser's UDP ICE candidate targets.
+#   * Fly does NOT rewrite the UDP port: external port MUST equal internal port.
+#     So 7882 == 7882 (matches rtc.udp_port in livekit.yaml and the advertised
+#     ICE candidate port). Do NOT remap to a different external port.
+#   * The server binds UDP to `fly-global-services` (set via rtc.bind_addresses
+#     in livekit.yaml / entrypoint), never 0.0.0.0.
+[[services]]
+  protocol = "udp"
+  internal_port = 7882
+
+  [[services.ports]]
+    port = 7882
+
+[[vm]]
+  # Audio-only SFU forwarding is CPU-LATENCY-sensitive (steady packet relay +
+  # DTLS/SRTP), not CPU-heavy. A DEDICATED core (performance-1x) avoids the
+  # noisy-neighbor CPU-steal that causes media jitter on shared VMs — the same
+  # lesson as the voice-VM scale-up. RAM is small for single-node audio.
+  # Re-evaluate down to shared-cpu-2x ONLY if the operator pass shows idle CPU
+  # headroom under real call load (docs/research §2).
+  size = "performance-1x"
+  memory = "512mb"
