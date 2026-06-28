@@ -28,6 +28,128 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine
 
 
+def _derive_isolated_db_name() -> str:
+    """A per-worktree throwaway test-DB name, so parallel worktrees never collide.
+
+    Every worktree's ``scripts/ci-local.sh`` defaults the integration target to the
+    SAME ``persona_test`` DB. Two close-out runs in two worktrees therefore hit one
+    DB at once; the per-test ``TRUNCATE`` + session ``DROP SCHEMA`` of one run then
+    corrupts the other (``pg_type`` duplicate / ``relation … does not exist`` / RLS
+    ``InsufficientPrivilege`` cascade). Deriving the name from the worktree's git
+    toplevel basename gives each worktree its own ``persona_test_<worktree>`` DB —
+    isolated, still ``…_test``-suffixed (satisfies the safety gate), idempotent.
+
+    Falls back to the pid if git is unavailable (still unique-enough per run).
+    """
+    import subprocess
+    from pathlib import Path
+
+    root = ""
+    try:
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - git absent
+        root = ""
+    tag = ""
+    if root:
+        tag = "".join(c for c in Path(root).name.lower() if c.isalnum() or c == "_")
+    if not tag:  # pragma: no cover - degenerate fallback
+        tag = f"pid{os.getpid()}"
+    return f"persona_test_{tag}"
+
+
+def _ensure_isolated_db(admin_url: str, db_name: str) -> None:
+    """``CREATE DATABASE``+pgvector+persona_app grants for ``db_name`` if absent.
+
+    Runs against the server's default ``postgres`` maintenance DB (``CREATE
+    DATABASE`` cannot run inside a transaction, so use ``AUTOCOMMIT``). Idempotent:
+    skips creation if the DB already exists, then ensures pgvector + the
+    non-superuser ``persona_app`` role's connect/usage are in place so the RLS
+    suite can run as it does on the shared ``persona_test``.
+    """
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import make_url
+
+    admin = make_url(admin_url).set(database="postgres")
+    engine = create_engine(admin, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": db_name}
+            ).first()
+            if not exists:
+                # Identifier can't be a bind param; db_name is our own alnum/_ tag.
+                conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+    finally:
+        engine.dispose()
+
+    target = make_url(admin_url).set(database=db_name)
+    engine = create_engine(target, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            if conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = 'persona_app'")).first():
+                conn.execute(text(f'GRANT CONNECT ON DATABASE "{db_name}" TO persona_app'))
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_test_db() -> None:
+    """Redirect this run to a per-worktree throwaway DB (parallel-run isolation).
+
+    Activates ONLY when the destructive integration fixtures are sanctioned
+    (``PERSONA_TEST_DB=1``) AND the configured target is the *shared default*
+    ``persona_test`` — an explicit ``…_test`` name (e.g. CI's ephemeral DB, or a
+    ``PERSONA_TEST_DB_NAME`` override already threaded into the URL) is respected
+    untouched. When it fires, it rewrites BOTH ``DATABASE_URL`` and
+    ``APP_DATABASE_URL`` in ``os.environ`` to a worktree-unique ``persona_test_*``
+    DB and creates it if missing. The env rewrite (not just the ``database_url``
+    fixture) is required because many integration tests read
+    ``os.environ["DATABASE_URL"]`` / ``["APP_DATABASE_URL"]`` directly.
+
+    With isolation in place, two worktrees' suites never share a DB, so the
+    session-start ``evict_stale`` in :func:`_migrate_to_head` can only ever clean
+    THIS worktree's own crashed prior run — never a sibling's live connections.
+
+    Session-autouse so it runs before any test (or DB fixture) reads the env. A
+    no-op unless integration is sanctioned, so the unit suite is unaffected.
+    """
+    from sqlalchemy.engine import make_url
+
+    if os.environ.get("PERSONA_TEST_DB") != "1":
+        return
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        return
+    base = url.replace("+asyncpg", "+psycopg")
+    if (make_url(base).database or "") != "persona_test":
+        return  # an explicit override (incl. CI's own DB) — leave it alone.
+
+    db_name = _derive_isolated_db_name()
+    try:
+        _ensure_isolated_db(base, db_name)
+    except Exception:  # noqa: BLE001 — best-effort; fixtures still skip if unreachable
+        return
+    # render_as_string(hide_password=False): URL.__str__ masks the password as
+    # "***", which would land literally in the env var → "password
+    # authentication failed". Keep the real password in the rewritten DSN.
+    os.environ["DATABASE_URL"] = (
+        make_url(base).set(database=db_name).render_as_string(hide_password=False)
+    )
+    app = os.environ.get("APP_DATABASE_URL")
+    if app:
+        app_base = app.replace("+asyncpg", "+psycopg")
+        os.environ["APP_DATABASE_URL"] = (
+            make_url(app_base).set(database=db_name).render_as_string(hide_password=False)
+        )
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _default_cloud_edition() -> Iterator[None]:
     """Run the existing api suite as the CLOUD edition (Spec 33).
@@ -109,8 +231,11 @@ def _database_url() -> str | None:
 
 
 @pytest.fixture(scope="session")
-def database_url() -> str:
+def database_url(_isolate_test_db: None) -> str:
     """The sync Postgres DSN, or skip the test if unavailable.
+
+    Depends on :func:`_isolate_test_db` so the per-worktree env rewrite (if it
+    fires) has happened before this reads ``DATABASE_URL`` from the environment.
 
     SAFETY GATE: the integration fixtures that depend on this (``pg_engine``,
     ``migrated_engine``, and every migration test's ``clean_db``) start with
