@@ -49,6 +49,7 @@ from persona.schema.conversation import ConversationMessage
 from persona.schema.tools import ToolCall
 from persona.tools import format_tool_result
 from persona_runtime.graph_voice import start_graph_retrieval, take_graph_if_ready
+from persona_runtime.graph_window import set_recent_window_from_messages
 from persona_runtime.routing import RoutingContext, classifiers
 from persona_runtime.routing.model_selection import reorder_primary
 
@@ -149,6 +150,12 @@ class VoiceModelReplyProducer:
         """Stream the persona-conditioned reply token-by-token (spoken text only)."""
         ctx = self._ctx
         user_message = final_transcript.text
+        # K4 (K4-D-2): publish this turn's recent-conversation window BEFORE the graph
+        # query is kicked off, so the gate reads the conversation (not the bare query) and
+        # never evades a topic the caller just raised mid-call — the worst failure on a
+        # live call. ``asyncio.to_thread`` (and ``create_task``) copy this contextvar into
+        # the worker thread, the same propagation the owner scope already relies on.
+        set_recent_window_from_messages(ctx.conversation.messages)
         # K3 (D-K3-6): kick the owner-scoped graph query off NOW, so it runs
         # CONCURRENTLY with the routing/selection pre-model work below. It is
         # taken just before assembly and only if already ready — never awaited on

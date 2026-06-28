@@ -117,6 +117,8 @@ class _FakeBackend:
         self.owner_surrogates: list[int] = []
         self.node_surrogates: dict[str, int] = {}
         self.fts_result: list[ConceptNode] = []
+        self.flagged_result: list[ConceptNode] = []
+        self.owner_node_ids: list[str] = []
         self.edge_neighbors: list[tuple[TypedLink, ConceptNode]] = []
         self.entity_neighbor_nodes: list[ConceptNode] = []
         self.deleted: list[str] = []
@@ -149,6 +151,12 @@ class _FakeBackend:
 
     def fts_query(self, owner_id: str, query: str, top_k: int) -> list[ConceptNode]:
         return self.fts_result[:top_k]
+
+    def flagged_nodes(self, owner_id: str) -> list[ConceptNode]:
+        return list(self.flagged_result)
+
+    def node_ids_for_owner(self, owner_id: str) -> list[str]:
+        return list(self.owner_node_ids)
 
     def neighbors(
         self, owner_id: str, node_id: str, *, link_types: set[LinkType] | None, limit: int

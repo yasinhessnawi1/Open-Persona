@@ -168,7 +168,7 @@ class TestK4SurfacingSlot:
     def test_slot_injects_care_text_when_a_provider_is_wired(self, builder: PromptBuilder) -> None:
         seen: list[str] = []
 
-        def provider(category: str) -> str | None:
+        def provider(category: str, recency: GraphRecency) -> str | None:  # noqa: ARG001 — recency unused here
             seen.append(category)
             return "care: be gentle here"
 
@@ -183,7 +183,7 @@ class TestK4SurfacingSlot:
     def test_slot_not_consulted_for_uncategorized_items(self, builder: PromptBuilder) -> None:
         seen: list[str] = []
 
-        def provider(category: str) -> str | None:
+        def provider(category: str, recency: GraphRecency) -> str | None:  # noqa: ARG001 — recency unused here
             seen.append(category)
             return "care text"
 

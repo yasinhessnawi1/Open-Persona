@@ -77,6 +77,7 @@ def _make_loop(
     scanned_skills: list[SkillSpec] | None = None,
     extra_tools: list[object] | None = None,
     max_tool_rounds: int = 5,
+    graph_retrieval: object | None = None,
 ) -> tuple[ConversationLoop, dict[str, FakeStore], MemoryTurnLogWriter]:
     stores = stores or {
         "identity": FakeStore(),
@@ -109,6 +110,7 @@ def _make_loop(
         tier_registry=registry,
         turn_log_writer=writer,
         max_tool_rounds=max_tool_rounds,
+        graph_retrieval=graph_retrieval,  # type: ignore[arg-type]
     )
     return loop, stores, writer
 
@@ -658,3 +660,73 @@ class TestBoundaryPredictionLockstep:
             f"prediction {predicted} != actual {actual} "
             f"(compact_every={compact_every}, keep_recent={keep_recent}, turns={turns})"
         )
+
+
+class TestK4WindowWiring:
+    """The K4 gate sees a NON-EMPTY recent window on a real chat turn (Spec K4, T6).
+
+    The load-bearing proof: the gate's recent window must be set by the LOOP as a side
+    effect of a real turn — not manually primed. A test that hand-sets the ContextVar
+    would prove the gate reads it, not that the loop publishes it (the thing that ships
+    broken). So this drives ``loop.turn(...)`` end to end and asserts the gate observed
+    the prior conversation, fed through the real ``recent_window_provider``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_real_turn_publishes_the_recent_window_to_the_gate(self) -> None:
+        from persona.graph.config import GraphSettings
+        from persona.graph.fusion import HybridResult  # noqa: TC002 — runtime ref in the double
+        from persona_runtime.graph_selection import GatingContext, make_graph_retrieval
+        from persona_runtime.graph_window import get_recent_window
+
+        seen: list[tuple[str, ...]] = []
+
+        def allowlist_provider(ctx: GatingContext) -> set[str] | None:
+            seen.append(ctx.recent_messages)
+            return None
+
+        class _EmptyRetriever:
+            def retrieve(
+                self,
+                owner_id: str,  # noqa: ARG002 — contract
+                query: str,  # noqa: ARG002 — contract
+                *,
+                allowlist: set[str] | None = None,  # noqa: ARG002 — contract
+                top_k: int | None = None,  # noqa: ARG002 — contract
+            ) -> list[HybridResult]:
+                return []
+
+        # The REAL composition: recent_window_provider is the actual ContextVar reader,
+        # so the only way the gate sees a window is if the loop set it this turn.
+        graph_retrieval = make_graph_retrieval(
+            retriever=_EmptyRetriever(),
+            owner_provider=lambda: "astrid",
+            settings=GraphSettings(),
+            allowlist_provider=allowlist_provider,
+            recent_window_provider=get_recent_window,
+        )
+        backend = ScriptedBackend([ScriptedRound(text="Take care.")])
+        loop, _, _ = _make_loop(backend, graph_retrieval=graph_retrieval)
+
+        # A conversation where a PRIOR turn opened a sensitive topic; the new message is
+        # a bland follow-up that does NOT re-name it (the uncanny-re-closing scenario).
+        conv = Conversation(
+            conversation_id="c1",
+            persona_id="astrid",
+            messages=[
+                ConversationMessage(
+                    role="user",
+                    content="i keep having panic attacks lately",
+                    created_at=datetime.now(UTC),
+                ),
+            ],
+        )
+
+        async for _ in loop.turn(conv, "and what should i do next"):
+            pass
+
+        # The gate ran and saw a NON-EMPTY window carrying the prior topic — published by
+        # the loop, not primed by the test.
+        assert seen, "the gate never ran (graph retrieval was not invoked on the turn)"
+        assert seen[0], "the window was EMPTY — the loop did not publish the recent conversation"
+        assert any("panic attacks" in m for m in seen[0])

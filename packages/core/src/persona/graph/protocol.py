@@ -359,6 +359,24 @@ class GraphStore(Protocol):
         """
         ...
 
+    def flagged_nodes(self, owner_id: str) -> list[ConceptNode]:
+        """The owner's wellbeing-tagged nodes — the K4 gate-eligible flagged read.
+
+        Returns every node whose ``wellbeing_category`` is set, each with its
+        full provenance trail so K4 can compute recency over the flagged set.
+        RLS-scoped like all Postgres access (criterion 5).
+        """
+        ...
+
+    def node_ids_for_owner(self, owner_id: str) -> list[str]:
+        """Enumerate the owner's node ids — the K4 positive-allowlist basis.
+
+        Returns every durable node-id the owner holds; K4 subtracts the flagged
+        set from this to build :meth:`search_dense`'s positive allowlist.
+        RLS-scoped like all Postgres access.
+        """
+        ...
+
     def neighbors(
         self,
         owner_id: str,

@@ -233,18 +233,55 @@ class RuntimeFactory:
         """
         if self._graph_store is None:
             return None
+        from datetime import UTC, datetime
+
         from persona.graph.config import GraphSettings
         from persona.graph.retrieval import HybridRetriever
-        from persona_runtime.graph_selection import make_graph_retrieval
+        from persona.wellbeing_policy import is_gate_eligible, parse_category
+        from persona_runtime.graph_selection import make_graph_retrieval, recency_bucket
+        from persona_runtime.graph_window import get_recent_window
+        from persona_runtime.wellbeing import FlaggedNode, make_allowlist_provider, recency_band
 
         from persona_api.middleware.rls_context import current_user_id
 
         settings = GraphSettings()
         retriever = HybridRetriever(store=self._graph_store, settings=settings)
+        store = self._graph_store
+
+        # K4 (K4-D-2): the gate-eligible flagged nodes the allowlist provider gates over —
+        # the owner's wellbeing-tagged nodes narrowed to the gate-eligible categories, each
+        # with its recency band (computed from provenance). Most owners have none → the
+        # provider returns None (no subtraction) → the hot path stays free.
+        def flagged(owner_id: str) -> list[FlaggedNode]:
+            now = datetime.now(UTC)
+            out: list[FlaggedNode] = []
+            for node in store.flagged_nodes(owner_id):
+                category = parse_category(node.wellbeing_category)
+                if category is None or not is_gate_eligible(category):
+                    continue
+                out.append(
+                    FlaggedNode(
+                        node_id=node.id,
+                        category=category,
+                        recency=recency_band(recency_bucket(node, now)),
+                        text=f"{node.concept_name} {node.content}",
+                    )
+                )
+            return out
+
+        allowlist_provider = make_allowlist_provider(
+            flagged_nodes=flagged,
+            owner_node_ids=lambda owner_id: set(store.node_ids_for_owner(owner_id)),
+        )
+        # The recent-window source: the per-turn ContextVar every conversational loop sets
+        # before retrieval (K4-D-X-gating-signal-seam) — so the gate reads the conversation,
+        # not the bare query (no uncanny re-closing). Unset ⇒ empty ⇒ query-only (fail-safe).
         return make_graph_retrieval(
             retriever=retriever,
             owner_provider=current_user_id.get,
             settings=settings,
+            allowlist_provider=allowlist_provider,
+            recent_window_provider=get_recent_window,
         )
 
     @staticmethod
@@ -621,6 +658,8 @@ class RuntimeFactory:
             scanned,
             deferred_input_files_holder=deferred_holder,
         )
+        from persona_runtime.wellbeing import surfacing_guidance as wellbeing_surfacing_guidance
+
         loop = ConversationLoop(
             persona=persona,
             stores=self._build_stores(),
@@ -644,6 +683,11 @@ class RuntimeFactory:
             # K3: the owner-scoped graph-knowledge retrieval (None until graph
             # writes were enabled — additive, zero-graph otherwise).
             graph_retrieval=self._build_graph_retrieval(),
+            # K4: the per-category care-text the surfacing slot rides (K4-D-3). Stateless;
+            # wired only when the graph is composed, so a zero-graph loop is byte-identical.
+            graph_surfacing_guidance=(
+                wellbeing_surfacing_guidance if self._graph_store is not None else None
+            ),
         )
         # Replace the loop's default-empty deferred_input_files with the
         # SHARED holder (same identity), so the use_skill intercept's

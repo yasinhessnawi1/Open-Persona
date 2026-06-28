@@ -35,6 +35,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
+from pydantic import BaseModel, ConfigDict
+
 from persona_runtime.prompt import GraphContext, GraphKnowledgeItem, GraphRecency
 
 if TYPE_CHECKING:
@@ -44,7 +46,47 @@ if TYPE_CHECKING:
     from persona.graph.fusion import HybridResult
     from persona.graph.models import ConceptNode
 
-__all__ = ["GraphRetriever", "make_graph_retrieval", "select_graph_knowledge"]
+__all__ = [
+    "GatingContext",
+    "GraphRetriever",
+    "make_graph_retrieval",
+    "recency_bucket",
+    "select_graph_knowledge",
+]
+
+
+class GatingContext(BaseModel):
+    """The per-turn signal K3's allowlist seam hands K4's gating policy (K4-D-2).
+
+    The K4 context gate decides "has the user opened this topic / does the
+    conversation concern it" from the conversation, never persona-type heuristics —
+    so it needs more than the bare query: the current message **plus a short recent
+    window**. Query-alone would re-close the gate on a follow-up turn that doesn't
+    re-name the topic ("and then what?"), making the persona suddenly evasive about
+    something it was just discussing (the uncanny-concealment failure). This frozen
+    bundle is built by :func:`make_graph_retrieval` and passed to the K4
+    ``allowlist_provider``; the seam (graph_selection) owns the shape, K4 owns the
+    policy that reads it — so this type lives here, never importing K4.
+
+    Attributes:
+        owner_id: The resolved owner scope (single resolution, passed explicitly so
+            the provider's flagged-node / node-id reads share one owner).
+        query: This turn's user message — the explicit "raised it now" signal.
+        recent_messages: A short window of recent conversation text (most-recent
+            last). Empty until the composition wires a window source (T6); the gate
+            then reads it for the "still in the topic" signal.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    owner_id: str
+    query: str
+    recent_messages: tuple[str, ...] = ()
+
+
+def _no_recent_window() -> tuple[str, ...]:
+    """Default recent-window source — empty until the composition wires one (T6)."""
+    return ()
 
 
 class GraphRetriever(Protocol):
@@ -93,6 +135,16 @@ def _recency_bucket(node: ConceptNode, now: datetime) -> GraphRecency:
     if age <= _WHILE_BACK_WITHIN:
         return GraphRecency.A_WHILE_BACK
     return GraphRecency.LONG_AGO
+
+
+def recency_bucket(node: ConceptNode, now: datetime) -> GraphRecency:
+    """The coarse recency bucket of a node (public; K4's flagged-node band computation).
+
+    The same most-recent-contribution bucketing the K3 projection uses, exposed so the
+    K4 composition can derive a flagged node's recency band without reaching into a
+    private. ``now`` is passed (pure — no clock read).
+    """
+    return _recency_bucket(node, now)
 
 
 def _source(node: ConceptNode) -> tuple[str | None, str | None]:
@@ -168,7 +220,8 @@ def make_graph_retrieval(
     settings: GraphSettings,
     now: Callable[[], datetime] = _utcnow,
     max_items: int | None = None,
-    allowlist_provider: Callable[[], set[str] | None] | None = None,
+    allowlist_provider: Callable[[GatingContext], set[str] | None] | None = None,
+    recent_window_provider: Callable[[], Sequence[str]] = _no_recent_window,
 ) -> Callable[[str], GraphContext]:
     """Build the per-turn ``query -> GraphContext`` callable for the prompt path.
 
@@ -181,15 +234,19 @@ def make_graph_retrieval(
     call **fails closed** (an empty bundle, no read at all), so a missing scope
     can never leak another user's knowledge.
 
-    The ``allowlist_provider`` is the K4 **subtraction** seam (D-K3-X-k4-seam):
+    The ``allowlist_provider`` is the K4 **subtraction** seam (D-K3-X-k4-seam,
+    widened by K4-D-X-gating-signal-seam to receive a :class:`GatingContext`):
     it supplies, per turn, the set of node-ids K4 permits (``None`` ⇒ the whole
     owner graph). It is passed to K1 (the *primary* enforcement, post-fusion),
     AND re-applied here as **defense in depth** — K3 is the last surface before
     the model, and a wellbeing-subtracted node must be unreachable even if K1
     regressed. So a subtracted node is dropped by construction at the K3 layer,
     not merely trusted to be absent. K4 owns the policy that computes the set;
-    K3 owns this wiring (reserved-never-built: the provider defaults to ``None``
-    until K4 lands).
+    K3 owns this wiring. The provider receives the turn's query + a short recent
+    window (``recent_window_provider``) so the gate can decide "has the user opened
+    this topic" from the conversation, not the bare query (K4-D-2). Both default to
+    the no-op (``None`` provider / empty window), so an unwired composition is
+    byte-identical to the reserved seam.
 
     Args:
         retriever: K1's hybrid retriever (owner-scoped at the call).
@@ -199,8 +256,13 @@ def make_graph_retrieval(
         now: The turn's clock (injected for testable recency bucketing).
         max_items: The injection node budget; ``None`` ⇒ K1's ``result_budget``.
             T5 / the voice profile pass a smaller value under pressure.
-        allowlist_provider: The K4-permitted node-id set per turn (``None`` ⇒ no
-            subtraction). Default ``None`` is the reserved no-op until K4 lands.
+        allowlist_provider: The K4 gating policy — ``GatingContext`` ⇒ the permitted
+            node-id set (``None`` ⇒ no subtraction). Default ``None`` is the reserved
+            no-op; K4 lights it up by passing a provider.
+        recent_window_provider: Supplies the short recent-conversation window for the
+            gate's "still in the topic" signal. Default ``_no_recent_window`` (empty)
+            keeps the unwired path byte-identical; the composition (T6) wires the
+            real per-turn window.
 
     Returns:
         A ``Callable[[str], GraphContext]`` to hand ``retrieve_context`` as its
@@ -211,7 +273,12 @@ def make_graph_retrieval(
         owner_id = owner_provider()
         if not owner_id:
             return GraphContext()  # fail closed: no owner scope → no graph read
-        allowlist = allowlist_provider() if allowlist_provider is not None else None
+        allowlist: set[str] | None = None
+        if allowlist_provider is not None:
+            gating = GatingContext(
+                owner_id=owner_id, query=query, recent_messages=tuple(recent_window_provider())
+            )
+            allowlist = allowlist_provider(gating)
         results = retriever.retrieve(owner_id, query, allowlist=allowlist)
         if allowlist is not None:
             # Defense in depth (D-K3-X-k4-seam): K1 already enforces the allowlist

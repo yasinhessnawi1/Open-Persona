@@ -141,4 +141,5 @@ class VoicePromptAssembler:
             matched_skill_content=matched_skill_content,
             document_context=document_context,
             reply_language=reply_language,
+            graph_surfacing_guidance=self._ctx.graph_surfacing_guidance,
         )

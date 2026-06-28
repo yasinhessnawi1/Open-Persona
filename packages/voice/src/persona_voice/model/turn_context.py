@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from persona.schema.persona import Persona
     from persona.stores.protocol import MemoryStore
     from persona.tools import Toolbox
-    from persona_runtime.prompt import GraphContext, PromptBuilder
+    from persona_runtime.prompt import GraphContext, GraphRecency, PromptBuilder
     from persona_runtime.routing import FirstTokenLatencyTracker, IntelligentRouter, Router
     from persona_runtime.tier import TierRegistry
 
@@ -114,6 +114,11 @@ class VoiceTurnContext:
     onset (concurrent with pre-model work) and takes the result only if ready by
     assembly time — zero serial wall-clock on the TTFT path (the voice profile is
     traversal-off + a tighter node budget)."""
+    graph_surfacing_guidance: Callable[[str, GraphRecency], str | None] | None = None
+    """The K4 per-category care-text provider for the surfacing slot (K4-D-3).
+    ``None`` ⇒ the reserved no-op (no care text rendered). Wired alongside
+    ``graph_retrieval`` so a surfaced wellbeing-tagged node rides its care guidance
+    on a voice turn exactly as on the text path."""
 
     def __post_init__(self) -> None:
         missing = [kind for kind in REQUIRED_STORE_KINDS if kind not in self.stores]

@@ -166,6 +166,26 @@ class PostgresGraphBackend:
         with self._engine.connect() as conn:
             return [int(r[0]) for r in conn.execute(stmt)]
 
+    def flagged_nodes(self, owner_id: str) -> list[ConceptNode]:
+        """The owner's wellbeing-tagged nodes (K4 gate-eligible flagged set; criterion 5).
+
+        Every node whose ``wellbeing_category`` is set, hydrated with its full
+        provenance trail so K4 can compute recency. Owner-scoped (RLS in prod).
+        """
+        stmt = select(graph_nodes).where(
+            graph_nodes.c.owner_id == owner_id,
+            graph_nodes.c.wellbeing_category.isnot(None),
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [self._row_to_node(dict(r)) for r in rows]
+
+    def node_ids_for_owner(self, owner_id: str) -> list[str]:
+        """All of the owner's durable node ids — the K4 positive-allowlist enumeration."""
+        stmt = select(graph_nodes.c.id).where(graph_nodes.c.owner_id == owner_id)
+        with self._engine.connect() as conn:
+            return [str(r[0]) for r in conn.execute(stmt)]
+
     def delete_node(self, owner_id: str, node_id: str) -> int | None:
         """Delete a node (edges cascade); return its ``surrogate`` for index removal."""
         stmt = (

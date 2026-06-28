@@ -191,6 +191,12 @@ class _StubStore:
     def search_fts(self, owner_id: str, query: str, top_k: int) -> list[ConceptNode]:
         return []
 
+    def flagged_nodes(self, owner_id: str) -> list[ConceptNode]:
+        return []
+
+    def node_ids_for_owner(self, owner_id: str) -> list[str]:
+        return []
+
     def neighbors(
         self,
         owner_id: str,

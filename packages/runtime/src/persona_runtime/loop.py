@@ -52,6 +52,7 @@ from persona.tools import format_tool_result
 from persona_runtime.activity import dispatch_with_activity
 from persona_runtime.agentic.events import RunEvent
 from persona_runtime.ambiguity import DetectionContext, detect_ambiguity, should_ask
+from persona_runtime.graph_window import set_recent_window_from_messages
 from persona_runtime.logging import (
     SkillInvocation,
     TurnLog,
@@ -92,6 +93,7 @@ if TYPE_CHECKING:
     from persona_runtime.prompt import (
         DocumentContext,
         GraphContext,
+        GraphRecency,
         PromptBuilder,
         RetrievedContext,
     )
@@ -307,6 +309,7 @@ class ConversationLoop:
         question_author: QuestionAuthor | None = None,
         intelligent_router: IntelligentRouter | None = None,
         graph_retrieval: Callable[[str], GraphContext] | None = None,
+        graph_surfacing_guidance: Callable[[str, GraphRecency], str | None] | None = None,
     ) -> None:
         self._persona = persona
         self._stores = stores
@@ -316,6 +319,10 @@ class ConversationLoop:
         # the additive zero-graph path — every existing caller is byte-identical
         # until the composition root wires a retriever (RuntimeFactory).
         self._graph_retrieval = graph_retrieval
+        # K4 (K4-D-3 / K4-D-X-surfacing-recency-seam): the per-category care text that
+        # rides K3's surfacing slot for any injected wellbeing-tagged node. ``None`` (the
+        # default) is the reserved no-op — the prompt renders no care text, byte-identical.
+        self._graph_surfacing_guidance = graph_surfacing_guidance
         # Spec 21 T06: proactive clarifying questions (D-21-1). The author turns
         # an ambiguity signal into the 3+1 question; the template author is the
         # D-21-14 mandatory fallback and the default, a model-backed author is
@@ -505,6 +512,12 @@ class ConversationLoop:
         def _note_recall(store: str, count: int) -> None:
             recall_trace.append((store, count))
 
+        # K4 (K4-D-2): publish this turn's recent-conversation window BEFORE retrieval so
+        # the graph gate can tell "has the user opened this topic" from the conversation,
+        # not the bare query (which would re-close the gate on a follow-up that doesn't
+        # re-name the topic — the uncanny-concealment failure). The current message rides
+        # as the gate's query; the window is the recent prior turns (text content only).
+        set_recent_window_from_messages(conversation.messages)
         context = self._retrieve(
             persona_id,
             user_message,
@@ -634,6 +647,7 @@ class ConversationLoop:
                     max_tokens=max_tokens,
                     matched_skill_content=matched_skill_content,
                     document_context=document_context,
+                    graph_surfacing_guidance=self._graph_surfacing_guidance,
                 ),
                 *tool_messages,
             ]
@@ -748,6 +762,7 @@ class ConversationLoop:
                         max_tokens=max_tokens,
                         matched_skill_content=matched_skill_content,
                         document_context=document_context,
+                        graph_surfacing_guidance=self._graph_surfacing_guidance,
                     ),
                     *tool_messages,
                 ]
@@ -803,6 +818,7 @@ class ConversationLoop:
                         max_tokens=max_tokens,
                         matched_skill_content=matched_skill_content,
                         document_context=document_context,
+                        graph_surfacing_guidance=self._graph_surfacing_guidance,
                     ),
                     *tool_messages,
                 ]

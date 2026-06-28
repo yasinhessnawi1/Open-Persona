@@ -60,6 +60,8 @@ class _StoreBackend(Protocol):
     def delete_node(self, owner_id: str, node_id: str) -> int | None: ...
     def surrogates_for_owner(self, owner_id: str) -> list[int]: ...
     def surrogates_for_nodes(self, owner_id: str, node_ids: Sequence[str]) -> list[int]: ...
+    def flagged_nodes(self, owner_id: str) -> list[ConceptNode]: ...
+    def node_ids_for_owner(self, owner_id: str) -> list[str]: ...
     def fts_query(self, owner_id: str, query: str, top_k: int) -> list[ConceptNode]: ...
     def neighbors(
         self, owner_id: str, node_id: str, *, link_types: set[LinkType] | None, limit: int
@@ -154,6 +156,24 @@ class PostgresGraphStore:
 
     def search_fts(self, owner_id: str, query: str, top_k: int) -> list[ConceptNode]:
         return self._backend.fts_query(owner_id, query, top_k)
+
+    def flagged_nodes(self, owner_id: str) -> list[ConceptNode]:
+        """The owner's wellbeing-tagged nodes — the K4 gate-eligible flagged read.
+
+        Returns every node carrying a ``wellbeing_category`` (with its full
+        provenance trail, so K4 can compute recency). RLS-scoped like all
+        Postgres access; a read (CQS — no writes).
+        """
+        return self._backend.flagged_nodes(owner_id)
+
+    def node_ids_for_owner(self, owner_id: str) -> list[str]:
+        """The owner's full node-id set — the K4 positive-allowlist enumeration.
+
+        Returns every durable node-id the owner holds, the basis K4 subtracts
+        the flagged set from to build the positive allowlist. RLS-scoped; a read
+        (CQS — no writes).
+        """
+        return self._backend.node_ids_for_owner(owner_id)
 
     def neighbors(
         self,

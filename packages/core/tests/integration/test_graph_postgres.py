@@ -203,6 +203,37 @@ def test_fts_query_finds_term(backend: PostgresGraphBackend) -> None:
     assert [r.id for r in results] == ["u1::node::00000001"]
 
 
+# ----- wellbeing-layer reads (K4) ------------------------------------------
+
+
+def test_flagged_nodes_returns_only_wellbeing_tagged(backend: PostgresGraphBackend) -> None:
+    backend.insert_node(
+        "u1",
+        _node("u1::node::00000001", "meds", "takes metformin", wellbeing_category="health"),
+        _vec(0),
+    )
+    backend.insert_node("u1", _node("u1::node::00000002", "hobby", "likes chess"), _vec(1))
+    backend.insert_node(
+        "u2", _node("u2::node::00000001", "x", "y", wellbeing_category="health"), _vec(2)
+    )
+    flagged = backend.flagged_nodes("u1")
+    assert [n.id for n in flagged] == ["u1::node::00000001"]  # only u1's tagged node
+    assert flagged[0].wellbeing_category == "health"
+    assert flagged[0].provenance  # full provenance trail hydrated (K4 recency)
+
+
+def test_node_ids_for_owner_enumerates_all_owner_ids(backend: PostgresGraphBackend) -> None:
+    backend.insert_node(
+        "u1", _node("u1::node::00000001", "a", "a", wellbeing_category="x"), _vec(0)
+    )
+    backend.insert_node("u1", _node("u1::node::00000002", "b", "b"), _vec(1))
+    backend.insert_node("u2", _node("u2::node::00000001", "c", "c"), _vec(2))
+    assert sorted(backend.node_ids_for_owner("u1")) == [
+        "u1::node::00000001",
+        "u1::node::00000002",
+    ]  # owner-scoped; flagged or not
+
+
 # ----- embeddings ----------------------------------------------------------
 
 

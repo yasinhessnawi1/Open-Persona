@@ -356,7 +356,7 @@ class PromptBuilder:
         matched_skill_content: str | None = None,
         document_context: DocumentContext | None = None,
         reply_language: str | None = None,
-        graph_surfacing_guidance: Callable[[str], str | None] | None = None,
+        graph_surfacing_guidance: Callable[[str, GraphRecency], str | None] | None = None,
     ) -> list[ConversationMessage]:
         """Build the full prompt as a message list.
 
@@ -384,11 +384,14 @@ class PromptBuilder:
                 language so the reply matches what is spoken. English (the model
                 default) injects no directive.
             graph_surfacing_guidance: The K4 surfacing-guidance slot
-                (D-K3-X-k4-seam) — a ``category -> care-text`` provider rendered
-                alongside any injected graph node carrying a ``wellbeing_category``.
-                K3 owns the slot; K4 owns the policy + text. ``None`` (the
-                default) is the reserved no-op stub: the slot is on the wire but
-                renders nothing until K4 lands.
+                (D-K3-X-k4-seam, widened by K4-D-X-surfacing-recency-seam) — a
+                ``(category, recency) -> care-text`` provider rendered alongside
+                any injected graph node carrying a ``wellbeing_category``. K3 owns
+                the slot; K4 owns the policy + text. The recency is forwarded so
+                the care text can be recency-weighted (acute vs lighter framing,
+                criterion 6). ``None`` (the default) is the reserved no-op stub:
+                the slot is on the wire but renders nothing — every existing caller
+                passes ``None`` and is byte-identical.
 
         Returns:
             ``[system_message, *history, user_message]`` — sized to ``max_tokens``.
@@ -458,7 +461,7 @@ class PromptBuilder:
         matched_skill_content: str | None,
         document_context: DocumentContext | None = None,
         reply_language: str | None = None,
-        graph_surfacing_guidance: Callable[[str], str | None] | None = None,
+        graph_surfacing_guidance: Callable[[str, GraphRecency], str | None] | None = None,
     ) -> list[ConversationMessage]:
         """Compose the message list in the spec §5.1 order."""
         system_text = self._render_system(
@@ -483,7 +486,7 @@ class PromptBuilder:
         matched_skill_content: str | None,
         document_context: DocumentContext | None = None,
         reply_language: str | None = None,
-        graph_surfacing_guidance: Callable[[str], str | None] | None = None,
+        graph_surfacing_guidance: Callable[[str, GraphRecency], str | None] | None = None,
     ) -> str:
         """Render the system block in the spec §5.1 ordering."""
         parts: list[str] = []
@@ -618,7 +621,7 @@ class PromptBuilder:
     @staticmethod
     def _render_graph_knowledge(
         graph: GraphContext,
-        surfacing_guidance: Callable[[str], str | None] | None,
+        surfacing_guidance: Callable[[str, GraphRecency], str | None] | None,
     ) -> str:
         """Render the graph-knowledge block (K3, D-K3-1/4/5).
 
@@ -636,10 +639,12 @@ class PromptBuilder:
                 note.append(f"from {item.source_persona}")
             lines.append(f"- {item.content} [{', '.join(note)}]")
             # K4 surfacing slot (D-K3-X-k4-seam): K3 owns the slot, K4 owns the
-            # policy + text. A no-op stub (no provider, or one returning None)
-            # renders nothing — the slot is reserved, filled when K4 lands.
+            # policy + text. The node's recency is forwarded (K4-D-X-surfacing-
+            # recency-seam) so the care text is recency-weighted. A no-op stub (no
+            # provider, or one returning None) renders nothing — the slot is
+            # reserved; K4 fills it by passing a provider.
             if item.wellbeing_category is not None and surfacing_guidance is not None:
-                care = surfacing_guidance(item.wellbeing_category)
+                care = surfacing_guidance(item.wellbeing_category, item.recency)
                 if care:
                     lines.append(f"  ({care})")
         return "\n".join(lines)

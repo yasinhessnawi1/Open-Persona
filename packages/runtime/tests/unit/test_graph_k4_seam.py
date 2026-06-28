@@ -26,7 +26,7 @@ from persona.graph.models import ConceptNode, NodeKind, NodeProvenance
 from persona.schema.chunks import WriteSource
 from persona.schema.persona import Persona, PersonaIdentity
 from persona_runtime.graph_selection import make_graph_retrieval
-from persona_runtime.prompt import PromptBuilder, RetrievedContext
+from persona_runtime.prompt import GraphRecency, PromptBuilder, RetrievedContext
 
 _NOW = datetime(2026, 6, 25, tzinfo=UTC)
 
@@ -107,7 +107,7 @@ class TestAllowlistThreading:
             owner_provider=lambda: "user-A",
             settings=_settings(),
             now=lambda: _NOW,
-            allowlist_provider=lambda: {"ok"},
+            allowlist_provider=lambda _ctx: {"ok"},
         )
         retrieve("q")
         assert retriever.calls == [{"ok"}]  # the K4-permitted set reached K1
@@ -132,7 +132,7 @@ class TestSubtractionByConstruction:
             owner_provider=lambda: "user-A",
             settings=_settings(),
             now=lambda: _NOW,
-            allowlist_provider=lambda: {"safe"},  # K4 subtracts "sensitive"
+            allowlist_provider=lambda _ctx: {"safe"},  # K4 subtracts "sensitive"
         )
         ids = {item.content for item in retrieve("q").items}
         assert "Likes hiking." in ids
@@ -147,7 +147,7 @@ class TestSubtractionByConstruction:
             owner_provider=lambda: "user-A",
             settings=_settings(),
             now=lambda: _NOW,
-            allowlist_provider=lambda: {"safe"},
+            allowlist_provider=lambda _ctx: {"safe"},
         )
         contents = {item.content for item in retrieve("q").items}
         assert "A wellbeing matter." not in contents  # structurally dropped at K3
@@ -162,7 +162,7 @@ class TestSubtractionByConstruction:
             owner_provider=lambda: "user-A",
             settings=_settings(),
             now=lambda: _NOW,
-            allowlist_provider=lambda: {"safe"},
+            allowlist_provider=lambda _ctx: {"safe"},
         )
         ctx = RetrievedContext(graph=retrieve("q"))
         msgs = PromptBuilder().build(
@@ -178,7 +178,7 @@ class TestSubtractionByConstruction:
             owner_provider=lambda: "user-A",
             settings=_settings(),
             now=lambda: _NOW,
-            allowlist_provider=lambda: set(),  # K4 subtracts all
+            allowlist_provider=lambda _ctx: set(),  # K4 subtracts all
         )
         assert retrieve("q").items == ()
 
@@ -194,7 +194,7 @@ class TestSurfacingSlotReserved:
             owner_provider=lambda: "user-A",
             settings=_settings(),
             now=lambda: _NOW,
-            allowlist_provider=lambda: {"n"},  # allowed (not subtracted)
+            allowlist_provider=lambda _ctx: {"n"},  # allowed (not subtracted)
         )
         ctx = RetrievedContext(graph=retrieve("q"))
         msgs = PromptBuilder().build(
@@ -207,7 +207,7 @@ class TestSurfacingSlotReserved:
     def test_care_slot_consulted_only_for_categorized_nodes(self) -> None:
         seen: list[str] = []
 
-        def care(category: str) -> str | None:
+        def care(category: str, recency: GraphRecency) -> str | None:  # noqa: ARG001 — recency unused here
             seen.append(category)
             return "be gentle here"
 

@@ -23,7 +23,7 @@ import pytest
 from persona.backends import StreamChunk, TokenUsage
 from persona.history import ConversationHistoryManager
 from persona.schema.chunks import PersonaChunk
-from persona.schema.conversation import Conversation
+from persona.schema.conversation import Conversation, ConversationMessage
 from persona.schema.persona import Persona, PersonaIdentity, RoutingConfig
 from persona_runtime.prompt import (
     GraphContext,
@@ -208,3 +208,73 @@ class TestProducerUsesOverlappedGraph:
         # dataclasses.replace works (frozen dc) — the field is a real composable.
         replaced = dataclasses.replace(ctx, graph_retrieval=None)
         assert replaced.graph_retrieval is None
+
+
+class TestK4WindowReachesTheGate:
+    """The K4 gate sees a NON-EMPTY recent window on a real VOICE turn (Spec K4, T6).
+
+    Voice especially: an uncanny topic-evasion mid-call is the worst failure, and voice
+    threads context differently (the graph query runs off-thread). The window is published
+    by the reply producer in the turn coroutine BEFORE the off-thread query, and must
+    propagate THROUGH ``asyncio.to_thread`` into the gate. Proven by driving a real
+    producer turn and asserting the gate observed the prior conversation — NOT by priming
+    the ContextVar (which would prove the gate reads it, not that the producer sets it).
+    """
+
+    @pytest.mark.asyncio
+    async def test_real_voice_turn_publishes_the_window_to_the_gate(self) -> None:
+        from persona.graph.config import GraphSettings
+        from persona.graph.fusion import HybridResult
+        from persona_runtime.graph_selection import GatingContext, make_graph_retrieval
+        from persona_runtime.graph_window import get_recent_window
+
+        seen: list[tuple[str, ...]] = []
+
+        def allowlist_provider(gctx: GatingContext) -> set[str] | None:
+            seen.append(gctx.recent_messages)
+            return None
+
+        class _EmptyRetriever:
+            def retrieve(
+                self, owner_id: str, query: str, *, allowlist: Any = None, top_k: Any = None
+            ) -> list[HybridResult]:
+                return []
+
+        # The REAL composition: recent_window_provider is the actual ContextVar reader, so
+        # the gate sees a window only if the producer set it AND it crossed the thread.
+        graph_retrieval = make_graph_retrieval(
+            retriever=_EmptyRetriever(),
+            owner_provider=lambda: "astrid",
+            settings=GraphSettings(),
+            allowlist_provider=allowlist_provider,
+            recent_window_provider=get_recent_window,
+        )
+        backend = _ScriptedBackend([StreamChunk(delta="ok"), _final()])
+        ctx = _context(backend, graph_retrieval=graph_retrieval)
+        # A prior turn opened the topic; the new transcript is a bland follow-up that does
+        # NOT re-name it (the uncanny-re-closing scenario, mid-call).
+        ctx = dataclasses.replace(
+            ctx,
+            conversation=Conversation(
+                conversation_id="c1",
+                persona_id="astrid",
+                messages=[
+                    ConversationMessage(
+                        role="user",
+                        content="i keep having panic attacks lately",
+                        created_at=datetime.now(UTC),
+                    ),
+                ],
+            ),
+        )
+        producer = VoiceModelReplyProducer(ctx)
+        stream = await producer(
+            Transcript(is_final=True, text="and what should i do next", confidence=1.0)
+        )
+        _ = [tok async for tok in stream]
+
+        assert seen, "the voice gate never ran (graph retrieval did not execute on the turn)"
+        assert seen[0], (
+            "the window was EMPTY in voice — the producer did not publish it cross-thread"
+        )
+        assert any("panic attacks" in m for m in seen[0])

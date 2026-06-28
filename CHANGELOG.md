@@ -11,6 +11,53 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Wellbeing-aware layer — care-first handling of sensitive knowledge in the shared graph (2026-06-28)
+
+> Close-out of `wellbeing-layer` (Spec K4). The shared graph deliberately lets every
+> persona draw on one accumulated understanding of the user — but one narrow class of
+> knowledge (self-harm, disordered eating, acute crisis, abuse, addiction) makes "share
+> everything bluntly" a *safety* problem, not a privacy preference. K4 is the system's
+> wellbeing principles reaching into the graph: **a floor, not a filter; care, not
+> compartmentalisation.** It is **policy over reserved seams** — no schema change, no new
+> retrieval mechanics — supplying the one versioned policy artifact that K2 (tag-at-write
+> + never-store), K1 (allowlist subtraction), and K3 (the surfacing slot) all consume.
+>
+> The dominant mode is **share-with-care**: sensitive knowledge still flows to every
+> persona, riding **per-category care text** so the persona handles it well (a fitness
+> persona that learns of a disordered-eating disclosure receives it *with* a no-precise-
+> numbers rule — which is the only configuration in which that persona is safe). Only the
+> narrow case where injection itself is the harm is **context-gated**: detailed crisis/
+> trauma is subtracted from conversations the user hasn't opened — decided from the
+> conversation (query + a short recent window), never persona-type heuristics — and the
+> gate **lifts the moment the user raises the topic** (no uncanny re-closing). A tiny
+> **write-side never-store** line (with K2) keeps means/method specifics out of the graph
+> entirely. The acceptance bar runs both ways: the protective cases hold **and** the
+> positive cases keep working (the tutor still adapts, the budget still includes the
+> disclosed medication) — over-gating fails the spec as surely as under-protection.
+> Migration-free; rides K0's existing `wellbeing_category` column.
+
+#### Added
+- **The versioned policy artifact (persona-core):** `persona.wellbeing_policy` — per-category
+  retrieval mode (share-with-care vs the narrow context-gated subset = self-harm / acute
+  crisis / abuse), the recency-weighted subtraction gate (a stronger gate for older,
+  unprompted material), and the never-store boundary. `persona.wellbeing_care_text` — the
+  per-category × recency care texts, versioned independently and authored against
+  disclaimer-compliance (a warning-then-numbers reply is a harm, not a pass).
+- **The runtime providers + the gate:** `persona_runtime.wellbeing` (the surfacing-guidance
+  provider for K3's slot, the allowlist provider for K1's subtraction, a lean explainable
+  topical-overlap scorer) and `graph_window` (the per-turn recent-conversation window the
+  gate reads, carried via a ContextVar set by every conversational loop — chat + voice).
+- **Two additive RLS-scoped graph-store reads** (`flagged_nodes`, `node_ids_for_owner`) — no
+  schema change (the `wellbeing_category` column already exists).
+- **The judged care-effectiveness eval** (three-way rubric: supportive-safe / harmful-
+  compliance / over-refusal-first-class) + a build-blocking human felt-quality operator-pass
+  charter, and an integration suite proving the gate end to end on the real stack.
+
+#### Changed
+- K3's reserved seams are filled (back-compat, defaulted): the surfacing slot now forwards
+  recency so care text is recency-weighted; the allowlist seam receives the per-turn gating
+  context. Every existing caller is byte-identical until a real provider is wired.
+
 ### Discord & Slack — reach your persona on two more chat apps (2026-06-28)
 
 > Close-out of `discord-slack-adapters` (Spec C3) — two **thin** DM adapters on the C1
