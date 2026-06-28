@@ -32,6 +32,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     Computed,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -574,6 +575,9 @@ audit_log = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Index("idx_audit_user", "user_id"),
     Index("idx_audit_created", "created_at"),
+    # (target, action) — the A3 budget effective-cap read sums budget.extended rows per task
+    # on the leg-boundary budget check; this keeps that lookup off a full audit_log scan (T10).
+    Index("idx_audit_target_action", "target", "action"),
 )
 
 # Spec 30 (D-30-3) — bring-your-own MCP servers. User-scoped (reusable across the
@@ -1079,4 +1083,121 @@ task_checkpoints = Table(
     CheckConstraint("checkpoint_seq >= 0", name="task_checkpoints_seq_nonneg"),
     UniqueConstraint("task_id", "checkpoint_seq", name="uq_task_checkpoints_task_seq"),
     Index("idx_task_checkpoints_owner", "owner_id"),
+)
+
+# Spec A3 — the durable approval artifacts (T5). Owner-scoped + RLS like every tenant table:
+# the gated leg records an exact proposal, the task parks waiting(on_user), the user's reply
+# becomes a decision, and an approved proposal is replayed verbatim. Budget lifecycle is NOT a
+# table here — it rides audit_log rows (action='budget.*'), and the cap lives on the contract
+# (ContractBounds.total_budget_micros) + SUM of budget.extended rows (A3-D-X-migration).
+approval_proposals = Table(
+    "approval_proposals",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("task_id", Text, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
+    Column("persona_id", Text, ForeignKey("personas.id", ondelete="CASCADE"), nullable=False),
+    Column("tool_name", Text, nullable=False),
+    # The EXACT recorded payload — replayed verbatim on approval, never re-derived by the model
+    # (A3-D-X-approved-execution). The human-readable rendering is `description`.
+    Column("arguments_json", _json(), nullable=False, server_default=text("'{}'")),
+    # The tool's resolved ActionCategory set that triggered the gate (a JSON array of strings).
+    Column("categories_json", _json(), nullable=False, server_default=text("'[]'")),
+    Column("description", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'pending'")),
+    # created_at drives the expiry sweep (A3-D-2); updated_at is the status-change time.
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # The remind-once marker (A3-D-2, T9): the sweep CASes it NULL→now so a 24h reminder fires
+    # exactly once; status stays 'pending' (the one-pending index is undisturbed).
+    Column("reminded_at", DateTime(timezone=True), nullable=True),
+    CheckConstraint(
+        "status IN ('pending','approved','denied','modified','expired','consumed')",
+        name="approval_proposals_status_valid",
+    ),
+    # The STRUCTURAL one-pending-per-task guarantee (criterion 4): the DB makes "two open
+    # proposals on one task" impossible. 'pending' is the sole open state — a material
+    # re-confirm updates the row in place rather than opening a second proposal.
+    Index(
+        "uq_one_pending_proposal_per_task",
+        "task_id",
+        unique=True,
+        postgresql_where=text("status = 'pending'"),
+    ),
+    Index("idx_approval_proposals_owner", "owner_id"),
+    Index("idx_approval_proposals_created", "created_at"),
+    # The composite-FK target for approval_decisions — pins a decision's denormalized owner_id
+    # to its proposal's owner (a decision can never reference a proposal owned by someone else).
+    UniqueConstraint("owner_id", "id", name="uq_approval_proposals_owner_id"),
+)
+
+# Append-only: a clarify-then-approve sequence keeps BOTH rows (the full audit trail,
+# criterion 9). owner_id is denormalized from the proposal for the RLS predicate (it must
+# always equal the proposal's owner — the WITH CHECK + the proposal's own scope keep them
+# aligned). edited_arguments_json is set iff type='modify' (the T3 pydantic model is the gate;
+# the column stays nullable, no DB CHECK).
+approval_decisions = Table(
+    "approval_decisions",
+    metadata,
+    Column("id", Text, primary_key=True, server_default=_uuid_pk),
+    Column("owner_id", Text, nullable=False),
+    Column("proposal_id", Text, nullable=False),
+    Column("type", Text, nullable=False),
+    Column("verbatim_reply", Text, nullable=False),
+    Column("channel", Text, nullable=False),
+    Column("edited_arguments_json", _json(), nullable=True),
+    Column("decided_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "type IN ('approve','deny','modify','clarify')", name="approval_decisions_type_valid"
+    ),
+    # The composite FK structurally pins owner_id to the proposal's owner (a cross-owner
+    # decision is impossible, not merely RLS-checked) and CASCADE-deletes with the proposal.
+    # owner_id's referential integrity to users is transitive via the proposal's own FK.
+    ForeignKeyConstraint(
+        ["owner_id", "proposal_id"],
+        ["approval_proposals.owner_id", "approval_proposals.id"],
+        ondelete="CASCADE",
+        name="fk_approval_decisions_proposal_owner",
+    ),
+    Index("idx_approval_decisions_owner", "owner_id"),
+    Index("idx_approval_decisions_proposal", "proposal_id"),
+)
+
+# Spec A3 — the kill switches (T11). Two independent pause sources at their natural levels, so
+# clearing one (budget's task `paused` overlay, T10) can never resume a task another source
+# holds (the reason-scoped runnable invariant): persona-suspend is owner-scoped + RLS;
+# global-pause is a single operational (ownerless) flag the worker consults before claiming.
+suspended_personas = Table(
+    "suspended_personas",
+    metadata,
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("persona_id", Text, ForeignKey("personas.id", ondelete="CASCADE"), nullable=False),
+    Column("suspended_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # Presence = suspended; the row is deleted on resume.
+    PrimaryKeyConstraint("owner_id", "persona_id", name="pk_suspended_personas"),
+)
+
+# Spec A3 — the cadence cap counter (T12). Per-persona/per-day count of *chatter* C0 messages;
+# the atomic conditional upsert never exceeds the cap. approval/failure/safety messages bypass
+# the cap entirely (never counted here). Owner-scoped + RLS.
+cadence_counters = Table(
+    "cadence_counters",
+    metadata,
+    Column("owner_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("persona_id", Text, ForeignKey("personas.id", ondelete="CASCADE"), nullable=False),
+    Column("day", Date, nullable=False),
+    Column("count", Integer, nullable=False, server_default=text("0")),
+    PrimaryKeyConstraint("owner_id", "persona_id", "day", name="pk_cadence_counters"),
+)
+
+# The platform-wide autonomy controls — operational, ownerless (the global "big red button":
+# stop claiming autonomy jobs platform-wide). NOT RLS-scoped (it is an operator control, not
+# tenant data); a single row keyed ``global_autonomy_paused`` the worker reads before claiming.
+platform_controls = Table(
+    "platform_controls",
+    metadata,
+    Column("key", Text, primary_key=True),
+    Column("enabled", Boolean, nullable=False, server_default=text("false")),
+    Column("actor", Text, nullable=True),  # who last toggled it (audit-on-the-row + the audit_log)
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )

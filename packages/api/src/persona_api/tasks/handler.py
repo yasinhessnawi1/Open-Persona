@@ -35,6 +35,7 @@ from persona_runtime.legs import BasicCheckpointWriter, LegExecutor
 
 if TYPE_CHECKING:
     from persona.jobs import JobContext, JobRegistry
+    from persona.tasks import Task
     from persona_runtime.legs import AgenticRunner, CheckpointWriter
 
     from persona_api.jobs.queue import JobQueue
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
 __all__ = [
     "TASK_LEG_JOB_TYPE",
     "LegRunnerBuilder",
+    "RunnableGuard",
     "TaskLegHandler",
     "TaskLegPayload",
     "enqueue_task_leg",
@@ -91,6 +93,16 @@ class LegRunnerBuilder(Protocol):
     def build(self, task_id: str, persona_id: str, box: LegBox) -> AgenticRunner: ...
 
 
+class RunnableGuard(Protocol):
+    """The A3 kill-switch guard the handler consults (the ``KillSwitchStore`` satisfies it).
+
+    ``is_runnable`` is the reason-scoped invariant: a task runs only when no pause source
+    (terminal / budget / persona-suspend / global-pause) holds it (T11).
+    """
+
+    def is_runnable(self, owner_id: str, task: Task) -> bool: ...
+
+
 class TaskLegHandler:
     """Runs one boxed leg as an A0 job; the checkpoint write rides the store CAS (A2-R-4)."""
 
@@ -103,6 +115,7 @@ class TaskLegHandler:
         continuation: TaskContinuation | None = None,
         writer: CheckpointWriter | None = None,
         box: LegBox | None = None,
+        runnable_guard: RunnableGuard | None = None,
     ) -> None:
         self._tasks = task_store
         self._checkpoints = checkpoint_store
@@ -110,14 +123,21 @@ class TaskLegHandler:
         self._continuation = continuation
         self._writer = writer if writer is not None else BasicCheckpointWriter()
         self._box = box if box is not None else LegBox()
+        # The A3 kill-switch guard (T11): persona-suspend / global-pause prevent the next leg
+        # (terminal/budget-paused are checked inline). Optional — a plain A2 worker wires none.
+        self._runnable_guard = runnable_guard
 
     async def handle(self, payload: TaskLegPayload, context: JobContext) -> None:
         owner = context.owner_id
         now = datetime.now(UTC)
         task = self._tasks.get(owner, payload.task_id)
 
-        # A stale job for a terminal/paused task → no leg (the task is done, or paused = no new
-        # legs). Cheap, and the standing guarantee that pause halts work (criterion 7).
+        # A stale job for a non-runnable task → no leg. Terminal = done; budget-paused = no new
+        # legs (criterion 7); the A3 kill-switch guard adds persona-suspend / global-pause. The
+        # standing guarantee that a stop halts work — the next leg is prevented here.
+        if self._runnable_guard is not None and not self._runnable_guard.is_runnable(owner, task):
+            _log.info("task leg skipped (kill switch)", task_id=task.id)
+            return
         if is_terminal(task.state) or task.paused:
             _log.info("task leg skipped (terminal/paused)", task_id=task.id, state=task.state.value)
             return
@@ -173,6 +193,7 @@ def register_task_leg_handler(
     continuation: TaskContinuation | None = None,
     writer: CheckpointWriter | None = None,
     box: LegBox | None = None,
+    runnable_guard: RunnableGuard | None = None,
 ) -> None:
     """Register the ``task_leg`` handler (A0's task tenant) with its declared idempotency."""
     registry.register(
@@ -186,6 +207,7 @@ def register_task_leg_handler(
                 continuation=continuation,
                 writer=writer,
                 box=box,
+                runnable_guard=runnable_guard,
             ),
             idempotency_key=task_leg_idempotency_key,
             retry=RetryPolicy(max_attempts=3),

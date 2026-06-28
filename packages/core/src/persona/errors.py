@@ -24,7 +24,9 @@ __all__ = [
     "ChannelUnreachableError",
     "CheckpointTooLargeError",
     "CreditsExhaustedError",
+    "ApprovalNotFoundError",
     "DuplicateJobTypeError",
+    "GatedActionProposedError",
     "InvalidRecurrenceRuleError",
     "JobStateError",
     "MCPBuiltinServerError",
@@ -138,6 +140,34 @@ class AuditWriteError(PersonaError):
 
 class ToolNotAllowedError(PersonaError):
     """Raised when a tool call targets a tool not in the persona's allow-list."""
+
+
+class ApprovalNotFoundError(PersonaError):
+    """Raised when an approval proposal/decision lookup misses (no oracle — A3 store reads)."""
+
+
+class GatedActionProposedError(PersonaError):
+    """Raised by the A3 ``PolicyGatedToolbox`` when an unattended leg hits a *gated* action.
+
+    The control-flow signal that ends a leg into ``waiting(on_user)`` (A3-D-X-gate-mechanism):
+    the wrapper records the :class:`persona.approvals.ActionProposal` durably, then raises
+    this so it propagates through the **unmodified** agentic loop (whose ``_dispatch`` catches
+    only :class:`ToolNotAllowedError` / :class:`ToolExecutionError`) to the A2 leg executor,
+    which catches it and maps it to a ``WAITING_APPROVAL`` disposition. Carries
+    ``context["proposal_id"]`` so the executor / continuation can drive the approval flow.
+
+    Lives in the central error module (not ``persona.tools`` or ``persona.approvals``) so the
+    raiser (approvals) and the catcher (runtime executor) share the type without a tools ↔
+    approvals import cycle (A3-D-X-import-boundary). A *gated* action raises; a *denied* one
+    does not — denial stays a recoverable ``ToolResult(is_error=True)`` the model adapts to.
+
+    Carries ``activity_status = "awaiting_approval"`` (the ActivityStatusCarrier seam): P2's
+    outer ``ObservedToolbox`` reads it to emit an awaiting-approval activity end before the
+    exception propagates (the merge-back composition — P2 outermost, A3 inner).
+    """
+
+    #: The activity-status marker P2's ObservedToolbox reads on an awaiting-approval gate.
+    activity_status: str = "awaiting_approval"
 
 
 class CalculatorError(PersonaError):

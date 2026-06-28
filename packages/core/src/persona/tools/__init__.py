@@ -36,6 +36,20 @@ from persona.tools.catalog import (
     known_tool_names,
     warn_unknown_declared_tools,
 )
+from persona.tools.categories import (
+    FREE_CATEGORIES,
+    GATED_BY_DEFAULT,
+    ActionCategory,
+    resolve_action_categories,
+    unmapped_catalog_tools,
+)
+from persona.tools.category_policy import (
+    DEFAULT_POLICY,
+    CategoryDecision,
+    CategoryPolicy,
+    CategoryRule,
+    default_decision,
+)
 from persona.tools.errors import (
     MCPConnectionError,
     MCPServerUnavailableError,
@@ -51,6 +65,17 @@ from persona.tools.protocol import AsyncTool, ToolDescriptor, tool
 from persona.tools.toolbox import Toolbox
 
 __all__ = [
+    # Action-category taxonomy + policy matrix (A3)
+    "ActionCategory",
+    "FREE_CATEGORIES",
+    "GATED_BY_DEFAULT",
+    "resolve_action_categories",
+    "unmapped_catalog_tools",
+    "CategoryDecision",
+    "CategoryPolicy",
+    "CategoryRule",
+    "DEFAULT_POLICY",
+    "default_decision",
     # Protocols + decorator
     "AsyncTool",
     "JSONLToolAuditLogger",

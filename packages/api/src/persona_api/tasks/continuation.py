@@ -85,6 +85,17 @@ class TaskContinuation:
             self._tasks.complete(owner_id, task.id, now=now)
             _log.info("task completed", task_id=task.id)
             return
+        if outcome.disposition == LegDisposition.WAITING_APPROVAL:
+            # A3 gate: the leg recorded a durable proposal and ended (no append). Park the task
+            # waiting(on_user) at zero cost — the user's reply resumes it. The C0 persona-voiced
+            # ask is wired in A3's approval orchestrator (T8); this is the state transition.
+            self.wait_on_user(owner_id, task.id, now=now)
+            _log.info(
+                "task waiting(on_user) — approval",
+                task_id=task.id,
+                proposal_id=outcome.proposal_id,
+            )
+            return
         if outcome.disposition == LegDisposition.FAILED:
             raise TaskLegFailedError("task leg failed; retry", context={"task_id": task.id})
         # CONTINUE — another leg follows this checkpoint.

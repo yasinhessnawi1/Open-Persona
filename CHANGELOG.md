@@ -11,6 +11,58 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Approvals, permissions & bounds — the autonomy safety spine (2026-06-28)
+
+> Close-out of `approvals-permissions`. Answers what a persona may do **when nobody is
+> watching** — and how it asks when the answer is "not without you." The architecture is
+> **approval-gated action**: tools declare **action categories** (`observe`/`compute`/`draft`/
+> `notify_user` free; `communicate_as_user`/`spend`/`external_mutate`/`credentialed_access`
+> gated by default); each task's contract sets per-category policy over conservative defaults; a
+> leg hitting a gated action records an **exact proposal**, the task → `waiting(on_user)`, the
+> user's natural-language reply routes back, and the task resumes — **approved replays the
+> proposal verbatim** (the model never re-derives), denied adapts. Around the gates: per-task
+> **budgets** (pause-at-cap + one-reply extend), **kill switches** (task/persona/global),
+> **expiry** (remind-once → auto-pause), **cadence caps** (chatter digests; approvals/failures
+> always pass), **failure honesty** (no path terminates without a C0 account), and the day-one
+> **asks-per-task** gate-fatigue metric. Built on A2's seams (`waiting(on_user)`/resume/CAS);
+> the agentic loop is composed **unmodified**. One migration (`approval_proposals` +
+> `approval_decisions` + kill-switch/cadence tables + an `audit_log` index); reuses C0/C1 for
+> the live channels.
+
+#### Added
+- **Action-category taxonomy + per-task policy** (`persona.tools.categories` /
+  `category_policy`, `mypy --strict`). Eight categories; the single authoritative
+  `resolve_action_categories` mapping (seeded from the tool catalog) with **registration-time
+  completeness enforcement** (unmapped / MCP tools default to the gated `external_mutate` — the
+  back-door closure); a sparse allow/gate/deny `CategoryPolicy` on the A4 contract. Network-
+  enabled `code_execution` escalates to `external_mutate` (bounded egress is still external
+  reach).
+- **The approval flow** (`persona.approvals` + `persona_api.approvals`). The `ActionProposal`
+  (exact verbatim payload) + `ApprovalDecision` records; a model-backed reply interpreter behind
+  a deterministic **floor** (`resolve_reply`: approve-only-on-confidence, deny-honoured,
+  clarify-once-then-deny, material-modify-re-confirms; NO/EN); the `PolicyGatedToolbox`
+  enforcement boundary (allow → run; deny → recoverable result; **gate → record proposal + raise
+  → `WAITING_APPROVAL`**, no loop edit); the resolver that **replays the exact payload** into a
+  resolution checkpoint with **two-layer at-most-once** (proposal CAS + checkpoint CAS).
+- **Bounds.** Per-task budgets over the A2 ledger (effective cap = contract bound + `SUM`
+  extensions; pause-at-cap + at-most-once one-reply extend); **kill switches** at three scopes
+  with the **reason-scoped runnable invariant** (independent pause sources — clearing one can't
+  resume a task another holds); approval **expiry** (remind-once at 24h, auto-pause at 72h,
+  leader-gated sweep); priority-classed **cadence caps** (chatter batches to the A6 digest seam;
+  approval/failure/safety always deliver); **failure-honesty** accounts (no silent failure,
+  exhaustively gated); the **asks-per-task** metric.
+- **Migration** `approvals_permissions` (`022`): `approval_proposals` (one-pending
+  partial-unique, the replay payload) + `approval_decisions` (composite-FK owner-pinned) +
+  `suspended_personas` + `platform_controls` + `cadence_counters`, owner-scoped RLS (operational
+  `platform_controls` excepted); an `audit_log(target, action)` index for the budget-extension
+  SUM. Budget/extension events ride `audit_log` (no table); the policy matrix rides
+  `contract_json` (no column).
+
+#### Notes
+- Zero new dependency. The agentic loop / drain / tick / synthesis are untouched (the gate is a
+  toolbox wrapper + an executor disposition). No chat-path regression — the chat `Toolbox` is
+  unchanged; gating is leg-only.
+
 ### MCP-as-apps — the built-in MCP catalog, reframed as "apps" (2026-06-28)
 
 > Close-out of `mcp-as-apps`. Users don't think "MCP servers and tools" — they

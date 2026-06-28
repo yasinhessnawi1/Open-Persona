@@ -135,6 +135,26 @@ class TaskStore:
         """Clear the ``paused`` overlay."""
         return self._transition(owner_id, task_id, "task.unpause", lambda t: t.unpause(now=now))
 
+    def cas_unpause(self, owner_id: str, task_id: str, *, now: datetime) -> bool:
+        """Atomically clear the ``paused`` overlay iff it is set (the A3 budget-extend gate).
+
+        ``UPDATE ... SET paused=false WHERE id=:id AND paused=true`` — exactly one of two
+        concurrent un-pauses wins (the DB serialises the row); the loser sees rowcount 0. This
+        is the at-most-once gate the A3 budget extension keys on, so a duplicated extension
+        reply cannot double-extend (only the un-pause winner applies the budget bump). Returns
+        whether this call cleared the overlay.
+        """
+        with rls_connection(self._engine, owner_id) as conn:
+            result = conn.execute(
+                update(tasks_t)
+                .where(tasks_t.c.id == task_id, tasks_t.c.paused.is_(True))
+                .values(paused=False, updated_at=now)
+            )
+        if result.rowcount != 1:
+            return False
+        self._audit(owner_id, "task.unpause", self.get(owner_id, task_id))
+        return True
+
     # --- internals ----------------------------------------------------------
 
     def _transition(

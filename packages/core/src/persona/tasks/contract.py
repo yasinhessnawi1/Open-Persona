@@ -17,7 +17,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from persona.tools.category_policy import (  # noqa: TC001 — Pydantic needs runtime access
+    DEFAULT_POLICY,
+    CategoryPolicy,
+)
 
 __all__ = [
     "AcceptanceCriterion",
@@ -89,3 +94,7 @@ class Contract(BaseModel):
     scope: str = ""
     acceptance_criteria: tuple[AcceptanceCriterion, ...] = ()
     bounds: ContractBounds = ContractBounds()
+    # The A3 per-task permission matrix (A4 authors; A3 enforces). Defaults to the
+    # conservative seed (free categories allow, gated-by-default categories gate) so an
+    # unconfigured task is bounded; rides ``contract_json``, no migration column.
+    category_policy: CategoryPolicy = Field(default=DEFAULT_POLICY)

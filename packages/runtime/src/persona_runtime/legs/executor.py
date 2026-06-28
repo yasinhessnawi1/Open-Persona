@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
+from persona.errors import GatedActionProposedError
 from persona.tasks import (
     LegBox,
     SpendKind,
@@ -71,12 +72,15 @@ class LegDisposition(StrEnum):
 
     ``CONTINUE`` — the leg hit its box / max-steps / was drain-cancelled: another leg
     resumes from the checkpoint. ``COMPLETED`` — the leg reached ``[FINAL]``. ``FAILED`` —
-    the run errored.
+    the run errored. ``WAITING_APPROVAL`` — a gated action was proposed (A3): the leg ended
+    with **no checkpoint, no execution**; the task parks ``waiting(on_user)`` until the user
+    decides (A3-D-X-gate-mechanism).
     """
 
     CONTINUE = "continue"
     COMPLETED = "completed"
     FAILED = "failed"
+    WAITING_APPROVAL = "waiting_approval"
 
 
 @dataclass(frozen=True)
@@ -85,25 +89,33 @@ class LegOutcome:
 
     Attributes:
         task: The post-append task (head advanced + ledger accrued), or the durable task
-            on a re-delivery no-op.
-        checkpoint: The checkpoint written this leg.
-        run: The agentic run (status, steps, output) — the durable run record T7 links.
-        disposition: What the outcome implies (continue / completed / failed).
+            on a re-delivery no-op / a gate (unadvanced).
+        checkpoint: The checkpoint written this leg — ``None`` on a ``WAITING_APPROVAL`` gate
+            (the leg ended before producing one).
+        run: The agentic run (status, steps, output) — the durable run record T7 links;
+            ``None`` on a ``WAITING_APPROVAL`` gate (the run raised before returning).
+        disposition: What the outcome implies (continue / completed / failed / waiting_approval).
         box_limit: Which box bound tripped (``None`` if the run ended on its own).
-        spend: The per-kind spend metered for this leg (accrued into the ledger).
+        spend: The per-kind spend metered for this leg (accrued into the ledger). Empty on a
+            gate — the partial pre-gate model spend is not ledgered (no ``Run`` to meter; the
+            proposal is the value).
         resume_at: A timed-wait directive — when set, the task should go
             ``waiting(until_time)`` and the continuation is scheduled for this instant (a
             "re-check in 4h" leg). ``None`` (the v1 basic path) → an immediate continuation;
             the model-backed distiller sets it when the leg decides to wait (T11).
+        proposal_id: The recorded :class:`~persona.approvals.ActionProposal` id on a
+            ``WAITING_APPROVAL`` gate (the durable referent the approval flow resumes against);
+            ``None`` otherwise.
     """
 
     task: Task
-    checkpoint: TaskCheckpoint
-    run: Run
+    checkpoint: TaskCheckpoint | None
+    run: Run | None
     disposition: LegDisposition
     box_limit: LegBoxLimit | None
     spend: Mapping[SpendKind, int]
     resume_at: datetime | None = None
+    proposal_id: str | None = None
 
 
 class AgenticRunner(Protocol):
@@ -292,7 +304,23 @@ class LegExecutor:
         token = external_cancel if external_cancel is not None else CancelToken()
         watcher = _BoxWatcher(effective_box, token, clock=self._clock)
 
-        run = await self._runner.run(task_str, on_event=watcher.on_event, cancel_token=token)
+        try:
+            run = await self._runner.run(task_str, on_event=watcher.on_event, cancel_token=token)
+        except GatedActionProposedError as exc:
+            # A3 gate (A3-D-X-gate-mechanism): the PolicyGatedToolbox recorded the proposal
+            # durably BEFORE raising, then the exception propagated through the unmodified loop
+            # to here. The leg made no checkpoint progress and executed nothing — park the task
+            # waiting(on_user) against the recorded proposal (the continuation drives the C0
+            # ask, T8). No append, no spend ledgered (no Run to meter).
+            return LegOutcome(
+                task=task,
+                checkpoint=None,
+                run=None,
+                disposition=LegDisposition.WAITING_APPROVAL,
+                box_limit=watcher.box_limit,
+                spend={},
+                proposal_id=exc.context.get("proposal_id"),
+            )
 
         leg_id = f"{task.id}:leg:{effective_seq}"
         checkpoint = self._writer.write(

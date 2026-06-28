@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
+from persona.errors import GatedActionProposedError
 from persona.tasks import (
     Contract,
     LegBox,
@@ -142,6 +143,29 @@ def _task() -> Task:
 
 def _executor(runner, sink, clock) -> LegExecutor:  # noqa: ANN001
     return LegExecutor(runner=runner, writer=BasicCheckpointWriter(), sink=sink, clock=clock)
+
+
+class _GatingRunner:
+    """Mimics the loop raising ``GatedActionProposedError`` on a gated tool dispatch (A3, T7).
+
+    The PolicyGatedToolbox recorded the proposal durably before raising; the exception then
+    propagates through the (unmodified) loop to ``run_leg``. We model that by raising mid-run.
+    """
+
+    def __init__(self, proposal_id: str) -> None:
+        self._proposal_id = proposal_id
+
+    async def run(
+        self,
+        task: str,  # noqa: ARG002 — part of the runner contract
+        *,
+        on_event: Callable[[RunEvent], Awaitable[None]],
+        cancel_token: CancelToken,  # noqa: ARG002 — part of the runner contract
+    ) -> Run:
+        await on_event(RunEvent.thinking(0))
+        raise GatedActionProposedError(
+            "gated action awaiting approval", context={"proposal_id": self._proposal_id}
+        )
 
 
 # --- reconstruction rendering ------------------------------------------------
@@ -280,3 +304,23 @@ async def test_checkpoint_written_with_metered_spend() -> None:
     assert spend == {SpendKind.MODEL: 300}
     assert outcome.task.head_checkpoint_seq == 0
     assert outcome.task.ledger.model_micros == 300
+
+
+# --- A3 gate → WAITING_APPROVAL (no append, no execution) --------------------
+
+
+@pytest.mark.asyncio
+async def test_gate_yields_waiting_approval_and_does_not_append() -> None:
+    clock = _FakeClock()
+    sink = _RecordingSink()
+    outcome = await _executor(_GatingRunner("prop_abc"), sink, clock).run_leg(
+        task=_task(), trigger=_TRIGGER, now=_NOW
+    )
+    assert outcome.disposition is LegDisposition.WAITING_APPROVAL
+    assert outcome.proposal_id == "prop_abc"  # the durable referent to resume against
+    # The leg made no checkpoint progress and ledgered nothing — the proposal is the value.
+    assert outcome.checkpoint is None
+    assert outcome.run is None
+    assert outcome.spend == {}
+    assert sink.calls == []  # the sink was never touched (no append, no double-write)
+    assert outcome.task.head_checkpoint_seq is None  # task unadvanced
