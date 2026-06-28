@@ -169,7 +169,7 @@ def pg_engine(database_url: str) -> Iterator[Engine]:
     engine.dispose()
 
 
-def _migrate_to_head(database_url: str) -> None:
+def _migrate_to_head(database_url: str, *, evict_stale: bool = False) -> None:
     """``DROP SCHEMA public CASCADE`` + ``alembic upgrade head`` + grant persona_app.
 
     Builds the full schema (tables, indexes, RLS ENABLE/FORCE + policies) and
@@ -177,6 +177,28 @@ def _migrate_to_head(database_url: str) -> None:
     session start by :func:`_session_migrated_db`, and again as a self-repair
     if a migration test (which manipulates the shared schema directly) left it
     away from head.
+
+    ``evict_stale`` (session-start ONLY): before ``DROP SCHEMA``, terminate
+    leftover *idle* backends on the test DB. A prior integration run that was
+    killed mid-test (e.g. the 120s pytest-timeout, or Ctrl-C) leaves its pooled
+    :func:`persona_api.middleware.rls_context.make_rls_engine` connections alive
+    on the shared throwaway DB (test fixtures ``yield`` those engines without
+    disposing — they only die on GC, which a hard kill skips). Those orphans
+    still hold catalog snapshots / object locks, so the next session's
+    ``DROP SCHEMA public CASCADE`` + ``alembic upgrade head`` races a stale
+    catalog → the ``pg_type_typname_nsp_index`` duplicate-key / partial-schema /
+    ``relation … does not exist`` cascade this fixture exists to prevent. Evicting
+    only ``idle`` orphans (never ``active`` / ``idle in transaction``) at session
+    start — BEFORE this session opens any pool of its own — is safe because no
+    in-session connection is idle yet; the only idle backends are the dead run's.
+
+    TRADEOFF / POLICY: two integration suites pointed at ONE test DB at the same
+    time is unsupported — the per-test ``TRUNCATE`` in :func:`migrated_engine`
+    would corrupt the other run's data regardless of this eviction. Isolate the
+    test DB per worktree (each run gets its own ``…_test`` DB). This eviction
+    heals the common *sequential* case (a crashed run, then a fresh one); it does
+    NOT make concurrent runs correct. ``evict_stale`` defaults False so the
+    mid-session self-repair call path never kills this session's own live pools.
     """
     from pathlib import Path
 
@@ -187,6 +209,19 @@ def _migrate_to_head(database_url: str) -> None:
     engine = create_engine(database_url)
     api_dir = Path(__file__).resolve().parents[1]
     try:
+        if evict_stale:
+            # Fresh connection, run before DROP SCHEMA. ``pg_backend_pid()``
+            # excludes this very connection; ``state = 'idle'`` excludes any
+            # busy backend (a concurrent run mid-statement / mid-transaction is
+            # left untouched — only abandoned, between-checkout orphans go).
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND pid <> pg_backend_pid() AND state = 'idle'"
+                    )
+                )
         with engine.begin() as conn:
             conn.execute(text("DROP SCHEMA public CASCADE"))
             conn.execute(text("CREATE SCHEMA public"))
@@ -352,7 +387,12 @@ def _session_migrated_db(database_url: str) -> Iterator[Engine]:
     from sqlalchemy.exc import OperationalError
 
     try:
-        _migrate_to_head(database_url)
+        # Session start: evict idle orphan backends left by a crashed/killed
+        # prior run on this shared throwaway DB before the rebuild (see
+        # _migrate_to_head's evict_stale docstring). Safe here only — no
+        # in-session pool exists yet. The mid-session self-repair call in
+        # migrated_engine deliberately omits it (would kill this run's pools).
+        _migrate_to_head(database_url, evict_stale=True)
     except OperationalError as exc:
         pytest.skip(f"Postgres unreachable at DATABASE_URL: {exc}")
     engine = create_engine(database_url)
