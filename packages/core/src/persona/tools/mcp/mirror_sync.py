@@ -89,6 +89,7 @@ def parse_server_yaml(name: str, data: Mapping[str, Any]) -> MCPServerCatalogEnt
         source = data.get("source") or {}
         run = data.get("run") or {}
         config = data.get("config") or {}
+        remote = data.get("remote") or {}  # the hosted endpoint for type:remote servers (N4)
         secrets = tuple(
             MCPSecretField(
                 name=str(s["name"]),
@@ -108,6 +109,7 @@ def parse_server_yaml(name: str, data: Mapping[str, Any]) -> MCPServerCatalogEnt
                 "icon_url": str(about.get("icon", "")),
                 "image": str(data.get("image", "")),
                 "server_type": _coerce_server_type(data.get("type")),
+                "remote_url": str(remote.get("url", "")),
                 "source_project": str(source.get("project", "")),
                 "source_commit": str(source.get("commit", "")),
                 "allow_hosts": tuple(str(h) for h in (run.get("allowHosts") or ())),

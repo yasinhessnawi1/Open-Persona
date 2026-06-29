@@ -94,6 +94,30 @@ def test_parse_server_yaml_maps_docker_display_metadata() -> None:
     assert entry.risk == "medium"
 
 
+def test_parse_server_yaml_captures_remote_url_for_remote_servers() -> None:
+    # Spec N4: a type:remote server's hosted endpoint (remote.url) is the catalog's
+    # trust anchor for WHERE an adopted app connects (N4-D-X-catalog-remote-url).
+    data = {
+        "type": "remote",
+        "about": {"title": "Notion (Remote)", "description": "Hosted Notion MCP."},
+        "remote": {"url": "https://mcp.notion.com/mcp", "transport_type": "streamable-http"},
+    }
+    entry = parse_server_yaml("notion-remote", data)
+    assert entry is not None
+    assert entry.server_type == "remote"
+    assert entry.remote_url == "https://mcp.notion.com/mcp"
+
+
+def test_parse_server_yaml_local_server_has_empty_remote_url() -> None:
+    # A local-container (type:server) entry has no remote endpoint → remote_url stays ""
+    # → not v1-adoptable (consistent with N4-D-2's local-container deferral).
+    data = {"type": "server", "about": {"title": "Local"}, "image": "ghcr.io/x/y"}
+    entry = parse_server_yaml("local-x", data)
+    assert entry is not None
+    assert entry.server_type == "server"
+    assert entry.remote_url == ""
+
+
 def test_parse_server_yaml_skips_malformed_structure() -> None:
     # `about` as a scalar (not a mapping) is malformed → skip (return None), never raise.
     assert parse_server_yaml("broken", {"about": "not-a-mapping"}) is None

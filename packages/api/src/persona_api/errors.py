@@ -43,6 +43,8 @@ __all__ = [
     "ConcurrencyCappedError",
     "ConversationNotFoundError",
     "CreditsExhaustedError",
+    "MCPAppAlreadyAdoptedError",
+    "MCPAppNotAdoptableError",
     "MCPCredentialError",
     "MCPServerNotFoundError",
     "MCPServerValidationError",
@@ -178,6 +180,24 @@ class MCPCredentialError(PersonaError):
     """
 
 
+class MCPAppNotAdoptableError(PersonaError):
+    """Raised when a persona may not self-adopt a catalog app (→ 403; Spec N4, N4-D-6).
+
+    The vetted-set gate refused the entry BEFORE any write (fail-closed): it is not a
+    ``type: remote`` app with a ``remote_url`` (local-container / deferred, N4-D-2), or —
+    in cloud — it is not in the operator allowlist (``PERSONA_MCP_ADOPT_VETTED``). Nothing
+    was written or assigned. ``context`` names the app; never a secret.
+    """
+
+
+class MCPAppAlreadyAdoptedError(PersonaError):
+    """Raised when the caller already has a server by this app's name (→ 409; Spec N4).
+
+    A clear conflict (not a 500): re-adopting an app the user already set up. Update or
+    remove the existing server first. ``context`` names the app; never a secret.
+    """
+
+
 class ModelBackendUnavailableError(PersonaError):
     """No usable model backend for a model-required write path (→ 503; R1-D-2).
 
@@ -297,6 +317,23 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "mcp_credential_unavailable",
                 exc.message or "credential encryption is not configured",
                 exc.context,
+            ),
+        )
+
+    @app.exception_handler(MCPAppNotAdoptableError)
+    async def _mcp_app_not_adoptable_403(_: Request, exc: MCPAppNotAdoptableError) -> JSONResponse:
+        # N4-D-6 vetted gate refused the app (fail-closed; nothing written).
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content=_body("mcp_app_not_adoptable", exc.message or "app not adoptable", exc.context),
+        )
+
+    @app.exception_handler(MCPAppAlreadyAdoptedError)
+    async def _mcp_app_conflict_409(_: Request, exc: MCPAppAlreadyAdoptedError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=_body(
+                "mcp_app_already_adopted", exc.message or "app already adopted", exc.context
             ),
         )
 

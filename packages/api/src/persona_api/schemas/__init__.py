@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from persona_api.schemas.requests import (
+    AdoptCatalogAppRequest,
     AuthorPersonaRequest,
     ChannelContext,
     CreateConversationRequest,
@@ -63,6 +64,7 @@ __all__ = [
     "ConversationDetail",
     "ConversationSummary",
     "CreateConversationRequest",
+    "AdoptCatalogAppRequest",
     "CreateMCPServerRequest",
     "CreatePersonaRequest",
     "CreditsResponse",

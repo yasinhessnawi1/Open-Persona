@@ -599,6 +599,11 @@ user_mcp_servers = Table(
     Column("enabled", Boolean, nullable=False, server_default=text("true")),
     # Cached tool list from eager discovery on add/test (D-30-5); refreshed lazily.
     Column("discovered_tools", _json()),
+    # Provenance (Spec N4, N4-D-9): the catalog entry name a self-extension adoption
+    # came from (e.g. ``notion-remote``); NULL = a manually-added BYO server. Additive,
+    # nullable — the pre-N4 BYO path is byte-identical with this NULL. Used for the
+    # vetted-set check (N4-D-6) + an honest "self-extended" UI marker; carries no secret.
+    Column("catalog_source", Text),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     # No duplicate server names per user (the name keys the mcp:<name>: prefix).

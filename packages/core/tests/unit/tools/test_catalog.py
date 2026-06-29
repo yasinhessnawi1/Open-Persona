@@ -35,6 +35,7 @@ class TestCatalogShape:
             "text_diff",
             "currency_convert",
             "text_summarize",
+            "mcp_search",
         ],
     )
     def test_expected_tools_present(self, name: str) -> None:

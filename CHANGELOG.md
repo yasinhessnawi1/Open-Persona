@@ -11,6 +11,49 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Persona MCP Self-Extension — in-role, credential-isolated app adoption (2026-06-29)
+
+> Close-out of `persona-mcp-self-extension` (Spec N4, backend). A persona that hits an
+> **in-role task it has no tool for** no longer dead-ends: it can **discover** a relevant app
+> in the mirrored catalog, **propose** it to the user in plain language, and — once the user
+> **approves and supplies the setup** — **use** it. Two hard constraints define the shape, and
+> both are proven, not asserted: self-extension is **bounded** (in-role + user-approved, never
+> silent) and the credential is **isolated** end-to-end (user → encrypted store → MCP; the
+> persona's LLM context never contains it).
+>
+> The load-bearing insight: N4 does **not** build the credential read/inject mechanism — it
+> **reuses** the proven Spec-30 bring-your-own path (Fernet-at-rest → transient-decrypt →
+> inject at the transport hop), because a shared connect-only gateway structurally cannot vary
+> a per-user secret. v1 therefore covers **remote-endpoint apps**; local-container per-user
+> secrets are a documented deferral.
+
+#### Added
+- **`mcp_search` built-in tool** (`persona-core`) — searches the mirrored catalog by capability,
+  returning candidate apps (friendly name, what-it-does, requirement **names only, never a
+  secret value**). Keyword-ranked, hard-capped; a semantic-rerank seam is left for later.
+- **Gap-detection prompting** — a capability-gated system-prompt block guiding the persona to
+  reach for `mcp_search` only on in-role gaps and to **propose, not act**. Safety rests on the
+  hard gates (mandatory approval + per-persona allow-list), not the prose.
+- **Catalog-app adoption** — `POST /v1/personas/{id}/adopted-apps`: owner-scoped, vetted-gated,
+  derives the connection url/auth from the catalog entry (the trust anchor for *where* it
+  connects) and takes the credential only via a redacted body field; encrypts it at rest and
+  assigns the app to the persona.
+- **Vetted-set policy** (`adoption_policy`) — community adopts any remote app; cloud is gated to
+  an operator allowlist (`PERSONA_MCP_ADOPT_VETTED`, empty = deny-all, fail-closed), enforced at
+  both the grant and `mcp_search` boundaries, scoped to catalog adoption only.
+- **Migration `023`** — additive nullable `user_mcp_servers.catalog_source` (adoption provenance).
+- **Adversarial credential-isolation proof** — drives a real prompt-injection through the live
+  agentic loop with a fully-complying model; a five-channel sweep proves the credential is
+  **structurally absent** from the model's context (criterion 3 is impossibility, not refusal).
+
+#### Notes
+- **Config:** `PERSONA_MCP_ADOPT_VETTED` (cloud adopt allowlist). Credential encryption reuses the
+  existing `MCP_CREDENTIAL_KEY` — no second key.
+- **Response shape:** `MCPServerDetail` gains `catalog_source`; a new `AdoptCatalogAppRequest` + the
+  adopt route are added (web OpenAPI client regen at merge-back).
+- **Deferred:** the OAuth authorization-code handoff and per-user-gateway local-container secrets
+  (documented scope cuts); the web setup form follows in a short pass against the regenerated client.
+
 ### Skill-injection trust foundation — any skill is safe to inject (2026-06-29)
 
 > Close-out of `skill-injection-trust` (Spec S1). Skills are **prompt content the

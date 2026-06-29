@@ -20,6 +20,7 @@ from persona.tools.builtin.datetime import make_datetime_tool
 from persona.tools.builtin.file_read import make_file_read_tool
 from persona.tools.builtin.file_write import make_file_write_tool
 from persona.tools.builtin.json_query import make_json_query_tool
+from persona.tools.builtin.mcp_search import make_mcp_search_tool
 from persona.tools.builtin.regex_match import make_regex_match_tool
 from persona.tools.builtin.text_diff import make_text_diff_tool
 from persona.tools.builtin.web_fetch import make_web_fetch_tool
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
     from persona.schema.persona import Persona
     from persona.tools._sandbox import SandboxRootProvider
     from persona.tools.audit import ToolAuditLogger
+    from persona.tools.mcp.catalog import MCPCatalog
     from persona.tools.protocol import AsyncTool
     from persona.tools.workspace_persister import WorkspacePersister
 
@@ -94,6 +96,7 @@ async def build_default_toolbox(
     extra_mcp_servers: dict[str, str] | None = None,
     extra_mcp_clients: list[MCPClient] | None = None,
     file_sandbox_root: SandboxRootProvider | None = None,
+    mcp_search_catalog: MCPCatalog | None = None,
 ) -> tuple[Toolbox, list[MCPClient]]:
     """Compose a Toolbox for the given persona.
 
@@ -174,6 +177,11 @@ async def build_default_toolbox(
         make_regex_match_tool(),
         make_json_query_tool(),
         make_text_diff_tool(),
+        # Spec N4 — self-extension: discover apps for an in-role capability gap.
+        # Searches the mirrored catalog (display metadata only; never a secret). The api
+        # passes the edition-vetted catalog (N4-D-6 search-boundary mirror); None →
+        # default mirror (CLI / community-equivalent).
+        make_mcp_search_tool(catalog=mcp_search_catalog),
         make_currency_convert_tool(
             provider_name=config.currency_provider,
             api_key=(

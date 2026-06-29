@@ -104,6 +104,10 @@ _TOOL_CATEGORIES: dict[str, frozenset[ActionCategory]] = {
     "file_read": frozenset({ActionCategory.OBSERVE}),
     "datetime": frozenset({ActionCategory.OBSERVE}),
     "currency_convert": frozenset({ActionCategory.OBSERVE}),
+    # mcp_search (Spec N4) — reads the catalog's display metadata to find candidate
+    # apps; enables nothing, touches no secret, has no outside effect → free. (The
+    # adopted mcp:* tools it surfaces are gated separately, N4-D-8.)
+    "mcp_search": frozenset({ActionCategory.OBSERVE}),
     # compute — analysis / transformation that stays inside the workspace.
     "code_execution": frozenset({ActionCategory.COMPUTE}),
     "calculator": frozenset({ActionCategory.COMPUTE}),

@@ -43,6 +43,7 @@ from persona.tools import (
     make_render_diagram_tool,
     make_text_summarize_tool,
 )
+from persona.tools.mcp.mirror import load_mirror_catalog
 from persona_runtime.agentic.loop import AgenticLoop
 from persona_runtime.loop import ConversationLoop
 from persona_runtime.prompt import PromptBuilder
@@ -53,6 +54,7 @@ from sqlalchemy import select
 from persona_api.db.models import personas as personas_t
 from persona_api.editions import MeteredCreditsPolicy
 from persona_api.mcp import BuiltinMCPSupervisor
+from persona_api.mcp.adoption_policy import vetted_catalog_for_search
 from persona_api.sandbox import make_pool_code_execution_tool
 from persona_api.services.workspace_persister import WorkspaceDirPersister
 
@@ -66,6 +68,7 @@ if TYPE_CHECKING:
     from persona.stores.backend import Backend
     from persona.stores.embedder import Embedder
     from persona.stores.protocol import MemoryStore
+    from persona.tools.mcp.catalog import MCPCatalog
     from persona.tools.mcp.client import MCPClient
     from persona_runtime.logging import TurnLogWriter
     from persona_runtime.prompt import GraphContext
@@ -537,9 +540,26 @@ class RuntimeFactory:
             extra_mcp_servers=builtin_mcp_servers or None,
             extra_mcp_clients=byo_clients or None,
             file_sandbox_root=file_sandbox_root,
+            mcp_search_catalog=self._mcp_search_catalog(),
         )
         self._mcp_clients.extend(mcp_clients)
         return toolbox
+
+    def _mcp_search_catalog(self) -> MCPCatalog | None:
+        """The edition-vetted catalog ``mcp_search`` may surface (N4-D-6 search mirror).
+
+        Filters the mirror to the adoptable set so the persona never proposes an app it
+        cannot adopt: cloud → the operator-vetted remote subset (empty allowlist → empty),
+        community → every remote-with-url entry. ``None`` when there is no APIConfig (the
+        CLI / test path) → ``build_default_toolbox`` falls back to the default mirror.
+        """
+        if self._api_config is None:
+            return None
+        return vetted_catalog_for_search(
+            edition=self._api_config.edition,
+            vetted=self._api_config.mcp_adopt_vetted_list,
+            catalog=load_mirror_catalog(),
+        )
 
     def _build_file_sandbox_root_provider(
         self, persona_id: str | None

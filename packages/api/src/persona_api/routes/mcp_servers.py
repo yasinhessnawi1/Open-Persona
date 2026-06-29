@@ -14,12 +14,13 @@ from persona_api.auth import AuthenticatedUser, get_current_user
 from persona_api.mcp import store as mcp_store
 from persona_api.middleware.rate_limit import rate_limit
 from persona_api.schemas import (
+    AdoptCatalogAppRequest,
     CreateMCPServerRequest,
     MCPServerDetail,
     MCPServerTestResult,
     UpdateMCPServerRequest,
 )
-from persona_api.services import audit_service
+from persona_api.services import adoption_service, audit_service
 
 router = APIRouter(prefix="/v1", tags=["mcp"])
 
@@ -187,6 +188,42 @@ async def assign_mcp_server(
         action="mcp.server_assign",
         target=f"{persona_id}:{server_id}",
     )
+
+
+@router.post(
+    "/personas/{persona_id}/adopted-apps",
+    response_model=MCPServerDetail,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit("default"))],
+)
+async def adopt_catalog_app(
+    persona_id: str,
+    body: AdoptCatalogAppRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> MCPServerDetail:
+    """Self-adopt a catalog app for a persona (Spec N4, B2-③).
+
+    Owner-scoped (the persona must be the caller's → 404) and vetted (N4-D-6 → 403),
+    both BEFORE any write. The connection url/auth are derived from the catalog entry
+    (N4-D-10); the caller supplies only ``credential`` (a ``repr=False`` field, encrypted
+    at rest, never returned/logged). The audit records name + provenance only.
+    """
+    detail = adoption_service.adopt_catalog_app(
+        rls_engine=request.app.state.rls_engine,
+        config=request.app.state.config,
+        owner_id=user.id,
+        persona_id=persona_id,
+        catalog_name=body.catalog_name,
+        credential=body.credential,
+    )
+    audit_service.record(
+        engine=request.app.state.rls_engine,
+        user_id=user.id,
+        action="mcp.app_adopt",
+        target=f"{persona_id}:{detail['catalog_source']}",
+    )
+    return MCPServerDetail(**detail)
 
 
 @router.delete(

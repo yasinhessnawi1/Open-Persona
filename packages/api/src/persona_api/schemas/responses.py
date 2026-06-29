@@ -543,6 +543,10 @@ class MCPServerDetail(_Output):
     enabled: bool
     has_credential: bool
     discovered_tools: list[str] | None = None
+    # Adoption provenance (Spec N4, N4-D-9): the catalog entry a self-extension adoption
+    # came from (e.g. ``notion-remote``), or ``None`` for a manually-added BYO server.
+    # Display metadata for the "self-extended" marker — never a secret.
+    catalog_source: str | None = None
     created_at: datetime
     updated_at: datetime
 

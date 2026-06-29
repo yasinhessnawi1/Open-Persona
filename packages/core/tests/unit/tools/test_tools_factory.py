@@ -194,6 +194,7 @@ class TestBuildDefaultToolboxBasics:
         # The spec-03 originals plus the spec-26 additions are all advertised.
         assert {"web_search", "web_fetch", "file_read", "file_write"}.issubset(names)
         assert "calculator" in names  # spec 26 T01
+        assert "mcp_search" in names  # spec N4 — self-extension discovery tool
 
     @pytest.mark.asyncio
     async def test_returned_tools_satisfy_async_tool(self, tmp_path: Path) -> None:
@@ -477,3 +478,36 @@ class TestSpec26BuiltinsWired:
         # Registered AND advertised to the model when the persona allows it.
         assert tool_name in toolbox.names()
         assert tool_name in [s.name for s in toolbox.get_specs()]
+
+
+class TestMcpSearchCatalogWiring:
+    """Spec N4 B2-②: build_default_toolbox threads a catalog into mcp_search (the
+    search-boundary mirror — the api injects the edition-vetted catalog here)."""
+
+    @pytest.mark.asyncio
+    async def test_mcp_search_catalog_param_filters_what_mcp_search_surfaces(
+        self, tmp_path: Path
+    ) -> None:
+        from persona.schema.tools import ToolCall
+        from persona.tools.mcp.catalog import MCPCatalog, MCPServerCatalogEntry
+
+        vetted = MCPCatalog(
+            servers={
+                "notion-remote": MCPServerCatalogEntry(
+                    name="notion-remote",
+                    description="Hosted Notion MCP.",
+                    kind="external",
+                    risk="low",
+                    server_type="remote",
+                    remote_url="https://mcp.notion.com/mcp",
+                    keywords=("notion",),
+                )
+            }
+        )
+        config = PersonaCoreConfig(tools_sandbox_root=tmp_path)
+        persona = _persona(tools=["mcp_search"])
+        toolbox, _ = await build_default_toolbox(config, persona, mcp_search_catalog=vetted)
+        result = await toolbox.dispatch(ToolCall(name="mcp_search", args={"query": "notion"}))
+        assert result.data is not None
+        # mcp_search searched the INJECTED vetted catalog, not the default mirror.
+        assert [r["name"] for r in result.data["results"]] == ["notion-remote"]

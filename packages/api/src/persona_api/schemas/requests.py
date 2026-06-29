@@ -207,6 +207,19 @@ class CreateMCPServerRequest(_Input):
     credential: str | None = Field(default=None, max_length=4096, repr=False)
 
 
+class AdoptCatalogAppRequest(_Input):
+    """Self-adopt a catalog app for a persona (Spec N4, the B2-③ setup-form target).
+
+    The connection ``url`` and ``auth_method`` are derived from the catalog entry
+    server-side (N4-D-10 — the catalog is the trust anchor for *where* it connects); the
+    caller supplies ONLY ``credential`` (when the app declares a secret). ``credential`` is
+    ``repr=False`` (redacted in logs), encrypted at rest via the store, and NEVER returned.
+    """
+
+    catalog_name: str = Field(min_length=1, max_length=128)
+    credential: str | None = Field(default=None, max_length=4096, repr=False)
+
+
 class UpdateMCPServerRequest(_Input):
     """Patch a BYO MCP server (spec 30). All fields optional; omitted = unchanged.
 

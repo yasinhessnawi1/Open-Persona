@@ -146,6 +146,19 @@ TOOL_CATALOG: tuple[ToolCatalogEntry, ...] = (
         runtime_wired=True,
         keywords=("summarize", "summarise", "tl;dr", "give a summary"),
     ),
+    # -- data: app discovery (spec N4) --
+    ToolCatalogEntry(
+        name="mcp_search",
+        description="Search the catalog of installable apps for one that fills a capability gap.",
+        category="data",
+        keywords=(
+            "find an app",
+            "search for a tool",
+            "is there an integration",
+            "what apps can",
+            "connect to",
+        ),
+    ),
     # -- data (spec 26) --
     ToolCatalogEntry(
         name="json_query",

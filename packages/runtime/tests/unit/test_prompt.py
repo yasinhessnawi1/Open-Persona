@@ -435,3 +435,32 @@ class TestFileWorkspaceConventions:
         conventions_pos = system.index("persists across the task")
         footer_pos = system.index("Stay in character.")
         assert conventions_pos < footer_pos
+
+
+class TestMcpSearchGuidance:
+    """The N4 gap-detection prompt block — capability-gated on ``mcp_search``."""
+
+    def _system(self, builder: PromptBuilder, *, tools: list[str]) -> str:
+        return builder.build(
+            _persona(tools=tools),
+            RetrievedContext(),
+            history=[],
+            skill_index="",
+            user_message="q",
+            max_tokens=8000,
+        )[0].content
+
+    def test_guidance_present_when_mcp_search_granted(self, builder: PromptBuilder) -> None:
+        system = self._system(builder, tools=["mcp_search"])
+        assert "mcp_search" in system
+        # the in-role bound + propose-don't-act posture is the load-bearing content
+        assert "in-role" in system.lower() or "within your role" in system.lower()
+        assert "propose" in system.lower()
+
+    def test_guidance_absent_without_mcp_search(self, builder: PromptBuilder) -> None:
+        system = self._system(builder, tools=["web_search"])
+        assert "mcp_search" not in system
+
+    def test_guidance_before_footer(self, builder: PromptBuilder) -> None:
+        system = self._system(builder, tools=["mcp_search"])
+        assert system.index("mcp_search") < system.index("Stay in character.")

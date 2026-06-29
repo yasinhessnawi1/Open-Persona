@@ -122,6 +122,11 @@ class MCPServerCatalogEntry(BaseModel):
         image: Container image reference (``image``), e.g. ``ghcr.io/...``.
         server_type: Docker taxonomy (``type``) — ``"server"`` / ``"remote"`` for
             mirror entries; defaults to ``"builtin"`` for the bundled rows.
+        remote_url: The hosted endpoint URL for a ``type="remote"`` server (from
+            ``server.yaml`` ``remote.url``) — the catalog's **trust anchor for where an
+            adopted app connects** (Spec N4, N4-D-X-catalog-remote-url). Empty for
+            local-container / builtin entries (no remote endpoint) → not v1-adoptable
+            (consistent with N4-D-2's local-container deferral). Never a secret.
         source_project: Upstream repo URL (``source.project``) — provenance.
         source_commit: 40-char commit pin (``source.commit``) — reproducibility /
             provenance trust labeling.
@@ -148,6 +153,7 @@ class MCPServerCatalogEntry(BaseModel):
     icon_url: str = ""
     image: str = ""
     server_type: MCPServerType = "builtin"
+    remote_url: str = ""
     source_project: str = ""
     source_commit: str = ""
     signed: bool = False

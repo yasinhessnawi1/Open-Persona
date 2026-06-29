@@ -98,6 +98,23 @@ _FILE_WORKSPACE_CONVENTIONS = (
     "uploaded; read it with file_read first."
 )
 
+# MCP self-extension gap-detection block (Spec N4, N4-D-4). Capability-gated —
+# emitted only when the persona has ``mcp_search`` in its allow-list. The soft
+# in-role bound + over-reach guard live here; the HARD gates (mandatory user
+# approval before adoption + the per-persona allow-list) carry the actual safety,
+# so this guidance can stay short. Reinforces credential isolation (criterion 3):
+# the persona never handles the secret — the user supplies it directly at setup.
+_MCP_SEARCH_GUIDANCE = (
+    "If a task is within your role but you have no tool for it, you can call "
+    "mcp_search to discover an app (integration) that would help — search by what "
+    "you need to do. Only reach for it for in-role tasks; never seek capabilities "
+    "beyond your described role. mcp_search only finds candidates — it enables "
+    "nothing. When you find a fit, propose it to the user in plain language (what it "
+    "is, what it would let you do, what setup it needs) and let them decide. The user "
+    "provides any required credential themselves during setup — never ask for, "
+    "handle, or repeat a secret."
+)
+
 
 class DocumentInjection(BaseModel):
     """A single attached document's whole-text payload for prompt injection.
@@ -600,6 +617,13 @@ class PromptBuilder:
         # line of the system block.
         if "code_execution" in persona.tools:
             parts.append(_PRODUCED_FILES_VERIFICATION)
+
+        # 8b. MCP self-extension gap-detection (N4-D-4). Capability-gated on the
+        # ``mcp_search`` allow-list entry: tells the persona WHEN to reach for the
+        # discovery tool (in-role gaps only) and to propose-not-act. Sits before the
+        # footer so the footer stays the final line of the system block.
+        if "mcp_search" in persona.tools:
+            parts.append(_MCP_SEARCH_GUIDANCE)
 
         # 9. Footer.
         parts.append(_FOOTER)

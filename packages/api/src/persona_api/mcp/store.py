@@ -64,6 +64,9 @@ def _to_detail(row: dict[str, Any]) -> dict[str, Any]:
         "enabled": bool(row["enabled"]),
         "has_credential": row["credentials_encrypted"] is not None,
         "discovered_tools": row["discovered_tools"],
+        # Adoption provenance (Spec N4, N4-D-9): the catalog entry an adoption came from,
+        # or None for a manually-added BYO server. NOT a secret — display metadata only.
+        "catalog_source": row.get("catalog_source"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -117,8 +120,14 @@ def create_server(
     url: str,
     auth_method: str,
     credential: str | None,
+    catalog_source: str | None = None,
 ) -> dict[str, Any]:
-    """Create a BYO MCP server (SSRF-validated, credential encrypted). Returns the detail."""
+    """Create a BYO MCP server (SSRF-validated, credential encrypted). Returns the detail.
+
+    ``catalog_source`` (Spec N4, N4-D-9) records the catalog entry a self-extension
+    adoption came from; ``None`` (the default) marks a manually-added BYO server, keeping
+    the pre-N4 call sites byte-identical. It is provenance metadata — never a secret.
+    """
     assert_url_allowed(url)  # eager SSRF gate (https + public target)
     encrypted = _encrypt_credential(config, auth_method, credential)
     with rls_engine.begin() as conn:
@@ -131,6 +140,7 @@ def create_server(
                     url=url,
                     auth_method=auth_method,
                     credentials_encrypted=encrypted,
+                    catalog_source=catalog_source,
                 )
                 .returning(*servers_t.c)
             )

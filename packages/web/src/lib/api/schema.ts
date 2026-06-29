@@ -1014,6 +1014,31 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/personas/{persona_id}/adopted-apps": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Adopt Catalog App
+     * @description Self-adopt a catalog app for a persona (Spec N4, B2-③).
+     *
+     *     Owner-scoped (the persona must be the caller's → 404) and vetted (N4-D-6 → 403),
+     *     both BEFORE any write. The connection url/auth are derived from the catalog entry
+     *     (N4-D-10); the caller supplies only ``credential`` (a ``repr=False`` field, encrypted
+     *     at rest, never returned/logged). The audit records name + provenance only.
+     */
+    post: operations["adopt_catalog_app_v1_personas__persona_id__adopted_apps_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1041,6 +1066,21 @@ export interface components {
       stream_events?: {
         [key: string]: unknown;
       }[];
+    };
+    /**
+     * AdoptCatalogAppRequest
+     * @description Self-adopt a catalog app for a persona (Spec N4, the B2-③ setup-form target).
+     *
+     *     The connection ``url`` and ``auth_method`` are derived from the catalog entry
+     *     server-side (N4-D-10 — the catalog is the trust anchor for *where* it connects); the
+     *     caller supplies ONLY ``credential`` (when the app declares a secret). ``credential`` is
+     *     ``repr=False`` (redacted in logs), encrypted at rest via the store, and NEVER returned.
+     */
+    AdoptCatalogAppRequest: {
+      /** Catalog Name */
+      catalog_name: string;
+      /** Credential */
+      credential?: string | null;
     };
     /**
      * ArtifactItem
@@ -1682,6 +1722,8 @@ export interface components {
       has_credential: boolean;
       /** Discovered Tools */
       discovered_tools?: string[] | null;
+      /** Catalog Source */
+      catalog_source?: string | null;
       /**
        * Created At
        * Format: date-time
@@ -3603,6 +3645,41 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  adopt_catalog_app_v1_personas__persona_id__adopted_apps_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        persona_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AdoptCatalogAppRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MCPServerDetail"];
+        };
       };
       /** @description Validation Error */
       422: {

@@ -246,6 +246,14 @@ class APIConfig(BaseSettings):
         default=None, validation_alias="MCP_CREDENTIAL_KEY", repr=False
     )
 
+    # Spec N4 (N4-D-6) — the cloud operator-vetted set a persona may self-adopt from the
+    # mirrored catalog. Comma-separated catalog entry names. Community ignores this (any
+    # ``type: remote`` entry is adoptable — the user owns the trust choice). Cloud honors
+    # it as an allowlist; the **empty default is deny-all (fail-closed)** — nothing is
+    # catalog-adoptable in cloud until the operator vets it. Scopes ONLY catalog-discovered
+    # adoption (mcp_search → adopt); never the existing built-in/Spec-27/N3 grant path.
+    mcp_adopt_vetted: str = Field(default="", validation_alias="PERSONA_MCP_ADOPT_VETTED")
+
     # Memory embedding (D-08-8).
     embedder_model: str = "BAAI/bge-small-en-v1.5"
 
@@ -338,3 +346,8 @@ class APIConfig(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """The CORS-allowed origins as a list (empty disables CORS)."""
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def mcp_adopt_vetted_list(self) -> list[str]:
+        """The cloud operator-vetted catalog names a persona may self-adopt (N4-D-6)."""
+        return [n.strip() for n in self.mcp_adopt_vetted.split(",") if n.strip()]

@@ -119,6 +119,16 @@ class TestBackDoorClosure:
             assert cats == {ActionCategory.EXTERNAL_MUTATE}
             assert not cats <= FREE_CATEGORIES
 
+    def test_n4_adopted_app_tool_resolves_to_a_gated_category(self) -> None:
+        # Spec N4 (N4-D-8 rider): a self-adopted app's tool — absent from any explicit mapping —
+        # MUST resolve to a GATED category so A3 gates its autonomous invocation (the credentialed
+        # third-party tool can't run free unattended). The A3 back-door closure satisfies this for
+        # every ``mcp:*`` name; this pins the N4↔A3 contract explicitly for an adopted app.
+        for adopted in ("mcp:notion-remote:search", "mcp:linear:create_issue"):
+            cats = resolve_action_categories(adopted)
+            assert cats & GATED_BY_DEFAULT, f"{adopted} must gate"
+            assert not cats <= FREE_CATEGORIES
+
 
 class TestRegistrationEnforcement:
     def test_every_catalog_tool_is_explicitly_mapped(self) -> None:

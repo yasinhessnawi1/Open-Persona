@@ -40,8 +40,6 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-_APP_URL = os.environ.get("APP_DATABASE_URL")
-
 _PERSONA_YAML = """\
 schema_version: "1.0"
 identity:
@@ -174,10 +172,15 @@ def test_rls_isolation_blocks_cross_tenant(
     (the request-path role). Seeds A's server as superuser, then queries as B and
     as A through the app engine.
     """
-    if not _APP_URL:
+    # Read APP_DATABASE_URL LAZILY (not the module-level import-time capture): the
+    # per-worktree DB-isolation conftest rewrites it to this worktree's isolated
+    # ``persona_test_<worktree>`` AFTER module import, so the app-role engine must query
+    # the SAME (migrated) DB the superuser seeds into — not the stale shared ``persona_test``.
+    app_url_raw = os.environ.get("APP_DATABASE_URL")
+    if not app_url_raw:
         pytest.skip("APP_DATABASE_URL (the non-superuser persona_app role) not set")
     monkeypatch.setattr(mcp_store, "assert_url_allowed", lambda _url: None)
-    app_url = _APP_URL.replace("+asyncpg", "+psycopg")
+    app_url = app_url_raw.replace("+asyncpg", "+psycopg")
     su_url = migrated_engine.url.render_as_string(hide_password=False)
     su_engine = make_rls_engine(su_url)
     app_engine = make_rls_engine(app_url, pool_size=2)
