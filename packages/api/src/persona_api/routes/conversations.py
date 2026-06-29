@@ -101,6 +101,12 @@ async def get_conversation(
                 channel=m.get("channel"),
                 # Spec 35 D-35-2: persisted routing tier for the per-message chip.
                 tier_used=cast("str | None", m.get("tier_used")),
+                # Spec P3 (P3-D-2): project the persisted ordered rich event log
+                # (P1's ``stream_events`` column) so the frontend reconstructs the
+                # interleaved view. Reuses the existing reattach-surface coercion;
+                # an empty/NULL column collapses to ``None`` → text-only render
+                # (byte-exact back-compat, criterion 5).
+                events=_coerce_stream_events(m.get("stream_events")) or None,
             )
             for m in messages
         ],

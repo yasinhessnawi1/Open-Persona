@@ -11,6 +11,59 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Durable rich chat history — rich turns survive refresh, switch, and reconnect (2026-06-29)
+
+> Close-out of `durable-rich-chat-history`. A live chat turn renders an interleaved
+> view — text spans, tool-call cards, tool results, produced files, charts, images
+> — but on the read/reconstruct side **only text used to survive**: a refresh, a
+> conversation switch, or a mid-stream reconnect flattened a rich turn to plain
+> text. This persists nothing new — the assistant turn's **ordered rich event log
+> is already captured** durably at terminal (the resumable-turn checkpoint writes
+> it to `messages.stream_events`). The fix is **read + reconstruct**: the
+> conversation `GET` now returns that log as `events`, and the web rebuilds the
+> **identical interleaved view** on initial load and on reload via one shared
+> reducer. **No migration** — it reuses the one existing log rather than adding a
+> second, parallel source of truth.
+>
+> Reconstruction folds the persisted log through the **same reducer the live stream
+> uses** (`reduceChatEvent`), so the live event union and the persisted shape
+> cannot drift — guarded by a two-sided contract test (the frontend live-equivalence
+> test + an API-side envelope-shape test pinning every persisted payload against the
+> keys the reducer reads). The two previously divergent text-only history maps
+> (initial-load builder + `reload()`) are replaced by one `persistedToView` mapper.
+>
+> One documented graceful degradation: the per-turn **model-decision (`routing`) and
+> budget chrome** are not in the persisted log (they ride only the live `done`
+> frame), so on reload the tier chip survives but those finer chips do not — the same
+> degradation class as legacy text-only rows; the interleaved rich content is
+> unaffected.
+
+#### Added
+- **`events` on the conversation history response** — `GET /v1/conversations/{id}`
+  now returns each message's persisted ordered rich event log (text spans +
+  `tool_call`/`tool_result` carrying `kind`, args, result content, and
+  artifact/produced-file **refs**), projected from the existing
+  `messages.stream_events` checkpoint. `null` on user/tool rows and legacy /
+  non-streamed assistant rows → byte-exact text-only render (back-compat).
+- **`persistedToView` + a shared `reduceChatEvent` reducer** (web) — reconstructs
+  the interleaved view from the persisted log; used on both initial page load and
+  reload. The live SSE path folds through the same reducer (one source of truth,
+  anti-drift).
+- **Two-sided anti-drift contract test** — frontend live-equivalence (persisted log
+  → byte-identical view to live frames) + an API-side envelope-shape test pinning
+  every persisted RunEvent-dump payload (tool_calling / tool_result+artifacts /
+  activity / asking_user / memory_recall) and the text-delta entry against the keys
+  the reducer consumes.
+
+#### Changed
+- **`reload()` hardening** — it now reconstructs the rich interleaved view (was:
+  flattened to text), so the resumable-turn reconcile and post-reconnect recovery
+  preserve tool cards / artifacts instead of dropping them (the "rich content
+  sometimes disappears by itself" bug). A transient mid-stream disconnect now routes
+  through reattach (the detached server turn may still be running) rather than a
+  blind reload, and reload preserves an already-rendered rich turn when the persisted
+  log is absent (legacy rows).
+- Regenerated `openapi.json` + `schema.ts` for the new `events` field.
 ### Voice capability parity — tools, artifacts, and the preview panel in a call (2026-06-28)
 
 > Close-out of `voice-capability-parity`. A voice call is no longer talk-only: the persona

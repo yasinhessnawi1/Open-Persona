@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/auth";
 import type { ChatMessageView } from "@/components/chat/message-element";
-import { reduceActivityEnd, reduceActivityStart } from "@/lib/activity";
 import { ApiError, createApiClient, unwrap } from "@/lib/api/client";
 import type { components } from "@/lib/api/schema";
+import { persistedToView, reduceChatEvent } from "@/lib/chat/reduce-chat-event";
 import { consumeSSE, type RawSSEEvent } from "@/lib/sse";
 import type { ProactiveProposal } from "@/lib/sse-types";
 import { parseChatEvent } from "@/lib/sse-types";
@@ -52,138 +52,11 @@ function applyTurnFrame(raw: RawSSEEvent, patch: Patch): "ok" | "error" {
   if (raw.event === "error") return "error";
   const ev = parseChatEvent(raw);
   if (!ev) return "ok";
-  if (ev.event === "thinking") {
-    // The model is generating this round — show a "working" pulse during the gap
-    // before any text/tool event (notably while writing a long code_execution
-    // call). Cleared by the next chunk / tool_calling.
-    patch((a) => ({ ...a, working: true }));
-  } else if (ev.event === "chunk") {
-    patch((a) => ({
-      ...a,
-      working: false,
-      content: a.content + ev.data.delta,
-      events: [
-        ...(a.events ?? []),
-        { kind: "text", delta: ev.data.delta } as const,
-      ],
-    }));
-  } else if (ev.event === "tool_calling") {
-    patch((a) => ({
-      ...a,
-      working: false,
-      tools: [
-        ...(a.tools ?? []),
-        ...ev.data.tool_calls.map((c) => ({
-          toolName: c.name,
-          args: c.args,
-          pending: true,
-          // Spec 30 T01 (D-30-1): the source badge the card renders.
-          kind: c.kind,
-        })),
-      ],
-      events: [
-        ...(a.events ?? []),
-        ...ev.data.tool_calls.map(
-          (c) =>
-            ({
-              kind: "tool_call",
-              callId: c.call_id,
-              toolName: c.name,
-              args: c.args,
-              toolKind: c.kind,
-            }) as const,
-        ),
-      ],
-    }));
-  } else if (ev.event === "tool_result") {
-    patch((a) => {
-      const tools = [...(a.tools ?? [])];
-      for (let i = tools.length - 1; i >= 0; i--) {
-        if (tools[i].toolName === ev.data.tool_name && tools[i].pending) {
-          tools[i] = {
-            ...tools[i],
-            result: ev.data.content,
-            isError: ev.data.is_error,
-            pending: false,
-            // Prefer the result frame's kind; keep the call's if absent.
-            kind: ev.data.kind ?? tools[i].kind,
-          };
-          break;
-        }
-      }
-      return {
-        ...a,
-        tools,
-        events: [
-          ...(a.events ?? []),
-          {
-            kind: "tool_result",
-            toolName: ev.data.tool_name,
-            content: ev.data.content,
-            isError: ev.data.is_error,
-            toolKind: ev.data.kind,
-            // F4 T02b: forward structured produced_files when the runtime
-            // amendment surfaces them. Renders inline via the OutputDispatcher in
-            // MessageElement (T10). Absent on pre-amendment frames + tools that
-            // don't produce files.
-            producedFiles: ev.data.produced_files,
-            // Spec 28: forward persisted artifacts (the unified FileCard path;
-            // preferred over produced_files downstream).
-            artifacts: ev.data.artifacts,
-          } as const,
-        ],
-      };
-    });
-  } else if (ev.event === "activity_start") {
-    // P2: open the live "using <X>…" state — a SEPARATE channel from `tools` (the card
-    // stays sourced from tool_result during keep-both, P2-D-3). Idempotent on the
-    // reattach replay (dedup by activity_id).
-    patch((a) => ({
-      ...a,
-      working: false,
-      activities: reduceActivityStart(a.activities, ev.data),
-    }));
-  } else if (ev.event === "activity_end") {
-    // P2: resolve the matching live state by activity_id (no-op if no start seen).
-    patch((a) => ({
-      ...a,
-      activities: reduceActivityEnd(a.activities, ev.data),
-    }));
-  } else if (ev.event === "asking_user") {
-    // Spec 30 (D-30-2): the chat-proactive-question rail. The shared loop emits
-    // this for a tool-gap / MCP-gap consent offer (the question prose also
-    // streamed as chunks above). Attach the interactive prompt to the assistant
-    // turn so the rail renders inline; `proposal` (when present) carries the
-    // accept→grant→retry descriptor.
-    patch((a) => ({
-      ...a,
-      proactive: {
-        question: ev.data.question,
-        options: ev.data.options,
-        allowFreeForm: ev.data.allow_free_form,
-        proposal: ev.data.proposal,
-      },
-    }));
-  } else if (ev.event === "memory_recall") {
-    // Spec 35 (D-35-4): the "thinking / remembering" state — one frame per typed
-    // store consulted while composing.
-    patch((a) => ({
-      ...a,
-      recall: [
-        ...(a.recall ?? []),
-        { store: ev.data.store, count: ev.data.count },
-      ],
-    }));
-  } else if (ev.event === "done") {
-    // Spec 31 (D-31-1/2): carry the model decision + budget snapshot alongside
-    // the tier (both absent on rule-based turns ⇒ undefined).
-    patch((a) => ({
-      ...a,
-      tier: ev.data.tier,
-      routing: ev.data.routing,
-      budget: ev.data.budget,
-    }));
-  }
+  // Spec P3 (P3-D-3): the live path folds through the SAME pure `reduceChatEvent`
+  // the persisted-log reconstruction uses — one reducer, so the live union and the
+  // persisted shape cannot drift. The reduction logic is unchanged from the old
+  // inline body (verified byte-identical render).
+  patch((a) => reduceChatEvent(a, ev));
   return "ok";
 }
 
@@ -218,6 +91,12 @@ export function useChat(
   // Spec P1: the active turn's fetch controller — aborted on unmount so a
   // navigate-away stops the stream WITHOUT cancelling the detached server turn.
   const abortRef = useRef<AbortController | null>(null);
+  // Spec P3 (P3-D-5b): a ref mirror of `streaming`, so the reattach in-flight
+  // guard reads the CURRENT value synchronously. `send`'s disconnect-recovery
+  // calls reattach from its catch right after `setStreaming(false)` — the state
+  // update hasn't re-rendered yet, so a guard on the `streaming` state closure
+  // would still read `true` and bail. The ref is set imperatively at those seams.
+  const streamingRef = useRef(false);
   // Latest `reattach`, so `send`'s 409 path + the mount effect call it without a
   // dependency cycle / re-running on every `streaming` toggle.
   const reattachRef = useRef<() => Promise<void>>(async () => {});
@@ -229,6 +108,7 @@ export function useChat(
   // turn keeps running server-side); the provider's poll clears it on completion.
   const { registerChat, unregisterChat } = useActiveWork();
   useEffect(() => {
+    streamingRef.current = streaming;
     if (streaming) registerChat({ conversationId, personaId });
     else unregisterChat(conversationId);
   }, [streaming, conversationId, personaId, registerChat, unregisterChat]);
@@ -246,13 +126,39 @@ export function useChat(
         params: { path: { conversation_id: conversationId } },
       }),
     );
-    setMessages(
-      conv.messages.map((m) => ({
-        id: m.id,
-        role: m.role,
-        content: m.content,
-      })),
-    );
+    // Read the history SYNCHRONOUSLY here (not inside the setMessages updater): a
+    // failed/empty GET throws on THIS line, where it rejects the `reload` promise
+    // and is swallowed by the caller's `.catch` — instead of throwing later inside
+    // React's render (uncatchable, crashes the hook).
+    const incoming = conv.messages;
+    // Spec P3 (P3-D-4/5a): reconstruct the interleaved view from the persisted
+    // ordered log via the SHARED `persistedToView` — the one mapper that replaced
+    // the old two divergent text-only maps. This is what makes a refresh /
+    // conversation-switch / reconnect-reconcile reproduce the rich turn instead of
+    // flattening it to text (the "disappears by itself" bug). On the P1 reattach
+    // reconcile (stream end) this STRICTLY IMPROVES the old behaviour — the
+    // authoritative final still wins, it just no longer drops the rich content.
+    setMessages((prev) => {
+      const prevById = new Map(prev.map((m) => [m.id, m]));
+      return incoming.map((m) => {
+        // P3-D-5b merge-not-replace: when the persisted log is absent (legacy /
+        // NULL row) but we already hold a rich in-memory turn for this id, KEEP
+        // the rich version rather than overwriting it with the text-only render.
+        // (A just-streamed turn always has `events`, so this guards mixed
+        // histories — the literal "preserve already-rendered rich turns" rule.)
+        if (!m.events || m.events.length === 0) {
+          const prevMsg = prevById.get(m.id);
+          if (
+            prevMsg &&
+            ((prevMsg.events?.length ?? 0) > 0 ||
+              (prevMsg.tools?.length ?? 0) > 0)
+          ) {
+            return prevMsg;
+          }
+        }
+        return persistedToView(m);
+      });
+    });
   }, [conversationId, token]);
 
   const send = useCallback(
@@ -289,6 +195,7 @@ export function useChat(
         },
       ]);
       setStreaming(true);
+      streamingRef.current = true;
 
       const patch: Patch = (fn) =>
         setMessages((m) => m.map((msg) => (msg.id === asstId ? fn(msg) : msg)));
@@ -323,12 +230,19 @@ export function useChat(
         }
         patch((a) => ({ ...a, streaming: false, working: false }));
         setStreaming(false);
+        streamingRef.current = false;
       } catch (e) {
         // Navigate-away aborts the fetch — the detached turn keeps running; do
         // NOT mark the turn failed or reload (the next mount reattaches).
         if ((e as Error)?.name === "AbortError") return;
         setStreaming(false);
+        streamingRef.current = false;
         patch((a) => ({ ...a, streaming: false, working: false }));
+        // Release THIS turn's controller now so the recovery reattach below isn't
+        // bailed by the in-flight guard (the `finally` also clears it — harmless
+        // double; clearing here is what makes the 409 + disconnect reattach reach
+        // the active-turn check instead of no-op'ing on a stale controller).
+        if (abortRef.current === ctrl) abortRef.current = null;
         // A 409 means a turn is already active for this conversation (one-active-
         // turn): reattach to it rather than showing an error.
         if (e instanceof ApiError && e.status === 409) {
@@ -336,21 +250,30 @@ export function useChat(
           return;
         }
         setError(true);
-        // Other mid-stream failures (network) → recover from persisted history.
-        // A clean ApiError (e.g. 429) keeps the optimistic turn so it can retry.
-        if (!(e instanceof ApiError)) await reload().catch(() => {});
+        // Spec P3 (P3-D-5b) — true-disconnect-only recovery: a non-ApiError throw
+        // is a transport disconnect, and the detached server turn may STILL be
+        // running (P1). Route through reattach — resubscribe to the live tail if
+        // it's live; if it already finished, the active-turn 404 falls through to
+        // reattach's now-rich reconcile (`reload` via `persistedToView`). A clean
+        // ApiError (e.g. 429) is NOT a disconnect — keep the optimistic turn so it
+        // can retry (no reload, no reattach).
+        if (!(e instanceof ApiError))
+          await reattachRef.current().catch(() => {});
       } finally {
         if (abortRef.current === ctrl) abortRef.current = null;
       }
     },
-    [conversationId, streaming, token, reload],
+    [conversationId, streaming, token],
   );
 
   // Spec P1 — reattach to a live turn on mount/return. Detect via
   // `GET …/active-turn` (404 ⇒ nothing live), mark the assistant turn streaming,
   // resubscribe to the live tail, then reconcile via persisted history on end.
   const reattach = useCallback(async () => {
-    if (streaming || abortRef.current) return;
+    // P3-D-5b: guard on the ref (not the `streaming` state closure) so a reattach
+    // invoked from `send`'s disconnect catch — right after `setStreaming(false)`,
+    // before the re-render — sees the current value instead of a stale `true`.
+    if (streamingRef.current || abortRef.current) return;
     const jwt = await token();
     let active: {
       message_id: string;
@@ -372,6 +295,7 @@ export function useChat(
     const asstId = active.message_id;
 
     setStreaming(true);
+    streamingRef.current = true;
     // Seed: mark the in-progress assistant row (already present from the
     // server-fetched history) as streaming. Its content is the persisted
     // checkpoint; the live tail APPENDS new deltas, and the reconcile on end
@@ -413,19 +337,25 @@ export function useChat(
       }
       patch((a) => ({ ...a, streaming: false, working: false }));
       setStreaming(false);
+      streamingRef.current = false;
       // Reconcile: the persisted final is authoritative (covers the throttled-
-      // checkpoint seed boundary). Never resume the raw SSE.
+      // checkpoint seed boundary). Never resume the raw SSE. Spec P3 (P3-D-5a):
+      // `reload` now reconstructs the rich interleaved view via `persistedToView`,
+      // so this reconcile PRESERVES tool cards / artifacts instead of flattening
+      // the just-tailed turn to text — the must-not-regress guard for the P1
+      // reattach reconcile.
       await reload().catch(() => {});
     } catch (e) {
       if ((e as Error)?.name === "AbortError") return; // unmount; turn keeps running
       setStreaming(false);
+      streamingRef.current = false;
       patch((a) => ({ ...a, streaming: false, working: false }));
-      // 404 ⇒ the turn finished between detect and tail; reconcile.
+      // 404 ⇒ the turn finished between detect and tail; reconcile (now rich).
       await reload().catch(() => {});
     } finally {
       if (abortRef.current === ctrl) abortRef.current = null;
     }
-  }, [conversationId, streaming, token, reload]);
+  }, [conversationId, token, reload]);
 
   // Keep the ref pointing at the latest `reattach` (closes over current state).
   reattachRef.current = reattach;

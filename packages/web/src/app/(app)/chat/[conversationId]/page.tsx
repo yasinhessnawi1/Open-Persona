@@ -10,6 +10,7 @@ import { CallControl } from "@/components/voice/call-control";
 import { CallRecap } from "@/components/voice/call-recap";
 import { unwrap } from "@/lib/api";
 import { serverApi } from "@/lib/api/server";
+import { persistedToView } from "@/lib/chat/reduce-chat-event";
 import { parsePersonaYaml } from "@/lib/persona";
 import { personaIdentityStyle } from "@/lib/persona-identity";
 
@@ -64,15 +65,15 @@ export default async function ChatPage({
     constraint,
   };
 
-  const initialMessages: ChatMessageView[] = conv.messages.map((m) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    // Spec 35 D-35-2: the persisted routing tier, so the per-message tier chip
-    // renders on a reloaded conversation (not just the live turn). Null on
-    // historical / non-assistant rows ⇒ no chip (clean degrade).
-    tier: m.tier_used ?? undefined,
-  }));
+  // Spec P3 (P3-D-4): reconstruct the interleaved view from the persisted ordered
+  // log via the SHARED `persistedToView` — the single mapper that replaced the two
+  // divergent text-only maps (this initial-load builder + `reload()` in use-chat).
+  // A turn with tool cards / a chart / a file now reappears interleaved on initial
+  // page load, conversation-switch, and refresh; a legacy / NULL-`events` row
+  // degrades to the byte-exact text-only render (carrying `tier_used`, Spec 35).
+  const initialMessages: ChatMessageView[] = conv.messages.map((m) =>
+    persistedToView(m),
+  );
 
   return (
     <div className="flex h-[calc(100svh-3.5rem)] flex-col">

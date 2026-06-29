@@ -254,6 +254,22 @@ class MessageView(_Output):
     # user/system/tool rows and on assistant rows written before migration 010
     # (the chip degrades to "no chip" — never a wrong tier).
     tier_used: str | None = None
+    # Spec P3 (P3-D-1/2): the assistant turn's persisted ordered rich event log,
+    # projected from the ``messages.stream_events`` column (P1's checkpoint, made
+    # durable at terminal by ``MessagesTurnSink.finalize``). The frontend
+    # reconstructs the interleaved view (text spans + tool_call/tool_result cards +
+    # artifact refs) from it — see ``persistedToView``. Reusing P1's ONE log means
+    # no second source of truth (P3-D-1); the field is named ``events`` to decouple
+    # the API vocabulary from the column's P1-internal "checkpoint" name (P3-D-2).
+    # The shape is the persisted hybrid — RunEvent dumps (``{type, step, data,
+    # timestamp}``) interleaved with text deltas (``{kind, delta}``) — hand-mirrored
+    # in the web ``persistedToView`` mapper, the same as the SSE shapes (D-09-1;
+    # OpenAPI can't model it, so it is a loose dict-list pinned by the contract
+    # test, mirroring ``ActiveTurnResponse.stream_events``). **Null** on
+    # user/system/tool rows and on legacy/non-streamed assistant rows (NULL
+    # column) → byte-exact text-only render (criterion 5; the ``tier_used``
+    # nullable-additive precedent).
+    events: list[dict[str, object]] | None = None
 
 
 class ConversationDetail(_Output):

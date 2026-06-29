@@ -455,6 +455,84 @@ def test_tool_using_turn_emits_tool_events_and_real_tier(
     assert done["tier"] == "mid"
 
 
+def test_get_conversation_projects_stream_events_as_events(
+    client: tuple[TestClient, str, str],
+) -> None:
+    """P3 (P3-D-2): the history GET projects the persisted ordered log
+    (``messages.stream_events``) onto each assistant message's ``events`` field,
+    so a reloaded conversation can reconstruct the interleaved view. The shape is
+    the persisted hybrid — RunEvent dumps (``{type, step, data, timestamp}``)
+    interleaved with text deltas (``{kind: "text", delta}``) in emission order."""
+    import json
+
+    c, uid, persona_id = client
+
+    async def _build_tool_loop(_pid: str) -> _ToolUsingLoop:
+        return _ToolUsingLoop(tier="mid")
+
+    c.app.state.build_conversation_loop = _build_tool_loop  # type: ignore[attr-defined]
+    conv_id = _new_conversation(c, uid, persona_id)
+
+    resp = c.post(
+        f"/v1/conversations/{conv_id}/messages",
+        json={"content": "what does Norwegian tenancy law say?"},
+        headers=_auth(uid),
+    )
+    assert resp.status_code == 200
+    _ = _read_sse(resp.text)  # drain the stream so the turn finalizes
+
+    hist = c.get(f"/v1/conversations/{conv_id}", headers=_auth(uid)).json()
+    assistant = hist["messages"][1]
+    assert assistant["role"] == "assistant"
+
+    events = assistant["events"]
+    assert isinstance(events, list)
+    assert events, "assistant turn carries the persisted log"
+
+    # the RunEvent dumps for the tool call + result are present, in order
+    types = [e.get("type") for e in events if "type" in e]
+    assert "tool_calling" in types
+    assert "tool_result" in types
+    assert types.index("tool_calling") < types.index("tool_result")
+
+    tool_calling = next(e for e in events if e.get("type") == "tool_calling")
+    assert tool_calling["data"]["tool_calls"][0]["name"] == "web_search"
+    tool_result = next(e for e in events if e.get("type") == "tool_result")
+    assert tool_result["data"]["tool_name"] == "web_search"
+    assert tool_result["data"]["content"] == "results about husleieloven"
+
+    # the reply text rides as interleaved text deltas (the hybrid shape)
+    text_deltas = [e for e in events if e.get("kind") == "text"]
+    assert text_deltas, "text spans are persisted interleaved with the tool events"
+    assert "".join(e["delta"] for e in text_deltas) == "".join(
+        json.loads(d)["delta"] for e, d in _read_sse(resp.text) if e == "chunk"
+    )
+
+
+def test_legacy_null_stream_events_projects_events_none(
+    client: tuple[TestClient, str, str],
+) -> None:
+    """P3 (P3-D-2 / P3-D-8, criterion 5): a row with a NULL ``stream_events``
+    column projects ``events: null`` — the byte-exact text-only back-compat path
+    (the ``tier_used`` nullable-additive precedent). The user message row always
+    carries NULL ``stream_events`` (only assistant turns accumulate a log), so it
+    is the in-band proxy for a legacy/non-streamed row."""
+    c, uid, persona_id = client
+    conv_id = _new_conversation(c, uid, persona_id)
+    resp = c.post(
+        f"/v1/conversations/{conv_id}/messages", json={"content": "hi"}, headers=_auth(uid)
+    )
+    assert resp.status_code == 200
+    _ = _read_sse(resp.text)
+
+    hist = c.get(f"/v1/conversations/{conv_id}", headers=_auth(uid)).json()
+    user_msg = hist["messages"][0]
+    assert user_msg["role"] == "user"
+    # NULL column → events is null (text-only degrade); the rest is unchanged.
+    assert user_msg["events"] is None
+    assert user_msg["content"] == "hi"
+
+
 def test_no_tool_turn_done_tier_reflects_router_choice(
     client: tuple[TestClient, str, str],
 ) -> None:

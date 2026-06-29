@@ -1730,6 +1730,12 @@ export interface components {
       } | null;
       /** Tier Used */
       tier_used?: string | null;
+      /** Events */
+      events?:
+        | {
+            [key: string]: unknown;
+          }[]
+        | null;
     };
     /**
      * PersonaCapabilities
