@@ -64,7 +64,11 @@ docs/specs/phase2/spec_16/inspection/
 # scorecards in state.md are the close-out evidence, not the PNG files.
 docs/specs/phase2/spec_17/inspection/
 packages/web/evidence/
-docs/*
+# docs/ is gitignored entirely (IP-sensitive, same tier as .env). Anchor on the
+# ENTRY (/docs), not just its contents (docs/*), so a stray `docs` SYMLINK created
+# in a worktree can never be git-tracked — that was the 2026-06-29 docs-loss root
+# cause (a tracked docs symlink got checked out over the real docs/ directory).
+/docs
 deploy/*
 CLAUDE.md
 
