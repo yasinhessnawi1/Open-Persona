@@ -32,17 +32,20 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, type TokenGetter } from "@/lib/api/client";
 import {
+  applyActivity,
   applyVoiceStateEvent,
   type CallPhase,
   callErrorForMediaError,
   callErrorForTokenStatus,
   callPhaseForConnectionState,
   INITIAL_CALL_STATE,
+  mergeArtifacts,
+  type VoiceActivity,
   type VoiceCallState,
 } from "./call-state";
 import { type CaptionSegment, upsertCaption } from "./captions";
 import { fetchVoiceToken } from "./token";
-import { parseVoiceEvent } from "./voice-events";
+import { parseVoiceEvent, type VoiceArtifact } from "./voice-events";
 
 export interface UseVoiceCallOptions {
   personaId: string;
@@ -54,6 +57,12 @@ export interface VoiceCall {
   state: VoiceCallState;
   /** Live caption segments (user ASR + persona verbatim) for the D-V6-2 surface. */
   captions: CaptionSegment[];
+  /** Rich-output artifacts produced during the call, deduped by `workspacePath`
+   * (V10-D-6) — the call surface mounts the latest in the FileRendererPanel. */
+  artifacts: VoiceArtifact[];
+  /** Capabilities the persona is currently using (V10-D-6) — drives the live
+   * "using <X>…" badge; cleared as each `activity_end` arrives. */
+  activities: VoiceActivity[];
   /** Start the call (must be called from a user gesture so audio autoplay unlocks). */
   start: () => Promise<void>;
   /** End the call cleanly and release the mic. */
@@ -86,6 +95,8 @@ const RING_BACKSTOP_MS = 35_000;
 export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
   const [state, setState] = useState<VoiceCallState>(INITIAL_CALL_STATE);
   const [captions, setCaptions] = useState<CaptionSegment[]>([]);
+  const [artifacts, setArtifacts] = useState<VoiceArtifact[]>([]);
+  const [activities, setActivities] = useState<VoiceActivity[]>([]);
 
   const roomRef = useRef<Room | null>(null);
   const audioElsRef = useRef<HTMLMediaElement[]>([]);
@@ -139,10 +150,25 @@ export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
       setCaptions((c) => upsertCaption(c, event));
       return;
     }
+    // V10-D-6 rich-output frames. Routed BEFORE the state reducer because
+    // `applyVoiceStateEvent` is typed for `VoiceStateEvent` only — these branches
+    // narrow the union away so only `state` events reach it. The panel mounts the
+    // artifacts; the badge reads the activities; captions stay separate (audio is
+    // the persona's narration — never re-rendered here as a duplicate artifact).
+    if (event.type === "tool_result") {
+      setArtifacts((a) => mergeArtifacts(a, event));
+      return;
+    }
+    if (event.type === "activity_start" || event.type === "activity_end") {
+      setActivities((a) => applyActivity(a, event));
+      return;
+    }
     // Spec 32 C — the ring lifecycle (preparing → greeting → un-gate), barge-in,
     // and orb cue are all folded in the pure reducer; the mic-sync effect mirrors
     // the resulting `micActive` onto the LiveKit track.
-    setState((s) => applyVoiceStateEvent(s, event));
+    if (event.type === "state") {
+      setState((s) => applyVoiceStateEvent(s, event));
+    }
   }, []);
 
   const fetchToken = useCallback(
@@ -300,6 +326,8 @@ export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
       endedByUserRef.current = false;
       reconnectTriedRef.current = false;
       setCaptions([]);
+      setArtifacts([]);
+      setActivities([]);
       patch({ phase: "connecting", error: null });
 
       let token: MintedToken;
@@ -382,6 +410,8 @@ export function useVoiceCall(options: UseVoiceCallOptions): VoiceCall {
   return {
     state,
     captions,
+    artifacts,
+    activities,
     start,
     end,
     toggleMute,

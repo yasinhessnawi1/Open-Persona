@@ -66,6 +66,8 @@ function makeSession(over: Partial<CallSession> = {}): CallSession {
   return {
     state,
     captions: [],
+    artifacts: [],
+    activities: [],
     target: TARGET,
     isActive: true,
     startedAt: Date.now(),

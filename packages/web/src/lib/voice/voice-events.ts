@@ -61,7 +61,59 @@ export interface VoiceTranscriptEvent {
   segmentId: string;
 }
 
-export type VoiceEvent = VoiceStateEvent | VoiceTranscriptEvent;
+/**
+ * One produced artifact carried on a {@link VoiceToolResultEvent} — the SAME
+ * shape chat's `ArtifactRef` carries (V10-D-6), camel-cased: it feeds the EXACT
+ * `FileRendererPanel` via the file-renderer context (`{workspacePath, mediaType,
+ * name}`). `mimeType` is the renderer discriminator.
+ */
+export interface VoiceArtifact {
+  workspacePath: string;
+  mimeType: string;
+  sizeBytes: number;
+  renderedInline: boolean;
+}
+
+/**
+ * A tool finished during the call (V10-D-6) — the RENDER frame. Carries the
+ * produced artifacts so the call surface mounts them in the preview panel
+ * (render-when-ready for async tools, in-turn for inline ones like
+ * `render_diagram`). Empty `artifacts` (e.g. web_search) renders no panel.
+ */
+export interface VoiceToolResultEvent {
+  type: "tool_result";
+  toolName: string;
+  isError: boolean;
+  artifacts: VoiceArtifact[];
+}
+
+/**
+ * The persona started using a capability (V10-D-6) — drives the live "using
+ * <X>…" badge in the call surface (P2's unified activity contract). Paired with
+ * a {@link VoiceActivityEndEvent} by `activityId`.
+ */
+export interface VoiceActivityStartEvent {
+  type: "activity_start";
+  activityId: string;
+  kind: string;
+  name: string;
+  label: string;
+}
+
+/** A capability finished/failed (V10-D-6) — clears its "using <X>…" badge. */
+export interface VoiceActivityEndEvent {
+  type: "activity_end";
+  activityId: string;
+  status: string;
+  isError: boolean;
+}
+
+export type VoiceEvent =
+  | VoiceStateEvent
+  | VoiceTranscriptEvent
+  | VoiceToolResultEvent
+  | VoiceActivityStartEvent
+  | VoiceActivityEndEvent;
 
 const STATE_NAMES = new Set<string>([
   "preparing",
@@ -154,5 +206,70 @@ export function parseVoiceEvent(
     };
   }
 
+  // V10-D-6 rich-output frames. The artifact shape mirrors chat's ArtifactRef so
+  // the SAME FileRendererPanel renders it; an absent/garbled artifacts list
+  // degrades to an empty list (a tool_result with no artifact renders no panel).
+  if (frame.type === "tool_result") {
+    if (typeof frame.tool_name !== "string") return null;
+    const raw = Array.isArray(frame.artifacts) ? frame.artifacts : [];
+    const artifacts = raw
+      .map(parseArtifact)
+      .filter((a): a is VoiceArtifact => a !== null);
+    return {
+      type: "tool_result",
+      toolName: frame.tool_name,
+      isError: Boolean(frame.is_error),
+      artifacts,
+    };
+  }
+
+  if (frame.type === "activity_start") {
+    if (
+      typeof frame.activity_id !== "string" ||
+      typeof frame.kind !== "string" ||
+      typeof frame.name !== "string" ||
+      typeof frame.label !== "string"
+    ) {
+      return null;
+    }
+    return {
+      type: "activity_start",
+      activityId: frame.activity_id,
+      kind: frame.kind,
+      name: frame.name,
+      label: frame.label,
+    };
+  }
+
+  if (frame.type === "activity_end") {
+    if (
+      typeof frame.activity_id !== "string" ||
+      typeof frame.status !== "string"
+    ) {
+      return null;
+    }
+    return {
+      type: "activity_end",
+      activityId: frame.activity_id,
+      status: frame.status,
+      isError: Boolean(frame.is_error),
+    };
+  }
+
   return null;
+}
+
+/** Map one wire artifact (chat's `ArtifactRef` shape) → {@link VoiceArtifact}. */
+function parseArtifact(raw: unknown): VoiceArtifact | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const a = raw as Record<string, unknown>;
+  if (typeof a.workspace_path !== "string" || typeof a.mime_type !== "string") {
+    return null;
+  }
+  return {
+    workspacePath: a.workspace_path,
+    mimeType: a.mime_type,
+    sizeBytes: typeof a.size_bytes === "number" ? a.size_bytes : 0,
+    renderedInline: Boolean(a.rendered_inline),
+  };
 }

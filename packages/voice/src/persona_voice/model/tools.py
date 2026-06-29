@@ -54,55 +54,72 @@ __all__ = [
 #: not sit in silence — the persona emits a graceful overflow line and falls back.
 DEFAULT_VOICE_TOOL_TIMEOUT_S = 3.0
 
-# Conservative v1 default partition (R-V5-2). Fast, summarisable → live; heavy /
-# visual-output → deferred; everything else → text-only. Constructor-overridable.
-_DEFAULT_VOICE_VIABLE = frozenset({"web_search", "web_fetch"})
-_DEFAULT_DEFERRED = frozenset(
-    {"code_execution", "document_generation", "image_generation", "file_write"}
-)
+# V10-D-1 default partition — by MEASURED latency, not "visual vs text".
+# INLINE-FAST (run live under the latency bound): web search/fetch + ``render_diagram``
+# (sub-100ms — it persists mermaid/graphviz *source* and the browser renders the SVG,
+# so it is no slower than a search). ASYNC_ARTIFACT (the render-when-ready lane):
+# ``generate_image`` (5–20s remote call). DEFERRED (heavy / write, off the live path):
+# ``code_execution`` + ``file_write``. Everything else → text-only — notably
+# ``document_generation`` (no backend on main, V10-D-1) and any builtin not named here.
+# NOTE: V5 deferred the dead string ``image_generation``; the real tool is
+# ``generate_image`` (``persona.imagegen.tool`` ``@tool``), so image gen was silently
+# never offered in voice — V10 makes it reachable. Constructor-overridable.
+_DEFAULT_VOICE_VIABLE = frozenset({"web_search", "web_fetch", "render_diagram"})
+_DEFAULT_ASYNC_ARTIFACT = frozenset({"generate_image"})
+_DEFAULT_DEFERRED = frozenset({"code_execution", "file_write"})
 
 
 class VoiceToolDisposition(StrEnum):
-    """How a tool may be used in a live voice turn (D-V5-4)."""
+    """How a tool may be used in a live voice turn (D-V5-4 / V10-D-1)."""
 
     VOICE_VIABLE = "voice_viable"  # run live, preamble-masked, sub-budget
+    ASYNC_ARTIFACT = "async_artifact"  # slow visual → produce off-turn, render-when-ready (V10)
     DEFERRED = "deferred"  # heavy → acknowledge in voice, produce off-path (F5)
     TEXT_ONLY = "text_only"  # not offered in voice
 
 
 class VoiceToolPolicy:
-    """Classifies the persona's tools for voice (the conservative v1 scope).
+    """Classifies the persona's tools for voice (the V10-D-1 latency partition).
 
     Args:
-        voice_viable: Tool names runnable live (default: web search / fetch).
+        voice_viable: Tool names runnable live (default: web search / fetch / diagram).
+        async_artifact: Tool names that produce a slow visual artifact off the turn
+            path and render-when-ready (default: ``generate_image``) — the V10 lane.
         deferred: Tool names acknowledged + done off-path (default: the heavy set).
 
-    Any tool in neither set is :attr:`VoiceToolDisposition.TEXT_ONLY`.
+    Any tool in none of the three sets is :attr:`VoiceToolDisposition.TEXT_ONLY`.
     """
 
     def __init__(
         self,
         *,
         voice_viable: frozenset[str] | None = None,
+        async_artifact: frozenset[str] | None = None,
         deferred: frozenset[str] | None = None,
     ) -> None:
         self._viable = voice_viable if voice_viable is not None else _DEFAULT_VOICE_VIABLE
+        self._async_artifact = (
+            async_artifact if async_artifact is not None else _DEFAULT_ASYNC_ARTIFACT
+        )
         self._deferred = deferred if deferred is not None else _DEFAULT_DEFERRED
 
     def classify(self, tool_name: str) -> VoiceToolDisposition:
         """Return the voice disposition of ``tool_name``."""
         if tool_name in self._viable:
             return VoiceToolDisposition.VOICE_VIABLE
+        if tool_name in self._async_artifact:
+            return VoiceToolDisposition.ASYNC_ARTIFACT
         if tool_name in self._deferred:
             return VoiceToolDisposition.DEFERRED
         return VoiceToolDisposition.TEXT_ONLY
 
     def offered_specs(self, specs: Sequence[ToolSpec]) -> list[ToolSpec]:
-        """The specs offered to the model in voice — viable + deferred, not text-only.
+        """The specs offered to the model in voice — everything but text-only.
 
-        Deferred tools ARE offered (the persona can still reach heavy capability),
-        but a call to one is acknowledged + done off the live path, never run in
-        the turn (D-V5-4). Text-only tools are withheld from the voice surface.
+        Viable, async-artifact, AND deferred tools are all offered (the persona can
+        reach the capability); only the disposition of a *call* differs — run live,
+        produced render-when-ready, or acknowledged off-path (D-V5-4 / V10-D-1).
+        Text-only tools are withheld from the voice surface entirely.
         """
         return [s for s in specs if self.classify(s.name) is not VoiceToolDisposition.TEXT_ONLY]
 
@@ -131,6 +148,9 @@ class VoiceToolNarrator:
         ),
         deferral_line: str = "I'll prepare that and have it ready for you after our call.",
         overflow_line: str = "This is taking a moment — I'll follow up on that shortly.",
+        async_artifact_line: str = (
+            "Let me put that together — it'll appear on your screen in a moment."
+        ),
     ) -> None:
         if not preambles:
             msg = "preambles must be non-empty"
@@ -138,6 +158,7 @@ class VoiceToolNarrator:
         self._preambles = tuple(preambles)
         self._deferral = deferral_line
         self._overflow = overflow_line
+        self._async_artifact = async_artifact_line
 
     def preamble(self, *, index: int) -> str:
         """The spoken filler for a live tool call, rotated by turn ``index``."""
@@ -152,6 +173,16 @@ class VoiceToolNarrator:
     def overflow_line(self) -> str:
         """What the persona says when a live tool exceeds its latency bound."""
         return self._overflow
+
+    @property
+    def async_artifact_line(self) -> str:
+        """The inline ack when a slow visual artifact is handed to the off-turn lane.
+
+        Spoken at request time (V10-D-3) so the screen-update-when-ready is never a
+        surprise; the persona's "it's on screen" confirmation comes later, at the
+        next idle floor (the orchestrator's floor-gated narration).
+        """
+        return self._async_artifact
 
 
 @dataclass(frozen=True)

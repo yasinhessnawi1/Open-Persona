@@ -18,6 +18,10 @@ T1 ships the dependency-injection container the rest of the thread composes:
 
 from __future__ import annotations
 
+from persona_voice.model.async_lane import (
+    DEFAULT_ASYNC_ARTIFACT_CONCURRENCY,
+    AsyncArtifactLane,
+)
 from persona_voice.model.errors import VoiceIntegrationError
 from persona_voice.model.history import VoiceHistoryCompactor, make_small_tier_summariser
 from persona_voice.model.memory import VoiceTurnRecorder
@@ -36,9 +40,11 @@ from persona_voice.model.tools import (
 from persona_voice.model.turn_context import REQUIRED_STORE_KINDS, VoiceTurnContext
 
 __all__ = [
+    "DEFAULT_ASYNC_ARTIFACT_CONCURRENCY",
     "DEFAULT_VOICE_TOOL_TIMEOUT_S",
     "DEFAULT_VOICE_TTFT_GATE_MS",
     "REQUIRED_STORE_KINDS",
+    "AsyncArtifactLane",
     "BoundedToolOutcome",
     "DeferredArtifact",
     "VoiceHistoryCompactor",

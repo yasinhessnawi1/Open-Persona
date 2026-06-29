@@ -62,6 +62,7 @@ from sqlalchemy import text
 from persona_voice.agent.language import apply_stt_route, apply_tts_route, resolve_call_languages
 from persona_voice.agent.warmup import start_embedder_warmup
 from persona_voice.model import (
+    AsyncArtifactLane,
     VoiceHistoryCompactor,
     VoiceModelReplyProducer,
     VoiceToolPolicy,
@@ -87,9 +88,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from typing import Any
 
+    from persona.schema.tools import ToolCall
     from persona.stores.embedder import Embedder
     from persona.stores.protocol import MemoryStore
     from persona.tools.mcp.client import MCPClient
+    from persona_runtime.agentic.events import RunEvent
     from persona_runtime.tier import TierRegistry
     from sqlalchemy import Engine
 
@@ -191,6 +194,7 @@ class AgentSession:
         greet: Callable[[], Coroutine[Any, Any, None]] | None = None,
         call_recorder: CallRecorder | None = None,
         call_record_engine: Engine | None = None,
+        async_lane: AsyncArtifactLane | None = None,
     ) -> None:
         self._voice_room = voice_room
         self._loop = loop
@@ -198,6 +202,9 @@ class AgentSession:
         self._tts_seam = tts_seam
         self._session = session
         self._mcp_clients = mcp_clients
+        # V10 (T4): the off-turn async-artifact production lane — cancelled at
+        # teardown so no production task outlives the call (V10-D-4/5).
+        self._async_lane = async_lane
         self._livekit_url = livekit_url
         self._agent_token = agent_token
         self._ended = ended
@@ -256,6 +263,12 @@ class AgentSession:
         RLS engine + releases the advisory lock). Every step is suppressed so one
         failing teardown never strands the others.
         """
+        # V10 (V10-D-4/5): cancel any in-flight async-artifact production FIRST,
+        # so no off-turn task outlives the call (and none narrates into a torn-down
+        # orchestrator). Best-effort, like every teardown step.
+        if self._async_lane is not None:
+            with contextlib.suppress(Exception):
+                await self._async_lane.shutdown()
         for step in (
             self._loop.stop(),
             self._stt_seam.close(),
@@ -392,10 +405,32 @@ async def build_agent_session(
         # the engine is alive; no dedicated engine needed, unlike the call-record).
         transcript_writer=VoiceTranscriptWriter(engine=rls_engine, conversation_id=conversation_id),
     )
+    # V10 (T4): the rich-output sink + the async-artifact lane are wired into the
+    # producer here, but both depend on objects built further down — the
+    # broadcaster (needs the room) and the lane (needs the orchestrator's
+    # notify_artifact_ready). Bind them late through holders (the same pattern as
+    # ``orch_holder`` below): the producer never fires a turn before ``run()``, by
+    # which point both holders are populated.
+    broadcaster_holder: list[DataChannelBroadcaster] = []
+    lane_holder: list[AsyncArtifactLane] = []
+
+    async def _emit_run_event(event: RunEvent) -> None:
+        if broadcaster_holder:
+            await broadcaster_holder[0].on_run_event(event)
+
+    def _submit_async_artifact(call: ToolCall) -> None:
+        if lane_holder:
+            lane_holder[0].submit(call)
+
     producer = VoiceModelReplyProducer(
         ctx,
         tool_policy=VoiceToolPolicy(),
         turn_recorder=recorder,
+        # T1 seam: inline tool dispatch emits activity_*/tool_result over the data
+        # channel. T3 seam: an ASYNC_ARTIFACT call (generate_image) is handed to
+        # the off-turn lane (render-when-ready + floor-gated narration).
+        on_event=_emit_run_event,
+        async_artifact_listener=_submit_async_artifact,
     )
 
     # --- session state machine ---
@@ -479,6 +514,18 @@ async def build_agent_session(
     )
     loop.caption_listener = broadcaster
     orch_holder.append(orchestrator)
+    # V10 (T4): complete the late binding — the producer's rich-output sink is this
+    # broadcaster, and the async-artifact lane produces off-turn (its render frames
+    # flow over the same broadcaster) and narrates render-when-ready through the
+    # orchestrator's floor-gated ``notify_artifact_ready`` (V10-D-2/3). The lane is
+    # cancelled at teardown (V10-D-4/5).
+    broadcaster_holder.append(broadcaster)
+    async_lane = AsyncArtifactLane(
+        toolbox=toolbox,
+        on_ready=orchestrator.notify_artifact_ready,
+        on_event=broadcaster.on_run_event,
+    )
+    lane_holder.append(async_lane)
 
     async def _greet() -> None:
         """Run turn 0 — gate on the warm-up, then have the persona greet first."""
@@ -558,6 +605,7 @@ async def build_agent_session(
         greet=_greet,
         call_recorder=call_recorder,
         call_record_engine=call_record_engine,
+        async_lane=async_lane,
     )
 
 

@@ -597,3 +597,117 @@ async def test_non_authoritative_onset_does_not_start_barge_in() -> None:
     await orch.on_speech_started(_started(confidence=None))
     assert orch.state is ConversationalState.PERSONA_SPEAKING
     assert actions.interrupted == 0
+
+
+# ---------- V10-D-2: floor-gated artifact narration -------------------------
+#
+# The riskiest primitive — unsolicited persona speech. R-1/R-3: every floor edge
+# is driven through the REAL orchestrator + REAL triggers (on_speech_started /
+# the scheduler-fired turn-end / notify_persona_finished), never a hand-set
+# state — so a test cannot pass on a transition production never reaches (the V8
+# manually-reopened-gate false-green). Only the TurnActions loop-effect seam is
+# faked (it is the mechanism, not the state machine).
+
+
+async def test_artifact_ready_fires_narration_immediately_when_floor_idle() -> None:
+    """idle-fires — at a genuinely idle floor the narration starts at once."""
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    listener = _RecordingListener()
+    orch = _build(clock, sched, actions, listener)
+    assert orch.state is ConversationalState.LISTENING
+
+    await orch.notify_artifact_ready(
+        Transcript(is_final=True, text="the image is on screen", confidence=1.0)
+    )
+
+    # Entered via the real agent-initiated edge → PROCESSING, narration invoked.
+    assert orch.state is ConversationalState.PROCESSING
+    assert len(actions.invoked) == 1
+    assert "image" in actions.invoked[0].text
+    assert listener.transitions[-1].trigger is TransitionTrigger.AGENT_INITIATED
+
+
+async def test_artifact_ready_queues_while_user_holds_floor_then_drains() -> None:
+    """busy-queues + drains-on-idle — driven by a REAL user-speech onset and a
+    REAL turn completion, the narration waits and plays only once the floor is
+    genuinely idle again (it must never speak over the user)."""
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    orch = _build(clock, sched, actions, _RecordingListener())
+
+    await orch.on_speech_started(_started())  # REAL onset → user holds the floor
+    assert orch.state is ConversationalState.USER_SPEAKING
+
+    await orch.notify_artifact_ready(
+        Transcript(is_final=True, text="the diagram is on screen", confidence=1.0)
+    )
+    assert len(actions.invoked) == 0  # queued, NOT spoken over the user
+
+    # Complete the user's turn through real triggers.
+    await orch.on_transcript(Transcript(is_final=True, text="hello", confidence=0.95))
+    await orch.on_speech_ended(_ended(ts_emit=_BASE))
+    clock.set_ms_after_base(800.0)
+    await sched.fire_last()  # TURN_ENDED → PROCESSING (the user's answer invoke)
+    assert len(actions.invoked) == 1  # narration still queued
+    await orch.notify_model_first_audio()  # PERSONA_SPEAKING
+    await orch.notify_persona_finished()  # → LISTENING → drain
+
+    assert orch.state is ConversationalState.PROCESSING  # the narration turn started
+    assert len(actions.invoked) == 2
+    assert "diagram" in actions.invoked[-1].text
+
+
+async def test_multiple_ready_artifacts_coalesce_into_one_utterance() -> None:
+    """coalesce-N→1 — two artifacts ready while busy fold into exactly ONE
+    narration turn (never a triple "it's on screen")."""
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    orch = _build(clock, sched, actions, _RecordingListener())
+
+    # Drive to PERSONA_SPEAKING via real triggers.
+    await orch.on_speech_started(_started())
+    await orch.on_transcript(Transcript(is_final=True, text="draw stuff", confidence=0.95))
+    await orch.on_speech_ended(_ended(ts_emit=_BASE))
+    clock.set_ms_after_base(800.0)
+    await sched.fire_last()
+    await orch.notify_model_first_audio()
+    assert orch.state is ConversationalState.PERSONA_SPEAKING
+    invoked_before = len(actions.invoked)
+
+    await orch.notify_artifact_ready(Transcript(is_final=True, text="image-A", confidence=1.0))
+    await orch.notify_artifact_ready(Transcript(is_final=True, text="diagram-B", confidence=1.0))
+    assert len(actions.invoked) == invoked_before  # nothing fires mid-reply
+
+    await orch.notify_persona_finished()  # → LISTENING → drain (coalesced)
+
+    assert len(actions.invoked) == invoked_before + 1  # exactly ONE narration turn
+    assert "image-A" in actions.invoked[-1].text
+    assert "diagram-B" in actions.invoked[-1].text
+
+
+async def test_user_onset_preempts_a_narration_in_flight() -> None:
+    """user-onset-preempts — a REAL authoritative onset against the real
+    LISTENING→PROCESSING edge cancels a narration still generating, so the
+    persona never talks over a user who just started speaking. This is the case
+    most prone to a manual-state-flip false-green (the V8 lesson), so it is
+    driven through on_speech_started, never a hand-set state."""
+    clock = _Clock(_BASE)
+    sched = _FakeScheduler()
+    actions = _RecordingActions()
+    orch = _build(clock, sched, actions, _RecordingListener())
+
+    # Idle floor → the narration starts (real agent-initiated edge).
+    await orch.notify_artifact_ready(
+        Transcript(is_final=True, text="the image is on screen", confidence=1.0)
+    )
+    assert orch.state is ConversationalState.PROCESSING
+
+    # The user starts speaking before any narration audio — a REAL Silero onset.
+    await orch.on_speech_started(_started())  # confidence 0.9 ≥ authoritative floor
+
+    assert actions.cancelled == 1  # the narration generation was cancelled
+    assert orch.state is ConversationalState.USER_SPEAKING  # the user took the floor

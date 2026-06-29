@@ -25,7 +25,12 @@ import { ArrowLeft, Captions, Phone, PhoneOff } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  FileRendererProvider,
+  useFileRenderer,
+} from "@/components/chat/file-renderer-context";
+import { FileRendererPanel } from "@/components/chat/file-renderer-panel";
 import { EmptyState } from "@/components/patterns/empty-state";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { IdentityOrb } from "@/components/voice/identity-orb";
@@ -35,6 +40,7 @@ import { personaIdentityStyle } from "@/lib/persona-identity";
 import type { CallTarget } from "@/lib/voice/call-session-context";
 import { useCallSession } from "@/lib/voice/call-session-context";
 import { usePersonaAvatarSrc } from "@/lib/voice/use-persona-avatar-src";
+import type { VoiceArtifact } from "@/lib/voice/voice-events";
 
 export interface VoiceCallSurfaceProps {
   persona: {
@@ -55,6 +61,8 @@ export function VoiceCallSurface({
   const {
     state,
     captions,
+    artifacts,
+    activities,
     isActive,
     start,
     end,
@@ -156,96 +164,121 @@ export function VoiceCallSurface({
   // Terminal phases (D-V6-5) — render an honest EmptyState instead of a dead orb.
   const terminal = buildTerminal();
 
+  // The first active capability's label drives the live "using <X>…" badge.
+  const activityLabel = activities[0]?.label ?? null;
+
   return (
-    <div className="v-voice" style={personaIdentityStyle(persona)}>
-      {/* Identity-tinted backdrop — a soft radial wash in the persona's hue. */}
-      <div
-        className="v-voice__bg"
-        style={{
-          background:
-            "radial-gradient(50% 50% at 50% 42%, oklch(0.62 0.13 var(--identity-h) / 0.14), transparent 70%)",
-        }}
-      />
-      {header}
-
-      {terminal ? (
-        <EmptyState
-          className="relative z-[1] w-full max-w-md"
-          icon={<Phone className="size-6" aria-hidden />}
-          title={terminal.title}
-          description={terminal.body}
-          action={terminal.action}
+    // V10-D-6 — the SAME conversation-scoped renderer chat uses (D-28-6). A
+    // produced artifact (e.g. a generated image) is auto-opened in the panel
+    // while the call runs; the panel persists across artifacts and closes on
+    // unmount (fresh provider per mount). Audio narration + captions stay
+    // separate surfaces — the panel only ever shows the file.
+    <FileRendererProvider>
+      <ArtifactAutoOpener artifacts={artifacts} />
+      <FileRendererPanel personaId={persona.id} />
+      <div className="v-voice" style={personaIdentityStyle(persona)}>
+        {/* Identity-tinted backdrop — a soft radial wash in the persona's hue. */}
+        <div
+          className="v-voice__bg"
+          style={{
+            background:
+              "radial-gradient(50% 50% at 50% 42%, oklch(0.62 0.13 var(--identity-h) / 0.14), transparent 70%)",
+          }}
         />
-      ) : (
-        <>
-          <div className="v-orb-wrap">
-            <IdentityOrb
-              persona={{ id: persona.id, name: persona.name }}
-              agentState={state.agentState}
-              bargeInSignal={state.bargeInSignal}
-              getMicLevel={getMicLevel}
-              getPersonaLevel={getPersonaLevel}
-              avatarUrl={avatarSrc}
-              label={stateLabel}
-            />
-          </div>
+        {header}
 
-          <div className="v-voice__status" aria-live="polite">
-            {statusLine}
-          </div>
-
-          {captionsOn ? (
-            <div className="v-voice__caption">
-              <VoiceCaptions captions={captions} personaName={persona.name} />
+        {terminal ? (
+          <EmptyState
+            className="relative z-[1] w-full max-w-md"
+            icon={<Phone className="size-6" aria-hidden />}
+            title={terminal.title}
+            description={terminal.body}
+            action={terminal.action}
+          />
+        ) : (
+          <>
+            <div className="v-orb-wrap">
+              <IdentityOrb
+                persona={{ id: persona.id, name: persona.name }}
+                agentState={state.agentState}
+                bargeInSignal={state.bargeInSignal}
+                getMicLevel={getMicLevel}
+                getPersonaLevel={getPersonaLevel}
+                avatarUrl={avatarSrc}
+                label={stateLabel}
+              />
             </div>
-          ) : null}
 
-          {state.needsAudioGesture ? (
-            <Button
-              variant="secondary"
-              className="relative z-[1]"
-              onClick={() => void enableAudio()}
-            >
-              {t("enableAudio")}
-            </Button>
-          ) : null}
-
-          {live ? (
-            <div className="v-voice__controls">
-              {/* D-V7-6: mute toggle, or a hold-to-talk button in push-to-talk. */}
-              <MicControl className="v-voice-ctl" />
-              <button
-                type="button"
-                className="v-voice-ctl v-voice-ctl--end"
-                onClick={() => void handleEnd()}
-                aria-label={t("end")}
-                title={t("end")}
-              >
-                <PhoneOff aria-hidden />
-              </button>
-              <button
-                type="button"
-                className="v-voice-ctl"
-                onClick={() => setCaptionsOn((c) => !c)}
-                aria-label={t("captionsLabel")}
-                title={t("captionsLabel")}
-                aria-pressed={captionsOn}
-              >
-                <Captions aria-hidden />
-              </button>
-              {/* D-V7-6: switch always-listening ↔ push-to-talk (persisted). */}
-              <InputModeToggle className="v-voice-ctl" />
+            <div className="v-voice__status" aria-live="polite">
+              {statusLine}
             </div>
-          ) : null}
 
-          {/* The shared-memory note — voice + text are one thread (D-V6-4). */}
-          <div className="relative z-[1] flex items-center gap-2 font-mono text-muted-foreground type-caption normal-case tracking-normal">
-            <span className="v-id-dot" />
-            {t("memoryNote")}
-          </div>
-        </>
-      )}
-    </div>
+            {/* V10-D-6 — the live "using <X>…" capability badge; hidden when no
+              capability is in flight. Distinct from the status line (which is
+              the conversational phase) and the captions (which are speech). */}
+            {activityLabel ? (
+              <div
+                className="relative z-[1] flex items-center gap-2 font-mono text-muted-foreground type-caption normal-case tracking-normal"
+                aria-live="polite"
+              >
+                <span className="v-id-dot" />
+                {t("using", { label: activityLabel })}
+              </div>
+            ) : null}
+
+            {captionsOn ? (
+              <div className="v-voice__caption">
+                <VoiceCaptions captions={captions} personaName={persona.name} />
+              </div>
+            ) : null}
+
+            {state.needsAudioGesture ? (
+              <Button
+                variant="secondary"
+                className="relative z-[1]"
+                onClick={() => void enableAudio()}
+              >
+                {t("enableAudio")}
+              </Button>
+            ) : null}
+
+            {live ? (
+              <div className="v-voice__controls">
+                {/* D-V7-6: mute toggle, or a hold-to-talk button in push-to-talk. */}
+                <MicControl className="v-voice-ctl" />
+                <button
+                  type="button"
+                  className="v-voice-ctl v-voice-ctl--end"
+                  onClick={() => void handleEnd()}
+                  aria-label={t("end")}
+                  title={t("end")}
+                >
+                  <PhoneOff aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  className="v-voice-ctl"
+                  onClick={() => setCaptionsOn((c) => !c)}
+                  aria-label={t("captionsLabel")}
+                  title={t("captionsLabel")}
+                  aria-pressed={captionsOn}
+                >
+                  <Captions aria-hidden />
+                </button>
+                {/* D-V7-6: switch always-listening ↔ push-to-talk (persisted). */}
+                <InputModeToggle className="v-voice-ctl" />
+              </div>
+            ) : null}
+
+            {/* The shared-memory note — voice + text are one thread (D-V6-4). */}
+            <div className="relative z-[1] flex items-center gap-2 font-mono text-muted-foreground type-caption normal-case tracking-normal">
+              <span className="v-id-dot" />
+              {t("memoryNote")}
+            </div>
+          </>
+        )}
+      </div>
+    </FileRendererProvider>
   );
 
   /** End the call and leave the call screen (voice + text are one thread). */
@@ -299,4 +332,34 @@ export function VoiceCallSurface({
     }
     return null;
   }
+}
+
+/**
+ * Auto-opens the LATEST produced artifact in the file-renderer panel (V10-D-6).
+ * Keyed on the newest artifact's `workspacePath`, so it fires once per new
+ * artifact: it opens the first when it arrives and follows subsequent ones,
+ * without re-stealing focus on unrelated re-renders. Renders nothing — it only
+ * drives the shared {@link useFileRenderer} state. Mounted INSIDE the provider.
+ */
+function ArtifactAutoOpener({
+  artifacts,
+}: {
+  artifacts: VoiceArtifact[];
+}): null {
+  const { open } = useFileRenderer();
+  // `mergeArtifacts` returns the same array (and so the same newest element)
+  // reference on a no-op, so `latest`'s identity is stable across unrelated
+  // re-renders — the effect re-fires only when a genuinely new artifact arrives.
+  const latest = artifacts.at(-1) ?? null;
+
+  useEffect(() => {
+    if (latest === null) return;
+    open({
+      workspacePath: latest.workspacePath,
+      mediaType: latest.mimeType,
+      name: latest.workspacePath.split("/").pop() ?? latest.workspacePath,
+    });
+  }, [latest, open]);
+
+  return null;
 }

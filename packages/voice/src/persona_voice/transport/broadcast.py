@@ -21,6 +21,17 @@ state visualisation). Two frame types under a ``type`` discriminator:
   caption segment. ``speaker`` ∈ {``user``, ``persona``}; ``segment_id`` lets the
   client mutate-and-replace the current partial in place (D-V6-2 anti-flicker)
   and a new id marks a new utterance after a final.
+* **V10-D-6 rich-output frames** — ``{"type": <RunEvent.type>, **RunEvent.data}``
+  for ``tool_calling`` / ``tool_result`` (carrying ``artifacts`` in the SAME
+  shape chat uses — ``workspace_path``/``mime_type``/``size_bytes``/
+  ``rendered_inline`` — so the web normaliser + ``FileRendererPanel`` render it
+  unchanged) / ``activity_start`` / ``activity_end`` (the live "using <X>…"
+  badge). One event vocabulary across chat + voice; only the transport differs
+  (this data channel vs chat's SSE). The render frame is the SAME ``tool_result``
+  chat carries the artifact on (P2-D-3 keep-both). Emitted via
+  :meth:`DataChannelBroadcaster.on_run_event` — a thin reuse of the existing
+  reliable+ordered publish (NOT a new per-turn blocking path; the async lane that
+  drives most of these runs off-thread, V10-R-2).
 
 **Owner-only delivery.** :meth:`VoiceRoom.publish_data` passes no
 ``destination_identities``, so LiveKit confines the frame to the per-session
@@ -36,6 +47,8 @@ from typing import TYPE_CHECKING
 from persona.logging import get_logger
 
 if TYPE_CHECKING:
+    from persona_runtime.agentic.events import RunEvent
+
     from persona_voice.loop.streaming import Transcript
     from persona_voice.transport.room import VoiceRoom
     from persona_voice.turn_taking.states import ConversationalTransition
@@ -43,6 +56,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BROADCAST_TOPIC",
     "DataChannelBroadcaster",
+    "encode_run_event_frame",
     "encode_state_frame",
     "encode_transcript_frame",
 ]
@@ -78,6 +92,18 @@ def encode_transcript_frame(*, speaker: str, text: str, is_final: bool, segment_
             "segment_id": segment_id,
         }
     ).encode("utf-8")
+
+
+def encode_run_event_frame(event: RunEvent) -> bytes:
+    """Serialize a rich-output ``RunEvent`` to the wire envelope (V10-D-6).
+
+    Flat ``{"type": event.type, **event.data}`` — the event's ``type`` is the
+    client discriminator and its already-JSON-safe ``data`` (built by the typed
+    ``RunEvent`` constructors) carries the payload verbatim, so the voice client
+    decodes ``tool_result``/``activity_*`` exactly as the chat client decodes the
+    same ``RunEvent`` over SSE. No voice-only reshaping — one vocabulary.
+    """
+    return json.dumps({"type": event.type, **event.data}).encode("utf-8")
 
 
 class DataChannelBroadcaster:
@@ -130,6 +156,19 @@ class DataChannelBroadcaster:
         )
         if is_final:
             self._persona_segment += 1
+
+    async def on_run_event(self, event: RunEvent) -> None:
+        """V10-D-6 rich-output sink — broadcast an activity/tool ``RunEvent`` frame.
+
+        The ``on_event`` sink the producer's inline tool dispatch and the async
+        artifact lane push to: ``activity_start``/``activity_end`` (the "using
+        <X>…" badge) and ``tool_result`` (the artifact the ``FileRendererPanel``
+        renders). Reuses the same reliable+ordered publish + never-raise contract
+        as the caption/state frames; the lane drives most of these off-thread, so
+        this adds no per-turn blocking on the talk path (V10-R-2 / the V5 latency
+        bound).
+        """
+        await self._publish(encode_run_event_frame(event))
 
     async def _publish(self, payload: bytes) -> None:
         """Publish one reliable frame; swallow + log transport errors (never raise)."""

@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyActivity,
   applyVoiceStateEvent,
   callErrorForMediaError,
   callErrorForTokenStatus,
   callPhaseForConnectionState,
   INITIAL_CALL_STATE,
+  mergeArtifacts,
+  type VoiceActivity,
 } from "./call-state";
-import type { VoiceStateEvent } from "./voice-events";
+import type {
+  VoiceActivityEndEvent,
+  VoiceActivityStartEvent,
+  VoiceArtifact,
+  VoiceStateEvent,
+  VoiceToolResultEvent,
+} from "./voice-events";
 
 const stateEvent = (
   toState: VoiceStateEvent["toState"],
@@ -87,6 +96,83 @@ describe("applyVoiceStateEvent — greet-first ring lifecycle (Spec 32 C)", () =
     );
     expect(s.bargeInSignal).toBe(1);
     expect(s.agentState).toBe("listening");
+  });
+});
+
+const artifact = (workspacePath: string): VoiceArtifact => ({
+  workspacePath,
+  mimeType: "image/png",
+  sizeBytes: 1,
+  renderedInline: false,
+});
+
+const toolResult = (...artifacts: VoiceArtifact[]): VoiceToolResultEvent => ({
+  type: "tool_result",
+  toolName: "generate_image",
+  isError: false,
+  artifacts,
+});
+
+describe("mergeArtifacts — rich-output collection (V10-D-6)", () => {
+  it("appends new artifacts in arrival order", () => {
+    const after = mergeArtifacts(
+      [artifact("a/1.png")],
+      toolResult(artifact("a/2.png")),
+    );
+    expect(after.map((a) => a.workspacePath)).toEqual(["a/1.png", "a/2.png"]);
+  });
+
+  it("dedupes by workspacePath and returns the same reference on a no-op", () => {
+    const list = [artifact("a/1.png")];
+    const after = mergeArtifacts(list, toolResult(artifact("a/1.png")));
+    expect(after).toBe(list); // identity preserved → no re-render
+  });
+
+  it("adds nothing for an empty-artifact result (e.g. web_search)", () => {
+    const list = [artifact("a/1.png")];
+    expect(mergeArtifacts(list, toolResult())).toBe(list);
+  });
+});
+
+const startEvent = (
+  activityId: string,
+  label: string,
+): VoiceActivityStartEvent => ({
+  type: "activity_start",
+  activityId,
+  kind: "tool",
+  name: "generate_image",
+  label,
+});
+
+const endEvent = (activityId: string): VoiceActivityEndEvent => ({
+  type: "activity_end",
+  activityId,
+  status: "ok",
+  isError: false,
+});
+
+describe("applyActivity — live activity tracking (V10-D-6)", () => {
+  it("appends a started activity with its label", () => {
+    const after = applyActivity([], startEvent("x1", "Creating an image"));
+    expect(after).toEqual<VoiceActivity[]>([
+      { activityId: "x1", label: "Creating an image" },
+    ]);
+  });
+
+  it("removes the matching activity on end", () => {
+    let list = applyActivity([], startEvent("x1", "Creating an image"));
+    list = applyActivity(list, startEvent("x2", "Searching the web"));
+    const after = applyActivity(list, endEvent("x1"));
+    expect(after.map((a) => a.activityId)).toEqual(["x2"]);
+  });
+
+  it("ignores a duplicate start and an unmatched end (same reference)", () => {
+    const list = applyActivity([], startEvent("x1", "Creating an image"));
+    expect(applyActivity(list, startEvent("x1", "Creating an image"))).toBe(
+      list,
+    );
+    expect(applyActivity(list, endEvent("nope"))).toBe(list);
   });
 });
 

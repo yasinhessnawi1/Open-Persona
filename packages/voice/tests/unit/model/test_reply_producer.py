@@ -23,9 +23,10 @@ from persona.history import ConversationHistoryManager
 from persona.schema.chunks import PersonaChunk
 from persona.schema.conversation import Conversation
 from persona.schema.persona import Persona, PersonaIdentity, RoutingConfig
-from persona.schema.tools import ToolResult
+from persona.schema.tools import PersistedArtifact, ToolCall, ToolResult
 from persona.tools import Toolbox
 from persona.tools.protocol import tool
+from persona_runtime.agentic.events import RunEvent
 from persona_runtime.prompt import PromptBuilder
 from persona_runtime.router import Router
 from persona_runtime.routing.latency import FirstTokenLatencyTracker
@@ -37,7 +38,10 @@ from persona_voice.model import (
     VoiceTurnContext,
     VoiceTurnRecorder,
 )
+from persona_voice.model.async_lane import AsyncArtifactLane
 from persona_voice.turn_taking.heard_words import BargedReply
+from persona_voice.turn_taking.orchestrator import ConversationalOrchestrator
+from persona_voice.turn_taking.states import ConversationalState
 
 
 def _chunk(text: str, meta: dict[str, str] | None = None) -> PersonaChunk:
@@ -348,6 +352,12 @@ async def _code_execution(code: str) -> ToolResult:
     raise RuntimeError(msg)
 
 
+@tool(name="generate_image", description="Generate an image.")
+async def _generate_image(prompt: str) -> ToolResult:
+    msg = "image gen must not run inline on the live voice path before the T3 async lane"
+    raise RuntimeError(msg)
+
+
 class TestVoiceToolsConversational:
     """Criterion 8 — a voice-viable tool works conversationally (preamble + result)."""
 
@@ -389,6 +399,49 @@ class TestVoiceToolsConversational:
         assert captured[0].tool_name == "code_execution"
 
     @pytest.mark.asyncio
+    async def test_async_artifact_tool_submits_to_lane_not_run_inline(self) -> None:
+        # T3 (V10-D-3): with the async lane wired, an ASYNC_ARTIFACT call is
+        # acknowledged inline ("…on screen…") and handed to the off-turn lane —
+        # NEVER dispatched inline (the raising fake proves it does not run on the
+        # live path), and never blocking the turn.
+        backend = _MultiRoundBackend(
+            [[_tool_call_chunk("generate_image", '{"prompt": "a castle"}'), _final()]]
+        )
+        toolbox = Toolbox([_generate_image], allow_list=None)  # type: ignore[list-item]
+        submitted: list[ToolCall] = []
+        producer = VoiceModelReplyProducer(
+            _context(backend, toolbox=toolbox), async_artifact_listener=submitted.append
+        )
+
+        out = await _drain(producer)
+
+        assert any("screen" in tok.lower() for tok in out)  # inline acknowledgement
+        assert len(submitted) == 1  # handed to the off-turn lane
+        assert submitted[0].name == "generate_image"
+
+    @pytest.mark.asyncio
+    async def test_async_artifact_tool_acknowledged_pending_lane(self) -> None:
+        # T2 interim (V10-D-1): generate_image is now REACHABLE in voice (it was
+        # silently unoffered — V5's deferred set used the dead name
+        # "image_generation"). Until T3 wires the async production lane it is
+        # acknowledged off-path like a deferred tool, never run inline and never
+        # stranding the call (the raising fake proves it is NOT dispatched live).
+        backend = _MultiRoundBackend(
+            [[_tool_call_chunk("generate_image", '{"prompt": "a castle"}'), _final()]]
+        )
+        toolbox = Toolbox([_generate_image], allow_list=None)  # type: ignore[list-item]
+        captured: list[DeferredArtifact] = []
+        producer = VoiceModelReplyProducer(
+            _context(backend, toolbox=toolbox), deferred_artifact_listener=captured.append
+        )
+
+        out = await _drain(producer)
+
+        assert "I'll prepare that and have it ready for you after our call." in out
+        assert len(captured) == 1
+        assert captured[0].tool_name == "generate_image"
+
+    @pytest.mark.asyncio
     async def test_voice_tool_overrun_speaks_graceful_overflow(self) -> None:
         backend = _MultiRoundBackend([[_tool_call_chunk("web_search", '{"query": "x"}'), _final()]])
         toolbox = Toolbox([_slow_web_search], allow_list=None)  # type: ignore[list-item]
@@ -398,6 +451,106 @@ class TestVoiceToolsConversational:
 
         assert "Let me look that up." in out  # preamble still spoken
         assert "This is taking a moment — I'll follow up on that shortly." in out  # bound hit
+
+
+class TestVoiceActivitySeam:
+    """V10 T1 — voice tool dispatch routes through P2's shared activity seam.
+
+    The voice path must NOT invent a parallel event format (the one thing P2
+    forbids): a live voice tool dispatches through the SAME
+    ``dispatch_with_activity`` seam chat/runs use, so a call emits a paired
+    ``activity_start``/``activity_end`` ``RunEvent`` (the unified "using <X>…"
+    vocabulary) when a sink is present — and stays byte-identical (bare dispatch,
+    no instrumentation cost) when it is absent (no talk-only regression, #6).
+    """
+
+    @pytest.mark.asyncio
+    async def test_voice_viable_tool_emits_paired_activity_events(self) -> None:
+        backend = _MultiRoundBackend(
+            [
+                [_tool_call_chunk("web_search", '{"query": "rights"}'), _final()],
+                [StreamChunk(delta="You have strong rights."), _final()],
+            ]
+        )
+        toolbox = Toolbox([_web_search], allow_list=None)  # type: ignore[list-item]
+        events: list[RunEvent] = []
+
+        async def _sink(event: RunEvent) -> None:
+            events.append(event)
+
+        producer = VoiceModelReplyProducer(_context(backend, toolbox=toolbox), on_event=_sink)
+
+        await _drain(producer)
+
+        types = [e.type for e in events]
+        assert "activity_start" in types
+        assert "activity_end" in types
+        start = next(e for e in events if e.type == "activity_start")
+        end = next(e for e in events if e.type == "activity_end")
+        # The unified contract: kind derived from the tool name, paired by id, ok.
+        assert start.data["kind"] == "web"
+        assert start.data["name"] == "web_search"
+        assert end.data["status"] == "ok"
+        assert start.data["activity_id"] == end.data["activity_id"]
+        # Start precedes end (the live "using web search…" → resolved lifecycle).
+        assert types.index("activity_start") < types.index("activity_end")
+        # Run-level voice turn → step=-1 (mirrors the chat turn, never a real step).
+        assert start.step == -1
+        assert end.step == -1
+
+    @pytest.mark.asyncio
+    async def test_inline_artifact_tool_emits_tool_result_for_the_panel(self) -> None:
+        # render_diagram is INLINE (VOICE_VIABLE) and produces an artifact; the
+        # producer must emit a tool_result frame carrying the artifact so it
+        # renders in the FileRendererPanel — the inline analog of the async lane's
+        # render-when-ready frame (T4, render_diagram parity).
+        art = PersistedArtifact(
+            workspace_path="uploads/d.svg",
+            mime_type="text/vnd.mermaid",
+            size_bytes=10,
+            rendered_inline=True,
+        )
+
+        @tool(name="render_diagram", description="Render a diagram.")
+        async def _render(spec: str) -> ToolResult:  # noqa: ARG001
+            return ToolResult(tool_name="render_diagram", content="diagram", artifacts=(art,))
+
+        backend = _MultiRoundBackend(
+            [
+                [_tool_call_chunk("render_diagram", '{"spec": "graph"}'), _final()],
+                [StreamChunk(delta="It's on screen."), _final()],
+            ]
+        )
+        toolbox = Toolbox([_render], allow_list=None)  # type: ignore[list-item]
+        events: list[RunEvent] = []
+
+        async def _sink(event: RunEvent) -> None:
+            events.append(event)
+
+        producer = VoiceModelReplyProducer(_context(backend, toolbox=toolbox), on_event=_sink)
+
+        await _drain(producer)
+
+        results = [e for e in events if e.type == "tool_result"]
+        assert len(results) == 1
+        assert results[0].data["artifacts"][0]["workspace_path"] == "uploads/d.svg"
+
+    @pytest.mark.asyncio
+    async def test_no_sink_runs_the_tool_without_emitting_events(self) -> None:
+        # Default (no sink): byte-identical to today — the tool still runs and its
+        # result is incorporated, with no activity instrumentation on the path.
+        backend = _MultiRoundBackend(
+            [
+                [_tool_call_chunk("web_search", '{"query": "rights"}'), _final()],
+                [StreamChunk(delta="You have strong rights."), _final()],
+            ]
+        )
+        toolbox = Toolbox([_web_search], allow_list=None)  # type: ignore[list-item]
+        producer = VoiceModelReplyProducer(_context(backend, toolbox=toolbox))
+
+        out = await _drain(producer)
+
+        assert "You have strong rights." in out  # the tool ran → re-prompt answer
 
 
 class TestRetrievalRunsOffTheEventLoop:
@@ -464,3 +617,72 @@ class TestUnifiedMemoryWiring:
 
         written = ctx.stores["episodic"].get_all("astrid", include_superseded=True)
         assert any("remember my cat Milo" in c.text and "Noted." in c.text for c in written)
+
+
+@tool(name="generate_image", description="Generate an image (succeeds).")
+async def _generate_image_ok(prompt: str) -> ToolResult:
+    return ToolResult(tool_name="generate_image", content=f"image of {prompt}")
+
+
+class _NarrationActions:
+    """A real TurnActions double — records the model-invocations the orchestrator
+    performs (the only faked seam; the state machine + triggers are real)."""
+
+    def __init__(self) -> None:
+        self.invoked: list[Transcript] = []
+
+    async def invoke_model_for_turn(self, final_transcript: Transcript) -> None:
+        self.invoked.append(final_transcript)
+
+    async def cancel_generation(self) -> None:
+        return None
+
+    async def interrupt(self) -> None:
+        return None
+
+
+class TestAsyncArtifactRealChain:
+    """T3 cycle 5 (R-3) — the full render-when-ready chain end-to-end through the
+    REAL orchestrator edge, with NO hand-forced state: the producer acknowledges
+    + submits → the lane produces off-turn + emits the render frame → on_ready is
+    the real floor-gated ``notify_artifact_ready`` → it fires the real
+    LISTENING→PROCESSING narration turn."""
+
+    @pytest.mark.asyncio
+    async def test_producer_to_lane_to_real_orchestrator_narration(self) -> None:
+        actions = _NarrationActions()
+        orch = ConversationalOrchestrator(actions=actions)  # real machine, idle floor
+        assert orch.state is ConversationalState.LISTENING
+
+        events: list[RunEvent] = []
+
+        async def _on_event(ev: RunEvent) -> None:
+            events.append(ev)
+
+        toolbox = Toolbox([_generate_image_ok], allow_list=None)  # type: ignore[list-item]
+        lane = AsyncArtifactLane(
+            toolbox=toolbox, on_ready=orch.notify_artifact_ready, on_event=_on_event
+        )
+
+        backend = _MultiRoundBackend(
+            [[_tool_call_chunk("generate_image", '{"prompt": "a castle"}'), _final()]]
+        )
+        producer = VoiceModelReplyProducer(
+            _context(backend, toolbox=toolbox), async_artifact_listener=lane.submit
+        )
+
+        # The live turn: acknowledged inline + handed to the lane (fast path).
+        out = await _drain(producer)
+        assert any("screen" in tok.lower() for tok in out)
+        # The narration has NOT fired yet — production is still off-turn.
+        assert len(actions.invoked) == 0
+
+        # Off-turn production completes → render frame emitted → narration fired
+        # through the REAL agent-initiated LISTENING→PROCESSING edge.
+        await lane.join()
+
+        types = [e.type for e in events]
+        assert "activity_start" in types  # the "creating an image…" badge
+        assert "tool_result" in types  # the artifact render frame (panel)
+        assert orch.state is ConversationalState.PROCESSING  # real edge, not forced
+        assert len(actions.invoked) == 1  # the coalesced narration turn

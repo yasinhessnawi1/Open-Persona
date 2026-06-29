@@ -57,6 +57,101 @@ describe("parseVoiceEvent", () => {
       parseVoiceEvent(enc({ type: "transcript", speaker: "bot", text: "x" })),
     ).toBeNull();
   });
+
+  // V10-D-6: rich-output frames — same artifact shape as chat's ArtifactRef.
+  it("decodes a tool_result frame with its artifacts (snake→camel)", () => {
+    const ev = parseVoiceEvent(
+      enc({
+        type: "tool_result",
+        tool_name: "generate_image",
+        is_error: false,
+        content: "image of a castle",
+        kind: "imagegen",
+        artifacts: [
+          {
+            workspace_path: "uploads/abc.png",
+            mime_type: "image/png",
+            size_bytes: 1024,
+            rendered_inline: true,
+          },
+        ],
+      }),
+    );
+    expect(ev).toEqual({
+      type: "tool_result",
+      toolName: "generate_image",
+      isError: false,
+      artifacts: [
+        {
+          workspacePath: "uploads/abc.png",
+          mimeType: "image/png",
+          sizeBytes: 1024,
+          renderedInline: true,
+        },
+      ],
+    });
+  });
+
+  it("decodes a tool_result with no artifacts as an empty artifact list", () => {
+    const ev = parseVoiceEvent(
+      enc({
+        type: "tool_result",
+        tool_name: "web_search",
+        is_error: false,
+        content: "results",
+      }),
+    );
+    expect(ev).toEqual({
+      type: "tool_result",
+      toolName: "web_search",
+      isError: false,
+      artifacts: [],
+    });
+  });
+
+  it("decodes activity_start and activity_end (the using-X badge lifecycle)", () => {
+    expect(
+      parseVoiceEvent(
+        enc({
+          type: "activity_start",
+          activity_id: "a1",
+          kind: "imagegen",
+          name: "generate_image",
+          label: "Creating an image",
+          args_summary: { prompt: "a castle" },
+        }),
+      ),
+    ).toEqual({
+      type: "activity_start",
+      activityId: "a1",
+      kind: "imagegen",
+      name: "generate_image",
+      label: "Creating an image",
+    });
+    expect(
+      parseVoiceEvent(
+        enc({
+          type: "activity_end",
+          activity_id: "a1",
+          status: "ok",
+          duration_ms: 12,
+          is_error: false,
+        }),
+      ),
+    ).toEqual({
+      type: "activity_end",
+      activityId: "a1",
+      status: "ok",
+      isError: false,
+    });
+  });
+
+  it("returns null for rich-output frames missing required fields", () => {
+    expect(parseVoiceEvent(enc({ type: "tool_result" }))).toBeNull();
+    expect(
+      parseVoiceEvent(enc({ type: "activity_start", activity_id: "a" })),
+    ).toBeNull();
+  });
 });
 
 describe("agentVisualState", () => {

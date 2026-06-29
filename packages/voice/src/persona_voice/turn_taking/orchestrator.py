@@ -202,6 +202,12 @@ class ConversationalOrchestrator:
         # D-V4-X-eou-stamp-point) — the V4-attributable threshold cost, surfaced
         # separately from the processing round-trip.
         self._last_endpoint_silence_wait_ms: float | None = None
+        # V10-D-2: async-artifact narrations awaiting an idle floor. An artifact's
+        # RENDER already went out (the data-channel frame fired when it finished);
+        # this queue holds only the SPOKEN mention, which must never play over the
+        # user. Drained — coalesced into one utterance — on the next entry into
+        # LISTENING (see ``_transition`` / ``_drain_pending_narrations``).
+        self._pending_narrations: list[Transcript] = []
 
     # ----- inspection --------------------------------------------------
 
@@ -371,6 +377,52 @@ class ConversationalOrchestrator:
         if self._state in (ConversationalState.PROCESSING, ConversationalState.PREPARING):
             self._cancel_greet_watchdog()
             await self._transition(TransitionTrigger.RESET)
+
+    # ----- async-artifact narration (V10-D-2) --------------------------
+
+    async def notify_artifact_ready(self, narration: Transcript) -> None:
+        """A slow async artifact finished — narrate it at the next idle floor.
+
+        The render is already on screen (its data-channel frame fired when the
+        artifact completed); this is only the spoken mention. **Strictly
+        floor-gated:** the narration speaks NOW only if the floor is genuinely
+        idle (``LISTENING``); otherwise it is queued and drained the moment the
+        floor next becomes idle, so the persona never talks over the user
+        (V10-D-2 / R-1). Multiple narrations pending at drain time are coalesced
+        into one utterance.
+
+        Args:
+            narration: The synthetic narration prompt the model turns into the
+                spoken "it's on screen" line (authored by the caller / the async
+                lane; the orchestrator stays persona-agnostic).
+        """
+        self._pending_narrations.append(narration)
+        if self._state is ConversationalState.LISTENING:
+            await self._drain_pending_narrations()
+
+    async def _drain_pending_narrations(self) -> None:
+        """Fire ONE coalesced narration turn from the idle floor (V10-D-2).
+
+        Re-checks the floor under the single-threaded event loop: only fires when
+        ``LISTENING`` and something is pending. Empties the queue first (so a
+        re-entrant transition cannot double-fire), coalesces, then enters the
+        narration turn via the agent-initiated edge — which reaches
+        PERSONA_SPEAKING via the usual first-audio path, or degrades to LISTENING
+        via the no-audio RESET, exactly like any turn.
+        """
+        if not self._pending_narrations or self._state is not ConversationalState.LISTENING:
+            return
+        pending = self._pending_narrations
+        self._pending_narrations = []
+        narration = self._coalesce_narrations(pending)
+        await self._transition(TransitionTrigger.AGENT_INITIATED)
+        await self._actions.invoke_model_for_turn(narration)
+
+    @staticmethod
+    def _coalesce_narrations(narrations: list[Transcript]) -> Transcript:
+        """Fold pending narrations into one prompt → one spoken utterance."""
+        text = " ".join(n.text for n in narrations if n.text)
+        return Transcript(is_final=True, text=text, confidence=1.0)
 
     # ----- greet-on-connect (turn 0; Spec 32 A3) -----------------------
 
@@ -543,6 +595,12 @@ class ConversationalOrchestrator:
                     at=self._clock(),
                 )
             )
+        # V10-D-2: the floor just became idle — drain any queued artifact
+        # narration (coalesced). Fired AFTER the LISTENING frame is broadcast so
+        # the order reads ...→LISTENING→PROCESSING. The re-entrant transition this
+        # triggers lands in PROCESSING (not LISTENING), so it cannot re-drain.
+        if new_state is ConversationalState.LISTENING and self._pending_narrations:
+            await self._drain_pending_narrations()
 
     def _turn_transcript(self) -> Transcript:
         """The transcript handed to the model — the last final, or a synthesised

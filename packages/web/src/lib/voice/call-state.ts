@@ -11,7 +11,11 @@ import {
   type AgentVisualState,
   agentVisualState,
   isBargeIn,
+  type VoiceActivityEndEvent,
+  type VoiceActivityStartEvent,
+  type VoiceArtifact,
   type VoiceStateEvent,
+  type VoiceToolResultEvent,
 } from "./voice-events";
 
 /**
@@ -159,6 +163,50 @@ export function callPhaseForConnectionState(
     default:
       return "idle";
   }
+}
+
+/**
+ * One in-flight capability the call surface renders a "using <X>…" badge for
+ * (V10-D-6). Kept minimal — only the fields the badge reads — and tracked by
+ * `activityId` so the paired `activity_end` clears exactly its own badge.
+ */
+export interface VoiceActivity {
+  activityId: string;
+  label: string;
+}
+
+/**
+ * Fold a `tool_result`'s artifacts into the accumulated list, deduped by
+ * `workspacePath` (V10-D-6) — a tool may emit the same artifact across an
+ * in-turn + render-when-ready pair, and a re-render must not double-mount it.
+ * Empty-artifact results (e.g. `web_search`) add nothing. Pure: returns the same
+ * reference when there is nothing new, so a no-op event triggers no re-render.
+ */
+export function mergeArtifacts(
+  list: VoiceArtifact[],
+  event: VoiceToolResultEvent,
+): VoiceArtifact[] {
+  if (event.artifacts.length === 0) return list;
+  const seen = new Set(list.map((a) => a.workspacePath));
+  const additions = event.artifacts.filter((a) => !seen.has(a.workspacePath));
+  return additions.length === 0 ? list : [...list, ...additions];
+}
+
+/**
+ * Apply one activity frame to the active-activity list (V10-D-6): `start` appends
+ * (ignoring a duplicate `activityId`), `end` removes the matching one. Pure;
+ * returns the same reference on a no-op so an unmatched end never re-renders.
+ */
+export function applyActivity(
+  list: VoiceActivity[],
+  event: VoiceActivityStartEvent | VoiceActivityEndEvent,
+): VoiceActivity[] {
+  if (event.type === "activity_start") {
+    if (list.some((a) => a.activityId === event.activityId)) return list;
+    return [...list, { activityId: event.activityId, label: event.label }];
+  }
+  const next = list.filter((a) => a.activityId !== event.activityId);
+  return next.length === list.length ? list : next;
 }
 
 /** Map a LiveKit `getUserMedia`/`MediaDevicesError` onto a typed call error (D-V6-5). */

@@ -28,21 +28,55 @@ def _spec(name: str) -> ToolSpec:
 
 class TestVoiceToolPolicy:
     def test_default_classification(self) -> None:
+        """V10-D-1 — partition by MEASURED latency, not 'visual vs text'."""
         policy = VoiceToolPolicy()
+        # Inline-fast (run live under the latency bound): search + the sub-100ms
+        # diagram (persists mermaid/graphviz source; the browser renders the SVG).
         assert policy.classify("web_search") is VoiceToolDisposition.VOICE_VIABLE
         assert policy.classify("web_fetch") is VoiceToolDisposition.VOICE_VIABLE
+        assert policy.classify("render_diagram") is VoiceToolDisposition.VOICE_VIABLE
+        # Async-slow + artifact: the 5–20s image gen → the render-when-ready lane.
+        assert policy.classify("generate_image") is VoiceToolDisposition.ASYNC_ARTIFACT
+        # Deferred (heavy / write — acknowledged off the live path).
         assert policy.classify("code_execution") is VoiceToolDisposition.DEFERRED
-        assert policy.classify("document_generation") is VoiceToolDisposition.DEFERRED
+        assert policy.classify("file_write") is VoiceToolDisposition.DEFERRED
+        # Out of voice's cut: document_generation has no backend on main → not
+        # offered; arbitrary builtins stay text-only.
+        assert policy.classify("document_generation") is VoiceToolDisposition.TEXT_ONLY
         assert policy.classify("calculator") is VoiceToolDisposition.TEXT_ONLY
 
-    def test_offered_specs_excludes_text_only_keeps_viable_and_deferred(self) -> None:
+    def test_offered_specs_includes_async_artifact_excludes_text_only(self) -> None:
         policy = VoiceToolPolicy()
-        specs = [_spec("web_search"), _spec("code_execution"), _spec("calculator")]
+        specs = [
+            _spec("web_search"),
+            _spec("render_diagram"),
+            _spec("generate_image"),
+            _spec("code_execution"),
+            _spec("document_generation"),
+            _spec("calculator"),
+        ]
         offered = {s.name for s in policy.offered_specs(specs)}
-        assert offered == {"web_search", "code_execution"}  # calculator (text-only) withheld
+        # viable + async_artifact + deferred are offered; text-only withheld
+        # (doc-gen has no backend, calculator is not a voice capability).
+        assert offered == {"web_search", "render_diagram", "generate_image", "code_execution"}
+
+    def test_generate_image_is_reachable_not_silently_dropped(self) -> None:
+        """Regression: the V5 deferred set named the dead string 'image_generation'.
+
+        The real tool is ``generate_image`` ([imagegen/tool.py] ``@tool``), so image
+        generation was classified TEXT_ONLY and silently never offered in voice. It
+        must now be reachable (V10-D-1).
+        """
+        policy = VoiceToolPolicy()
+        assert policy.classify("generate_image") is not VoiceToolDisposition.TEXT_ONLY
+        assert "generate_image" in {s.name for s in policy.offered_specs([_spec("generate_image")])}
 
     def test_custom_sets(self) -> None:
-        policy = VoiceToolPolicy(voice_viable=frozenset({"calculator"}), deferred=frozenset())
+        policy = VoiceToolPolicy(
+            voice_viable=frozenset({"calculator"}),
+            deferred=frozenset(),
+            async_artifact=frozenset(),
+        )
         assert policy.classify("calculator") is VoiceToolDisposition.VOICE_VIABLE
         assert policy.classify("web_search") is VoiceToolDisposition.TEXT_ONLY
 
@@ -57,6 +91,13 @@ class TestVoiceToolNarrator:
     def test_empty_preambles_raises(self) -> None:
         with pytest.raises(ValueError, match="preambles"):
             VoiceToolNarrator(preambles=())
+
+    def test_async_artifact_line_signals_on_screen_and_is_distinct(self) -> None:
+        """V10-D-3 — the inline acknowledgement spoken when a slow visual artifact
+        is handed to the off-turn lane (distinct from the deferred-heavy line)."""
+        narrator = VoiceToolNarrator()
+        assert "screen" in narrator.async_artifact_line.lower()
+        assert narrator.async_artifact_line != narrator.deferral_line
 
     def test_deferral_and_overflow_lines(self) -> None:
         narrator = VoiceToolNarrator(deferral_line="later", overflow_line="a moment")

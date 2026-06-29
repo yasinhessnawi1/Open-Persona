@@ -55,7 +55,7 @@ import {
   persistCall,
 } from "@/lib/voice/call-persistence";
 import { clearRecap, saveRecap } from "@/lib/voice/call-recap";
-import type { VoiceCallState } from "@/lib/voice/call-state";
+import type { VoiceActivity, VoiceCallState } from "@/lib/voice/call-state";
 import type { CaptionSegment } from "@/lib/voice/captions";
 import {
   type InputMode,
@@ -63,6 +63,7 @@ import {
   saveInputPrefs,
 } from "@/lib/voice/input-prefs";
 import { useVoiceCall } from "@/lib/voice/use-voice-call";
+import type { VoiceArtifact } from "@/lib/voice/voice-events";
 
 /** How often we refresh the persisted call's freshness anchor while live. */
 const HEARTBEAT_MS = 15_000;
@@ -88,6 +89,12 @@ export interface CallSession {
   readonly state: VoiceCallState;
   /** Live caption segments (user ASR + persona verbatim). */
   readonly captions: CaptionSegment[];
+  /** Rich-output artifacts produced during the call (V10-D-6) — the full surface
+   * mounts the latest in the FileRendererPanel. Empty when no call is active. */
+  readonly artifacts: VoiceArtifact[];
+  /** Capabilities the persona is currently using (V10-D-6) — drives the live
+   * "using <X>…" badge. Empty when no call is active. */
+  readonly activities: VoiceActivity[];
   /** Who the call is with, or `null` when no call is active. */
   readonly target: CallTarget | null;
   /** True while a call is placed (target set and not yet cleared). */
@@ -435,6 +442,8 @@ export function CallSessionProvider({
     () => ({
       state: call.state,
       captions: call.captions,
+      artifacts: call.artifacts,
+      activities: call.activities,
       target,
       isActive: target !== null,
       startedAt,
@@ -459,6 +468,8 @@ export function CallSessionProvider({
     [
       call.state,
       call.captions,
+      call.artifacts,
+      call.activities,
       target,
       startedAt,
       pendingSwitch,

@@ -602,6 +602,7 @@
     "listening": "Listening",
     "thinking": "Thinking…",
     "speaking": "Speaking",
+    "using": "Using {label}…",
     "start": "Start call",
     "end": "End call",
     "mute": "Mute",

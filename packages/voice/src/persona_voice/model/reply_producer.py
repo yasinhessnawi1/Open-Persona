@@ -48,6 +48,8 @@ from typing import TYPE_CHECKING
 from persona.schema.conversation import ConversationMessage
 from persona.schema.tools import ToolCall
 from persona.tools import format_tool_result
+from persona_runtime.activity import dispatch_with_activity
+from persona_runtime.agentic.events import RunEvent
 from persona_runtime.graph_voice import start_graph_retrieval, take_graph_if_ready
 from persona_runtime.graph_window import set_recent_window_from_messages
 from persona_runtime.routing import RoutingContext, classifiers
@@ -66,7 +68,7 @@ from persona_voice.model.tools import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from persona.backends import ChatBackend
     from persona.backends.types import ToolSpec
@@ -108,6 +110,22 @@ class VoiceModelReplyProducer:
         deferred_artifact_listener: Optional callback notified when a deferred
             (heavy) tool is acknowledged in voice — the off-path F5 intent
             (D-V5-4-f5-artifact-shape). MUST NOT raise.
+        async_artifact_listener: Optional fire-and-forget hook (V10 T3,
+            V10-D-X-async-lane) — the off-turn production lane's ``submit``. When
+            present, an ``ASYNC_ARTIFACT`` call (e.g. ``generate_image``) is
+            acknowledged inline and handed to the lane (render-when-ready +
+            floor-gated narration); when absent the call falls back to the
+            deferred acknowledgement so it is never stranded. MUST NOT raise.
+        on_event: Optional async sink for granular activity events (V10 T1,
+            V10-D-X-producer-sink). When present, a live voice tool dispatches
+            through P2's shared :func:`dispatch_with_activity` seam, so each call
+            emits a paired ``activity_start``/``activity_end`` :class:`RunEvent`
+            in the SAME vocabulary chat/runs use — the voice transport (the
+            LiveKit data channel) carries it instead of SSE, but the events are
+            identical (no parallel voice event format — the one thing P2 forbids).
+            ``None`` (the default) keeps the bare ``toolbox.dispatch`` path,
+            byte-identical to V5 — no instrumentation cost, no talk-only
+            regression (acceptance #6).
         clock: UTC-now provider (injected for deterministic tests).
     """
 
@@ -121,6 +139,8 @@ class VoiceModelReplyProducer:
         tool_timeout_s: float = DEFAULT_VOICE_TOOL_TIMEOUT_S,
         first_token_listener: Callable[[datetime], None] | None = None,
         deferred_artifact_listener: Callable[[DeferredArtifact], None] | None = None,
+        async_artifact_listener: Callable[[ToolCall], None] | None = None,
+        on_event: Callable[[RunEvent], Awaitable[None]] | None = None,
         turn_recorder: VoiceTurnRecorder | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -133,6 +153,15 @@ class VoiceModelReplyProducer:
         self._tool_timeout_s = tool_timeout_s
         self._first_token_listener = first_token_listener
         self._deferred_listener = deferred_artifact_listener
+        # V10 T3 (V10-D-X-async-lane): the off-turn production lane's submit hook.
+        # When present, an ASYNC_ARTIFACT call (e.g. generate_image) is handed to
+        # the lane (render-when-ready + floor-gated narration) instead of being
+        # acknowledged-and-deferred; when absent it falls back to the deferred
+        # acknowledgement (never strands). Fire-and-forget, like the deferred one.
+        self._async_artifact_listener = async_artifact_listener
+        # V10 T1 (V10-D-X-producer-sink): the activity-event sink. When present,
+        # tool dispatch routes through P2's ``dispatch_with_activity`` seam.
+        self._on_event = on_event
         # The unified-memory recorder (T8). The producer notes this turn's user
         # transcript so the recorder can correlate it with the heard reply on
         # commit (D-V5-X-memory-write-on-commit); the actual write happens on V4's
@@ -237,8 +266,22 @@ class VoiceModelReplyProducer:
         round_text: list[str],
         call: ToolCall,
     ) -> AsyncIterator[str]:
-        """Run the conservative single voice tool round (D-V5-4/5)."""
+        """Run the conservative single voice tool round (D-V5-4/5 / V10-D-3)."""
         disposition = self._tool_policy.classify(call.name)
+        if disposition is VoiceToolDisposition.ASYNC_ARTIFACT:
+            if self._async_artifact_listener is not None:
+                # V10-D-3: a slow visual artifact — acknowledge inline ("…on
+                # screen…"), hand production to the off-turn lane, and return to
+                # the fast path NOW. The render (its data-channel frame) and the
+                # spoken "it's on screen" confirmation happen render-when-ready,
+                # decoupled from this turn's audio timing — never inline, never
+                # dead air, barge-in still works.
+                yield self._narrator.async_artifact_line
+                self._async_artifact_listener(call)
+                return
+            # No lane wired (e.g. the runner has not connected it) — fall back to
+            # the deferred acknowledgement so the call is never stranded.
+            disposition = VoiceToolDisposition.DEFERRED
         if disposition is VoiceToolDisposition.DEFERRED:
             # Heavy capability — acknowledge in voice, produce off-path (F5).
             ack = self._narrator.deferral_line
@@ -256,12 +299,29 @@ class VoiceModelReplyProducer:
         # Voice-viable: narrate the preamble (contract), run bounded, re-prompt once.
         yield self._narrator.preamble(index=self._preamble_index)
         self._preamble_index += 1
+        # V10 T1 (V10-D-X-producer-sink): dispatch through P2's shared seam so the
+        # call emits a paired activity_start/activity_end over ``on_event`` (the
+        # unified vocabulary). With ``on_event=None`` this is the bare
+        # ``toolbox.dispatch`` — byte-identical to V5. Still under the V5 hard
+        # latency bound (the seam returns the same ``Awaitable[ToolResult]``).
         outcome = await run_tool_with_latency_bound(
-            self._ctx.toolbox.dispatch(call), timeout_s=self._tool_timeout_s
+            dispatch_with_activity(self._ctx.toolbox, call, on_event=self._on_event, step=-1),
+            timeout_s=self._tool_timeout_s,
         )
         if outcome.timed_out or outcome.result is None:
             yield self._narrator.overflow_line  # never strand the call (D-V5-4)
             return
+
+        # V10 (T4): emit the artifact-bearing tool_result frame so an inline tool
+        # that produces an artifact (e.g. render_diagram) renders in the
+        # FileRendererPanel — the inline analog of the async lane's render frame
+        # (P2-D-3 keep-both: the activity_* badge already fired during dispatch).
+        if self._on_event is not None:
+            await self._on_event(
+                RunEvent.tool_result(
+                    -1, call.name, outcome.result, kind=self._ctx.toolbox.kind_for(call.name)
+                )
+            )
 
         followup = self._followup_prompt(backend, base_prompt, round_text, call, outcome.result)
         async for delta in self._stream(backend, followup, None, max_tokens, timing, [], []):

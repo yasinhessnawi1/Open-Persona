@@ -33,6 +33,11 @@ vi.mock("@/lib/voice/use-persona-avatar-src", () => ({
 vi.mock("@/components/voice/identity-orb", () => ({
   IdentityOrb: () => <div data-testid="orb" />,
 }));
+// The reused chat panel is covered by chat's own tests; mock it here so the
+// surface test stays free of the panel's auth-bound artifact fetch (useAuth).
+vi.mock("@/components/chat/file-renderer-panel", () => ({
+  FileRendererPanel: () => <div data-testid="file-renderer-panel" />,
+}));
 vi.mock("next/link", () => ({
   default: ({
     href,
@@ -58,6 +63,8 @@ function makeSession(
   return {
     state,
     captions: [],
+    artifacts: [],
+    activities: [],
     target: null,
     isActive: state.phase !== "idle",
     startedAt: state.phase !== "idle" ? Date.now() : null,

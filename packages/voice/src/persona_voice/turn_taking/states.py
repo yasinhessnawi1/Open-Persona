@@ -121,6 +121,14 @@ class TransitionTrigger(StrEnum):
     preparing turn 0. **Broadcast-only** — it announces the initial PREPARING
     state to the client (ring + gate the mic); it is NOT in the transition table
     (PREPARING is the call's initial state, not entered via a transition)."""
+    AGENT_INITIATED = "agent_initiated"
+    """V10-D-2: the persona starts an UNSOLICITED turn from the idle floor — the
+    floor-gated narration of an async artifact that finished while it was the
+    user's floor (e.g. "I've put the diagram on screen"). Legal ONLY from
+    LISTENING (a genuinely idle floor); it enters PROCESSING (NOT a raw
+    LISTENING→PERSONA_SPEAKING skip), so it reuses the existing
+    PROCESSING→PERSONA_SPEAKING (first audio) and PROCESSING→LISTENING (no-audio
+    RESET) edges and the no-speaking-without-a-turn invariant holds."""
 
 
 # The finite state machine, keyed by ``(current_state, trigger)`` → next
@@ -142,6 +150,15 @@ _TRANSITIONS: dict[tuple[ConversationalState, TransitionTrigger], Conversational
     (ConversationalState.PREPARING, TransitionTrigger.RESET): (ConversationalState.LISTENING),
     (ConversationalState.LISTENING, TransitionTrigger.USER_SPEECH_STARTED): (
         ConversationalState.USER_SPEAKING
+    ),
+    # V10-D-2: the persona narrates a ready async artifact from the idle floor.
+    # Legal ONLY from LISTENING, and it lands in PROCESSING — the narration is a
+    # real (persona-initiated) turn that then reaches PERSONA_SPEAKING via
+    # MODEL_FIRST_AUDIO, exactly like any turn. This does NOT make
+    # LISTENING→PERSONA_SPEAKING legal (the canonical illegal skip stands); only
+    # the dedicated PREPARING source has the speak-without-PROCESSING entry.
+    (ConversationalState.LISTENING, TransitionTrigger.AGENT_INITIATED): (
+        ConversationalState.PROCESSING
     ),
     (ConversationalState.USER_SPEAKING, TransitionTrigger.TURN_ENDED): (
         ConversationalState.PROCESSING

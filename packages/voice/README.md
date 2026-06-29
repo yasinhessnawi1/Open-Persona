@@ -54,6 +54,15 @@ Like the rest of the stack, it carries an **edition** stance (`PERSONA_EDITION`)
   generation, and writes voice turns to the **same** episodic store as text
   (unified memory) — plus a voice latency-routing gate, off-critical-path
   history compaction, conversational voice tools, and barge-over-honest memory.
+- **V10 — Capability parity.** A call does what a chat can: the persona invokes
+  tools mid-call and **produces artifacts that render on screen** in the same
+  `FileRendererPanel` chat uses. Tools partition by measured latency — search /
+  diagram run **inline**; `generate_image` runs on a bounded **async production
+  lane**, decoupled from the audio turn, so the artifact **renders the instant
+  it's ready** and the persona's "it's on screen" line is **floor-gated** (a new
+  agent-initiated `LISTENING→PROCESSING` turn that never talks over the user).
+  Rich-output rides the **same** `RunEvent` vocabulary as chat (`tool_result` +
+  `activity_*`) over the data channel — no parallel format.
 - **V6 — Frontend voice client (in development).** Browser-side audio plumbing
   + UI in `persona-web`; an optional dev agent launcher fires from the token
   endpoint.

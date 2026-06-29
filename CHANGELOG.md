@@ -11,6 +11,32 @@ Per-spec entries are added by the close-out phase of each spec.
 
 ## [Unreleased]
 
+### Voice capability parity — tools, artifacts, and the preview panel in a call (2026-06-28)
+
+> Close-out of `voice-capability-parity`. A voice call is no longer talk-only: the persona
+> can invoke tools mid-call and **produce artifacts that render on screen** in the **same**
+> `FileRendererPanel` chat uses, while it narrates by voice. Tools are partitioned by
+> measured latency — `web_search`/`render_diagram` run **inline** (the diagram persists its
+> source and renders sub-100ms), while `generate_image` (5–20s) runs on a new **async
+> production lane**, decoupled from the audio turn: the artifact **renders the instant it's
+> ready** (a `tool_result` data-channel frame), and the persona's "it's on screen"
+> narration is **floor-gated** — spoken only at the next idle floor via a new
+> `LISTENING→PROCESSING` agent-initiated turn, so it never talks over the user (a barge-in
+> cancels it). Rich-output rides the **same** `RunEvent` vocabulary chat uses
+> (`tool_result`+artifacts / `activity_*` "using X…" badge), over the LiveKit data channel
+> instead of SSE — no parallel format, no new dependencies, no migration. Voice dispatch
+> routes through the shared activity seam (composes with `persona-activity-events`); the
+> async lane is bounded + cancelled at call teardown.
+>
+> **Also fixed:** the voice tool policy named the dead string `image_generation` while the
+> real tool is `generate_image`, so image generation was silently never offered in voice —
+> now reachable.
+>
+> **Known limitations (deferred follow-ups):** in-call tool **consent** beyond
+> already-allow-listed tools (the `asking_user` visual confirm) is not yet wired; an
+> in-call artifact's **bytes persist** to the workspace but it is **not yet recorded as a
+> clickable artifact in the thread/transcript** (only the spoken narration is). Live
+> render + audio-timing are validated by a user-run real-browser operator pass.
 ### Wellbeing-aware layer — care-first handling of sensitive knowledge in the shared graph (2026-06-28)
 
 > Close-out of `wellbeing-layer` (Spec K4). The shared graph deliberately lets every

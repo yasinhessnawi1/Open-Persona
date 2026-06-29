@@ -11,6 +11,8 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from persona.schema.tools import PersistedArtifact, ToolResult
+from persona_runtime.agentic.events import RunEvent
 from persona_voice.loop.streaming import Transcript
 from persona_voice.transport.broadcast import BROADCAST_TOPIC, DataChannelBroadcaster
 from persona_voice.turn_taking.states import (
@@ -156,10 +158,86 @@ async def test_publish_errors_are_swallowed_never_raised_into_the_turn() -> None
     room = _CapturingRoom(raises=True)
     bc = DataChannelBroadcaster(room)  # type: ignore[arg-type]
 
-    # None of the three seam methods may raise — a transient data-channel error
+    # None of the seam methods may raise — a transient data-channel error
     # is cosmetic; raising would wedge the orchestrator's turn cycle.
     await bc.on_state_changed(
         _transition(ConversationalState.LISTENING, TransitionTrigger.PERSONA_FINISHED)
     )
     await bc.on_user_transcript(Transcript(is_final=True, text="x", confidence=1.0))
     await bc.on_persona_text("y", is_final=True)
+    await bc.on_run_event(
+        RunEvent.activity_start(
+            -1,
+            activity_id="a",
+            kind="web",
+            name="web_search",
+            label="Searching the web",
+            args_summary={},
+        )
+    )
+
+
+# ---------- V10-D-6: rich-output frames (one vocabulary, data-channel transport)
+
+
+async def test_tool_result_frame_carries_artifacts_flat_reliable_on_topic() -> None:
+    """The RENDER frame — same artifact shape chat carries (workspace_path /
+    mime_type / size_bytes / rendered_inline), flat under the type discriminator,
+    so the web normaliser + FileRendererPanel render it unchanged."""
+    room = _CapturingRoom()
+    bc = DataChannelBroadcaster(room)  # type: ignore[arg-type]
+    result = ToolResult(
+        tool_name="generate_image",
+        content="image of a castle",
+        artifacts=(
+            PersistedArtifact(
+                workspace_path="uploads/abc.png",
+                mime_type="image/png",
+                size_bytes=1024,
+                rendered_inline=True,
+            ),
+        ),
+    )
+
+    await bc.on_run_event(RunEvent.tool_result(-1, "generate_image", result, kind="imagegen"))
+
+    assert len(room.calls) == 1
+    assert room.calls[0]["reliable"] is True  # rich-output is reliable+ordered
+    assert room.calls[0]["topic"] == BROADCAST_TOPIC
+    frame = room.calls[0]["payload"]
+    assert frame["type"] == "tool_result"  # type: ignore[index]
+    assert frame["tool_name"] == "generate_image"  # type: ignore[index]
+    assert frame["artifacts"][0] == {  # type: ignore[index]
+        "workspace_path": "uploads/abc.png",
+        "mime_type": "image/png",
+        "size_bytes": 1024,
+        "rendered_inline": True,
+    }
+
+
+async def test_activity_frames_carry_the_using_x_badge() -> None:
+    room = _CapturingRoom()
+    bc = DataChannelBroadcaster(room)  # type: ignore[arg-type]
+
+    await bc.on_run_event(
+        RunEvent.activity_start(
+            -1,
+            activity_id="a1",
+            kind="imagegen",
+            name="generate_image",
+            label="Creating an image",
+            args_summary={"prompt": "a castle"},
+        )
+    )
+    await bc.on_run_event(
+        RunEvent.activity_end(-1, activity_id="a1", status="ok", duration_ms=12.0, is_error=False)
+    )
+
+    start, end = (c["payload"] for c in room.calls)
+    assert start["type"] == "activity_start"  # type: ignore[index]
+    assert start["kind"] == "imagegen"  # type: ignore[index]
+    assert start["label"] == "Creating an image"  # type: ignore[index]
+    assert start["activity_id"] == "a1"  # type: ignore[index]
+    assert end["type"] == "activity_end"  # type: ignore[index]
+    assert end["activity_id"] == "a1"  # pairs with the start  # type: ignore[index]
+    assert end["status"] == "ok"  # type: ignore[index]

@@ -90,10 +90,53 @@ def test_user_speaking_to_persona_speaking_skipping_processing_is_illegal() -> N
         advance(ConversationalState.USER_SPEAKING, TransitionTrigger.MODEL_FIRST_AUDIO)
 
 
-def test_listening_to_processing_skipping_user_speaking_is_illegal() -> None:
-    assert not is_legal_transition(ConversationalState.LISTENING, ConversationalState.PROCESSING)
+def test_listening_to_processing_via_user_turn_trigger_is_illegal() -> None:
+    """A USER-turn trigger still cannot skip USER_SPEAKING to reach PROCESSING.
+
+    V10-D-2 adds a LISTENING→PROCESSING edge, but ONLY via the agent-initiated
+    narration trigger — a user-turn trigger (TURN_ENDED) from LISTENING stays
+    illegal, so the user path still cannot skip USER_SPEAKING.
+    """
     with pytest.raises(InvalidConversationalTransitionError):
         advance(ConversationalState.LISTENING, TransitionTrigger.TURN_ENDED)
+
+
+# ---------- V10-D-2: agent-initiated narration (floor-gated) -----------------
+
+
+def test_listening_to_processing_on_agent_initiated_is_legal() -> None:
+    """V10-D-2 — the floor-gated artifact narration enters PROCESSING (not a raw
+    LISTENING→PERSONA_SPEAKING skip), so it reuses the existing
+    PROCESSING→PERSONA_SPEAKING (audio) and PROCESSING→LISTENING (no-audio RESET)
+    edges and the no-speaking-without-a-turn invariant is preserved."""
+    assert (
+        advance(ConversationalState.LISTENING, TransitionTrigger.AGENT_INITIATED)
+        == ConversationalState.PROCESSING
+    )
+    assert is_legal_transition(ConversationalState.LISTENING, ConversationalState.PROCESSING)
+
+
+def test_agent_initiated_is_legal_only_from_listening() -> None:
+    """The floor gate at the FSM level: agent-initiated narration may ONLY start
+    from a genuinely idle floor (LISTENING). From any other state the trigger is
+    illegal — the persona can never inject an unsolicited turn while the user
+    holds the floor or while it is already mid-turn."""
+    for state in (
+        ConversationalState.USER_SPEAKING,
+        ConversationalState.PROCESSING,
+        ConversationalState.PERSONA_SPEAKING,
+        ConversationalState.PREPARING,
+    ):
+        with pytest.raises(InvalidConversationalTransitionError):
+            advance(state, TransitionTrigger.AGENT_INITIATED)
+
+
+def test_agent_initiated_does_not_make_listening_to_persona_speaking_legal() -> None:
+    """The narration goes through PROCESSING; the canonical illegal skip
+    (LISTENING→PERSONA_SPEAKING) stays illegal."""
+    assert not is_legal_transition(
+        ConversationalState.LISTENING, ConversationalState.PERSONA_SPEAKING
+    )
 
 
 def test_illegal_transition_error_carries_context() -> None:
